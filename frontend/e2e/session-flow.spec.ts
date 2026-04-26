@@ -57,6 +57,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await page.goto("/");
 
   await expect(page.getByText("ready").first()).toBeVisible();
+  await page.getByRole("button", { name: "Session" }).click();
   await page.getByPlaceholder("/home/user/project").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByRole("button", { name: /acp-webui/ })).toBeVisible();
@@ -74,6 +75,38 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByText("Reply with the smoke phrase.")).toBeVisible();
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
 });
+
+test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByText("ready").first()).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Codex Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Trigger approval flow.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Allow always/ })).toBeDisabled();
+  await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
+
+  await page.getByRole("button", { name: "Allow once" }).click();
+  await expect(page.getByText("Approval result: allow-once")).toBeVisible();
+  await page.getByRole("button", { name: "Inbox" }).click();
+  await expect(page.getByText("No approvals waiting.")).toBeVisible();
+});
+
+async function ensureWorkspace(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Session" }).click();
+  const existing = page.getByRole("button", { name: /acp-webui/ }).first();
+  if (await existing.isVisible().catch(() => false)) {
+    await existing.click();
+    return;
+  }
+  await page.getByPlaceholder("/home/user/project").fill(repoRoot);
+  await page.getByRole("button", { name: "Add" }).click();
+  await expect(page.getByRole("button", { name: /acp-webui/ })).toBeVisible();
+}
 
 async function waitForBackend() {
   const deadline = Date.now() + 15_000;

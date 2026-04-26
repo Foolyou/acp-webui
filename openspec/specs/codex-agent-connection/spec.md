@@ -51,17 +51,17 @@ The system SHALL expose the current Codex connection status to the browser.
 
 ### Requirement: Unsupported ACP updates do not break the connection
 
-The system SHALL tolerate ACP updates that are outside the initial text-only scope.
+The system SHALL tolerate ACP updates that are outside the initial text-only scope while forwarding supported permission requests to the approval flow.
 
 #### Scenario: Non-text ACP update is received
 
-- **WHEN** Codex sends an ACP update that is not a text response update
+- **WHEN** Codex sends an ACP update that is not a text response update and is not a permission request
 - **THEN** the backend SHALL avoid crashing
 - **AND** it SHALL keep the session active when the update does not require user interaction
 
-#### Scenario: Permission request is received before approval support exists
+#### Scenario: Permission request is received after approval support exists
 
-- **WHEN** Codex sends a permission request before approval support is implemented
-- **THEN** the backend SHALL mark the affected session as blocked by an unsupported permission request
-- **AND** the browser SHALL show a clear message that approval handling is not available in this version
-
+- **WHEN** Codex sends a `session/request_permission` request for a known session
+- **THEN** the backend SHALL persist and broadcast the permission request through the approval flow
+- **AND** it SHALL wait for user resolution instead of immediately returning a cancelled permission outcome
+- **AND** it SHALL return the selected ACP option id or cancelled outcome to Codex according to the user's action

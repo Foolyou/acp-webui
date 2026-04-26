@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     process::Stdio,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -16,7 +16,11 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
 };
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    models::{permission_option_kind, permission_status, status, PermissionRequest},
+    storage::{NewPermissionRequest, Storage},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,40 +63,62 @@ impl ConnectionStatus {
     rename_all_fields = "camelCase"
 )]
 pub enum RealtimeEvent {
-    ConnectionStatus { status: ConnectionStatus },
-    SessionStatus { session_id: String, status: String },
-    TextDelta { session_id: String, delta: String },
-    AssistantMessage { session_id: String, content: String },
-    UnsupportedPermission { session_id: String, message: String },
-    Error { message: String },
+    ConnectionStatus {
+        status: ConnectionStatus,
+    },
+    SessionStatus {
+        session_id: String,
+        status: String,
+    },
+    TextDelta {
+        session_id: String,
+        delta: String,
+    },
+    AssistantMessage {
+        session_id: String,
+        content: String,
+    },
+    PermissionRequested {
+        permission: PermissionRequest,
+    },
+    PermissionResolved {
+        session_id: String,
+        permission_id: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct PromptOutcome {
     pub content: String,
-    pub blocked_by_permission: bool,
 }
 
 #[derive(Debug)]
 pub struct CodexRuntime {
     config: Config,
+    storage: Storage,
     status: Arc<RwLock<ConnectionStatus>>,
     peer: RwLock<Option<Arc<JsonRpcPeer>>>,
     session_map: Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
-    unsupported_permissions: Arc<Mutex<HashSet<String>>>,
     events_tx: broadcast::Sender<RealtimeEvent>,
 }
 
 impl CodexRuntime {
-    pub async fn start(config: Config, events_tx: broadcast::Sender<RealtimeEvent>) -> Arc<Self> {
+    pub async fn start(
+        config: Config,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+    ) -> Arc<Self> {
         let runtime = Arc::new(Self {
             config,
+            storage,
             status: Arc::new(RwLock::new(ConnectionStatus::starting())),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
-            unsupported_permissions: Arc::new(Mutex::new(HashSet::new())),
             events_tx,
         });
 
@@ -110,17 +136,18 @@ impl CodexRuntime {
     #[cfg(test)]
     pub fn failed_for_tests(
         config: Config,
+        storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config,
+            storage,
             status: Arc::new(RwLock::new(ConnectionStatus::failed(
                 "Codex runtime disabled for test",
             ))),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
-            unsupported_permissions: Arc::new(Mutex::new(HashSet::new())),
             events_tx,
         })
     }
@@ -187,10 +214,6 @@ impl CodexRuntime {
             .lock()
             .await
             .insert(acp_session_id.clone(), String::new());
-        self.unsupported_permissions
-            .lock()
-            .await
-            .remove(&acp_session_id);
 
         peer.request(
             "session/prompt",
@@ -212,16 +235,76 @@ impl CodexRuntime {
             .await
             .remove(&acp_session_id)
             .unwrap_or_default();
-        let blocked_by_permission = self
-            .unsupported_permissions
-            .lock()
-            .await
-            .remove(&acp_session_id);
 
-        Ok(PromptOutcome {
-            content,
-            blocked_by_permission,
-        })
+        Ok(PromptOutcome { content })
+    }
+
+    pub async fn resolve_permission(
+        &self,
+        permission_id: &str,
+        option_id: &str,
+    ) -> anyhow::Result<PermissionRequest> {
+        let permission = self.storage.get_permission_request(permission_id).await?;
+        anyhow::ensure!(
+            permission.status == permission_status::PENDING,
+            "permission request is not pending"
+        );
+        let option = permission
+            .options
+            .iter()
+            .find(|candidate| candidate.option_id == option_id)
+            .ok_or_else(|| anyhow!("permission option was not found"))?;
+        anyhow::ensure!(
+            option.kind == permission_option_kind::ALLOW_ONCE
+                || option.kind == permission_option_kind::REJECT_ONCE,
+            "this permission option is not available in this version"
+        );
+
+        let peer = self.ensure_ready().await?;
+        peer.respond_to_permission(permission_id, selected_permission_response(option_id))
+            .await?;
+        self.storage
+            .resolve_permission_request(permission_id, option_id)
+            .await?;
+        self.storage
+            .update_session_status(&permission.session_id, status::RUNNING)
+            .await?;
+        let resolved = self.storage.get_permission_request(permission_id).await?;
+        let _ = self.events_tx.send(RealtimeEvent::PermissionResolved {
+            session_id: permission.session_id.clone(),
+            permission_id: permission_id.to_string(),
+        });
+        let _ = self.events_tx.send(RealtimeEvent::SessionStatus {
+            session_id: permission.session_id,
+            status: status::RUNNING.to_string(),
+        });
+        Ok(resolved)
+    }
+
+    pub async fn cancel_pending_permission_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(permission) = self
+            .storage
+            .pending_permission_for_session(session_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(peer) = self.peer.read().await.clone() {
+            peer.respond_to_permission(&permission.id, cancelled_permission_response())
+                .await?;
+        }
+        self.storage
+            .cancel_permission_request(&permission.id)
+            .await?;
+        let _ = self.events_tx.send(RealtimeEvent::PermissionResolved {
+            session_id: session_id.to_string(),
+            permission_id: permission.id.clone(),
+        });
+        Ok(Some(permission.id))
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
@@ -243,9 +326,9 @@ impl CodexRuntime {
         let peer = JsonRpcPeer::spawn(
             child,
             self.events_tx.clone(),
+            self.storage.clone(),
             self.session_map.clone(),
             self.assistant_buffers.clone(),
-            self.unsupported_permissions.clone(),
         )
         .await?;
 
@@ -300,6 +383,7 @@ pub struct JsonRpcPeer {
     next_id: AtomicI64,
     writer_tx: mpsc::Sender<Value>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<PendingResult>>>>,
+    permission_responders: Arc<Mutex<HashMap<String, Value>>>,
     _child: Mutex<Child>,
 }
 
@@ -307,9 +391,9 @@ impl JsonRpcPeer {
     async fn spawn(
         mut child: Child,
         events_tx: broadcast::Sender<RealtimeEvent>,
+        storage: Storage,
         session_map: Arc<RwLock<HashMap<String, String>>>,
         assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
-        unsupported_permissions: Arc<Mutex<HashSet<String>>>,
     ) -> anyhow::Result<Arc<Self>> {
         let stdin = child
             .stdin
@@ -323,6 +407,7 @@ impl JsonRpcPeer {
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<Value>(256);
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let permission_responders = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(async move {
             let mut stdin = stdin;
@@ -346,6 +431,7 @@ impl JsonRpcPeer {
 
         let reader_pending = pending.clone();
         let reader_writer = writer_tx.clone();
+        let reader_permission_responders = permission_responders.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             let disconnect_message;
@@ -362,9 +448,10 @@ impl JsonRpcPeer {
                                     &reader_pending,
                                     &reader_writer,
                                     &events_tx,
+                                    &storage,
                                     &session_map,
                                     &assistant_buffers,
-                                    &unsupported_permissions,
+                                    &reader_permission_responders,
                                 )
                                 .await;
                             }
@@ -400,6 +487,7 @@ impl JsonRpcPeer {
             next_id: AtomicI64::new(1),
             writer_tx,
             pending,
+            permission_responders,
             _child: Mutex::new(child),
         }))
     }
@@ -429,6 +517,32 @@ impl JsonRpcPeer {
             Err(_) => Err(anyhow!("codex-acp response channel closed")),
         }
     }
+
+    async fn respond_to_permission(
+        &self,
+        permission_id: &str,
+        result: Value,
+    ) -> anyhow::Result<()> {
+        let Some(request_id) = self
+            .permission_responders
+            .lock()
+            .await
+            .remove(permission_id)
+        else {
+            return Err(anyhow!("permission request is no longer active"));
+        };
+
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result
+        });
+        self.writer_tx
+            .send(response)
+            .await
+            .map_err(|_| anyhow!("codex-acp stdin writer is closed"))?;
+        Ok(())
+    }
 }
 
 async fn fail_pending_requests(
@@ -449,9 +563,10 @@ async fn handle_incoming_message(
     pending: &Arc<Mutex<HashMap<String, oneshot::Sender<PendingResult>>>>,
     writer_tx: &mpsc::Sender<Value>,
     events_tx: &broadcast::Sender<RealtimeEvent>,
+    storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
-    unsupported_permissions: &Arc<Mutex<HashSet<String>>>,
+    permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
     if message.get("id").is_some()
         && (message.get("result").is_some() || message.get("error").is_some())
@@ -474,8 +589,9 @@ async fn handle_incoming_message(
                 message,
                 writer_tx,
                 events_tx,
+                storage,
                 session_map,
-                unsupported_permissions,
+                permission_responders,
             )
             .await;
         }
@@ -578,8 +694,9 @@ async fn handle_permission_request(
     message: Value,
     writer_tx: &mpsc::Sender<Value>,
     events_tx: &broadcast::Sender<RealtimeEvent>,
+    storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
-    unsupported_permissions: &Arc<Mutex<HashSet<String>>>,
+    permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
     let request_id = message.get("id").cloned().unwrap_or(Value::Null);
     let acp_session_id = message["params"]
@@ -588,28 +705,71 @@ async fn handle_permission_request(
         .unwrap_or_default()
         .to_string();
 
-    if !acp_session_id.is_empty() {
-        unsupported_permissions
-            .lock()
-            .await
-            .insert(acp_session_id.clone());
+    let Some(local_session_id) = session_map.read().await.get(&acp_session_id).cloned() else {
+        tracing::warn!(?message, "permission request for unknown ACP session");
+        send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
+        return;
+    };
 
-        if let Some(local_session_id) = session_map.read().await.get(&acp_session_id).cloned() {
-            let _ = events_tx.send(RealtimeEvent::UnsupportedPermission {
-                session_id: local_session_id,
-                message: "Codex requested permission, but approval handling is not available in this version.".to_string(),
+    match storage
+        .pending_permission_for_session(&local_session_id)
+        .await
+    {
+        Ok(Some(_)) => {
+            tracing::error!(local_session_id, "duplicate pending permission request");
+            send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
+            let _ = events_tx.send(RealtimeEvent::Error {
+                message: "Codex requested another permission while one is already pending."
+                    .to_string(),
             });
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::error!(?error, "failed to inspect pending permission state");
+            send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
+            return;
         }
     }
 
+    let params = &message["params"];
+    let tool_call = params.get("toolCall").cloned().unwrap_or(Value::Null);
+    let options = params.get("options").cloned().unwrap_or_else(|| json!([]));
+    let input = NewPermissionRequest {
+        session_id: local_session_id.clone(),
+        acp_session_id,
+        acp_request_id: request_id.to_string(),
+        tool_call_id: tool_call_id(&tool_call),
+        title: tool_call_title(&tool_call),
+        kind: tool_call_kind(&tool_call),
+        tool_call_json: tool_call,
+        options_json: options,
+    };
+
+    match storage.create_permission_request(input).await {
+        Ok(permission) => {
+            permission_responders
+                .lock()
+                .await
+                .insert(permission.id.clone(), request_id);
+            let _ = events_tx.send(RealtimeEvent::SessionStatus {
+                session_id: local_session_id,
+                status: status::WAITING_APPROVAL.to_string(),
+            });
+            let _ = events_tx.send(RealtimeEvent::PermissionRequested { permission });
+        }
+        Err(error) => {
+            tracing::error!(?error, "failed to persist permission request");
+            send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
+        }
+    }
+}
+
+async fn send_permission_result(id: Value, result: Value, writer_tx: &mpsc::Sender<Value>) {
     let response = json!({
         "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "outcome": {
-                "outcome": "cancelled"
-            }
-        }
+        "id": id,
+        "result": result
     });
     let _ = writer_tx.send(response).await;
 }
@@ -640,6 +800,49 @@ fn text_from_content(content: Option<&Value>) -> Option<String> {
             .map(ToString::to_string),
         _ => None,
     }
+}
+
+fn selected_permission_response(option_id: &str) -> Value {
+    json!({
+        "outcome": {
+            "outcome": "selected",
+            "optionId": option_id
+        }
+    })
+}
+
+fn cancelled_permission_response() -> Value {
+    json!({
+        "outcome": {
+            "outcome": "cancelled"
+        }
+    })
+}
+
+fn tool_call_id(tool_call: &Value) -> Option<String> {
+    tool_call
+        .get("toolCallId")
+        .or_else(|| tool_call.get("id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn tool_call_title(tool_call: &Value) -> String {
+    tool_call
+        .get("title")
+        .or_else(|| tool_call.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("Permission requested")
+        .to_string()
+}
+
+fn tool_call_kind(tool_call: &Value) -> String {
+    tool_call
+        .get("kind")
+        .or_else(|| tool_call.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -727,6 +930,41 @@ for line in sys.stdin:
                     }
                 }
             })
+        elif mode == "permission":
+            send({
+                "jsonrpc": "2.0",
+                "id": "permission-1",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "fake-session",
+                    "toolCall": {
+                        "toolCallId": "tool-1",
+                        "title": "Run fake command",
+                        "kind": "execute",
+                        "content": [{"type": "text", "text": "echo ok"}]
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+                        {"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"}
+                    ]
+                }
+            })
+            permission_response = json.loads(sys.stdin.readline())
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "Permission resolved with " + permission_response.get("result", {}).get("outcome", {}).get("optionId", "cancelled")
+                        }
+                    }
+                }
+            })
         elif mode == "nontext":
             send({
                 "jsonrpc": "2.0",
@@ -761,10 +999,11 @@ for line in sys.stdin:
         let mut config = base_test_config();
         config.codex_acp_command = "/bin/false".to_string();
         let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
 
         let runtime = timeout(
             Duration::from_secs(2),
-            CodexRuntime::start(config, events_tx.clone()),
+            CodexRuntime::start(config, storage, events_tx.clone()),
         )
         .await
         .unwrap();
@@ -790,7 +1029,12 @@ for line in sys.stdin:
         let dir = tempfile::tempdir().unwrap();
         let script = write_fake_acp(&dir);
         let (events_tx, _) = broadcast::channel(16);
-        let runtime = CodexRuntime::start(config_for_fake(script, "text"), events_tx.clone()).await;
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "text"),
+            test_storage().await,
+            events_tx.clone(),
+        )
+        .await;
 
         assert_eq!(runtime.status().await.state, "ready");
 
@@ -809,7 +1053,6 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "Hello from fake ACP");
-        assert!(!outcome.blocked_by_permission);
 
         let event = timeout(Duration::from_secs(1), async move {
             loop {
@@ -833,8 +1076,12 @@ for line in sys.stdin:
         let dir = tempfile::tempdir().unwrap();
         let script = write_fake_acp(&dir);
         let (events_tx, _) = broadcast::channel(16);
-        let runtime =
-            CodexRuntime::start(config_for_fake(script, "nontext"), events_tx.clone()).await;
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "nontext"),
+            test_storage().await,
+            events_tx.clone(),
+        )
+        .await;
 
         assert_eq!(runtime.status().await.state, "ready");
 
@@ -852,6 +1099,79 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "");
-        assert!(!outcome.blocked_by_permission);
+    }
+
+    #[tokio::test]
+    async fn fake_acp_permission_request_waits_for_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "permission"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        let acp_session_id = runtime
+            .new_session(dir.path().to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, acp_session_id.clone())
+            .await
+            .unwrap();
+        runtime
+            .register_session(acp_session_id.clone(), session.id.clone())
+            .await;
+
+        let mut rx = events_tx.subscribe();
+        let prompt_runtime = runtime.clone();
+        let prompt_handle = tokio::spawn(async move {
+            prompt_runtime
+                .prompt(acp_session_id, "Needs approval".to_string())
+                .await
+                .unwrap()
+        });
+
+        let permission = timeout(Duration::from_secs(1), async move {
+            loop {
+                match rx.recv().await.unwrap() {
+                    RealtimeEvent::PermissionRequested { permission } => break permission,
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(permission.session_id, session.id);
+        assert_eq!(permission.options.len(), 3);
+        assert_eq!(
+            storage.get_session(&session.id).await.unwrap().status,
+            status::WAITING_APPROVAL
+        );
+
+        runtime
+            .resolve_permission(&permission.id, "allow-once")
+            .await
+            .unwrap();
+        let outcome = timeout(Duration::from_secs(1), prompt_handle)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(outcome.content, "Permission resolved with allow-once");
+    }
+
+    async fn test_storage() -> Storage {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        storage
     }
 }

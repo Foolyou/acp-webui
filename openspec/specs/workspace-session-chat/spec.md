@@ -59,6 +59,25 @@ The system SHALL allow the user to submit a text prompt to an idle session.
 - **THEN** the system SHALL prevent prompt queueing
 - **AND** the browser SHALL indicate that the current turn must finish before another prompt can be sent
 
+#### Scenario: Prompt is submitted while the session is waiting for approval
+
+- **WHEN** the user attempts to submit another prompt while a session turn is waiting for approval
+- **THEN** the system SHALL prevent prompt queueing
+- **AND** the browser SHALL indicate that the pending approval must be resolved before another prompt can be sent
+
+### Requirement: Session detail includes pending approval state
+The system SHALL include pending permission request state when returning session detail.
+
+#### Scenario: Session detail is loaded while waiting for approval
+- **WHEN** the browser loads session detail for a session with a pending permission request
+- **THEN** the backend SHALL include the pending permission request in the session detail response
+- **AND** the browser SHALL render the session status as `waiting_approval`
+
+#### Scenario: Session detail is loaded after approval expired
+- **WHEN** the browser loads session detail for a session whose pending approval expired after backend restart
+- **THEN** the backend SHALL return the session with failed status
+- **AND** the browser SHALL show a readable failure message
+
 ### Requirement: Browser displays Codex text responses
 
 The system SHALL display text responses from Codex in the session timeline.
@@ -99,4 +118,3 @@ The system SHALL provide a realtime channel for session text updates.
 - **WHEN** the browser reconnects after a temporary disconnect
 - **THEN** it SHALL be able to reload the current persisted session history
 - **AND** it SHALL resume receiving subsequent live updates
-

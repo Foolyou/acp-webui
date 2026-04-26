@@ -42,6 +42,56 @@ for line in sys.stdin:
         )
     elif method == "session/prompt":
         prompt_session_id = message.get("params", {}).get("sessionId", session_id)
+        prompt_text = " ".join(
+            part.get("text", "")
+            for part in message.get("params", {}).get("prompt", [])
+            if isinstance(part, dict)
+        )
+        if "approval" in prompt_text.lower():
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "permission-e2e",
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "toolCall": {
+                            "toolCallId": "tool-e2e",
+                            "title": "Run approval smoke command",
+                            "kind": "execute",
+                            "content": [
+                                {"type": "text", "text": "echo approval smoke"}
+                            ],
+                        },
+                        "options": [
+                            {
+                                "optionId": "allow-once",
+                                "name": "Allow once",
+                                "kind": "allow_once",
+                            },
+                            {
+                                "optionId": "reject-once",
+                                "name": "Reject",
+                                "kind": "reject_once",
+                            },
+                            {
+                                "optionId": "allow-always",
+                                "name": "Allow always",
+                                "kind": "allow_always",
+                            },
+                        ],
+                    },
+                }
+            )
+            permission_response = json.loads(sys.stdin.readline())
+            option_id = (
+                permission_response.get("result", {})
+                .get("outcome", {})
+                .get("optionId", "cancelled")
+            )
+            text = f"Approval result: {option_id}"
+        else:
+            text = "ACP Web UI smoke test OK"
         send(
             {
                 "jsonrpc": "2.0",
@@ -52,7 +102,7 @@ for line in sys.stdin:
                         "sessionUpdate": "agent_message_chunk",
                         "content": {
                             "type": "text",
-                            "text": "ACP Web UI smoke test OK",
+                            "text": text,
                         },
                     },
                 },

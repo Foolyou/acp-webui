@@ -10,10 +10,14 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Local workspaces
 - Session creation
 - Text prompts and text replies
+- Permission approval requests with allow-once and reject-once resolution
+- Inbox view for sessions waiting on approval
 - SQLite persistence
 - WebSocket live updates
 
-Not included yet: approvals, diff/review, terminal output, Markdown preview, yolo mode, multi-agent selection.
+Not included yet: diff/review, terminal output, Markdown preview, yolo mode, remembered allow-always/reject-always policies, multi-agent selection.
+
+`allow_always` and `reject_always` ACP options are shown in the browser when an agent provides them, but they are disabled until a deliberate local policy model exists.
 
 ## Requirements
 
@@ -85,13 +89,17 @@ npm run e2e
 ```
 
 The E2E test starts `target/debug/acp-webui` on `127.0.0.1:7638`, creates a workspace and session, sends a prompt through the browser, receives a fake assistant text reply, refreshes the page, and verifies the persisted timeline is restored.
+It also exercises a fake permission request, verifies the mobile approval sheet, confirms always options are disabled, and approves the request with an allow-once option.
 
 ## Useful Endpoints
 
 - `GET /api/app-state`
+- `GET /api/inbox`
 - `GET /api/workspaces`
 - `POST /api/workspaces`
 - `POST /api/workspaces/:workspace_id/sessions`
 - `GET /api/sessions/:session_id`
 - `POST /api/sessions/:session_id/prompt`
+- `POST /api/sessions/:session_id/cancel`
+- `POST /api/permission-requests/:permission_id/resolve`
 - `GET /api/ws`

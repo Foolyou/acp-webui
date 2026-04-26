@@ -25,9 +25,15 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse_args();
     let storage = storage::Storage::connect(&config.database_url).await?;
     storage.migrate().await?;
+    let expired = storage
+        .expire_pending_permission_requests_on_startup()
+        .await?;
+    if expired > 0 {
+        tracing::warn!(expired, "expired stale pending permission requests");
+    }
 
     let (events_tx, _) = tokio::sync::broadcast::channel(256);
-    let codex = acp::CodexRuntime::start(config.clone(), events_tx.clone()).await;
+    let codex = acp::CodexRuntime::start(config.clone(), storage.clone(), events_tx.clone()).await;
 
     let state = AppState {
         storage,

@@ -32,10 +32,40 @@ type ChatMessage = {
   createdAt: string;
 };
 
+type PermissionOption = {
+  optionId: string;
+  name: string;
+  kind: string;
+};
+
+type PermissionRequest = {
+  id: string;
+  sessionId: string;
+  acpSessionId: string;
+  toolCallId?: string | null;
+  title: string;
+  kind: string;
+  status: string;
+  selectedOptionId?: string | null;
+  toolCall: unknown;
+  options: PermissionOption[];
+  failureMessage?: string | null;
+  createdAt: string;
+  resolvedAt?: string | null;
+};
+
 type SessionDetail = {
   session: Session;
   workspace: Workspace;
   messages: ChatMessage[];
+  pendingPermission?: PermissionRequest | null;
+  failureMessage?: string | null;
+};
+
+type InboxItem = {
+  session: Session;
+  workspace: Workspace;
+  permission: PermissionRequest;
 };
 
 type RealtimeEvent =
@@ -43,17 +73,21 @@ type RealtimeEvent =
   | { type: "session_status"; sessionId: string; status: string }
   | { type: "text_delta"; sessionId: string; delta: string }
   | { type: "assistant_message"; sessionId: string; content: string }
-  | { type: "unsupported_permission"; sessionId: string; message: string }
+  | { type: "permission_requested"; permission: PermissionRequest }
+  | { type: "permission_resolved"; sessionId: string; permissionId: string }
   | { type: "error"; message: string };
 
 type AppData = {
   codex: ConnectionStatus;
+  inbox: InboxItem[];
 };
 
 type State = {
   codex: ConnectionStatus;
   socketState: "connecting" | "connected" | "disconnected";
+  view: "inbox" | "session";
   workspaces: Workspace[];
+  inbox: InboxItem[];
   currentWorkspaceId: string | null;
   currentSession: SessionDetail | null;
   liveAssistant: string;
@@ -64,7 +98,9 @@ type State = {
 const state: State = {
   codex: { state: "starting", message: "Loading app state" },
   socketState: "connecting",
+  view: "inbox",
   workspaces: [],
+  inbox: [],
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),
   currentSession: null,
   liveAssistant: "",
@@ -87,9 +123,11 @@ async function init() {
   connectSocket();
   const [appState] = await Promise.all([api<AppData>("/api/app-state"), loadWorkspaces()]);
   state.codex = appState.codex;
+  state.inbox = appState.inbox;
   const sessionId = localStorage.getItem("currentSessionId");
   if (sessionId) {
     await loadSession(sessionId);
+    state.view = "session";
   }
   render();
 }
@@ -105,6 +143,9 @@ async function loadSession(sessionId: string) {
   state.currentSession = await api<SessionDetail>(`/api/sessions/${sessionId}`);
   state.currentWorkspaceId = state.currentSession.workspace.id;
   state.liveAssistant = "";
+  if (state.currentSession.pendingPermission) {
+    upsertInboxItemFromPermission(state.currentSession.pendingPermission);
+  }
   localStorage.setItem("currentWorkspaceId", state.currentWorkspaceId);
   localStorage.setItem("currentSessionId", sessionId);
 }
@@ -159,13 +200,17 @@ function applyRealtimeEvent(event: RealtimeEvent) {
         state.liveAssistant = "";
       }
       break;
-    case "unsupported_permission":
+    case "permission_requested":
+      upsertInboxItemFromPermission(event.permission);
+      if (state.currentSession?.session.id === event.permission.sessionId) {
+        state.currentSession.pendingPermission = event.permission;
+        state.currentSession.session.status = "waiting_approval";
+      }
+      break;
+    case "permission_resolved":
+      state.inbox = state.inbox.filter((item) => item.permission.id !== event.permissionId);
       if (state.currentSession?.session.id === event.sessionId) {
-        state.error = event.message;
-        void loadSession(event.sessionId).catch((error) => {
-          state.error = errorMessage(error);
-          render();
-        });
+        state.currentSession.pendingPermission = null;
       }
       break;
     case "error":
@@ -173,6 +218,22 @@ function applyRealtimeEvent(event: RealtimeEvent) {
       break;
   }
   render();
+}
+
+function upsertInboxItemFromPermission(permission: PermissionRequest) {
+  const existing = state.inbox.find((item) => item.session.id === permission.sessionId);
+  if (existing) {
+    existing.permission = permission;
+    existing.session.status = "waiting_approval";
+    return;
+  }
+  if (state.currentSession?.session.id === permission.sessionId) {
+    state.inbox.unshift({
+      session: state.currentSession.session,
+      workspace: state.currentSession.workspace,
+      permission
+    });
+  }
 }
 
 function upsertAssistantMessage(content: string) {
@@ -205,6 +266,48 @@ function render() {
 
       ${state.error ? `<div class="notice error">${escapeHtml(state.error)}</div>` : ""}
 
+      <nav class="bottom-nav" aria-label="Primary">
+        <button class="${state.view === "inbox" ? "active" : ""}" data-view="inbox">Inbox</button>
+        <button class="${state.view === "session" ? "active" : ""}" data-view="session">Session</button>
+      </nav>
+
+      ${state.view === "inbox" ? inboxPane() : sessionWorkspacePane()}
+      ${approvalSheet()}
+    </main>
+  `;
+
+  bindEvents();
+}
+
+function inboxPane() {
+  return `
+    <section class="section">
+      <div class="section-head">
+        <h2>Needs Approval</h2>
+        <span class="muted">${state.inbox.length}</span>
+      </div>
+      ${
+        state.inbox.length === 0
+          ? `<p class="empty">No approvals waiting.</p>`
+          : `<div class="inbox-list">${state.inbox.map(renderInboxItem).join("")}</div>`
+      }
+    </section>
+  `;
+}
+
+function renderInboxItem(item: InboxItem) {
+  return `
+    <button class="inbox-item" data-session="${escapeHtml(item.session.id)}">
+      <span class="inbox-title">${escapeHtml(item.permission.title)}</span>
+      <span>${escapeHtml(item.workspace.name)} · ${escapeHtml(item.session.agentName)} · ${escapeHtml(item.session.status)}</span>
+      <small>${escapeHtml(item.permission.kind)}</small>
+    </button>
+  `;
+}
+
+function sessionWorkspacePane() {
+  return `
+
       <section class="section">
         <div class="section-head">
           <h2>Workspace</h2>
@@ -220,10 +323,7 @@ function render() {
         </div>
         ${sessionPane()}
       </section>
-    </main>
   `;
-
-  bindEvents();
 }
 
 function workspaceForm() {
@@ -271,7 +371,8 @@ function sessionPane() {
     `;
   }
 
-  const running = state.currentSession.session.status === "running";
+  const waitingApproval = state.currentSession.session.status === "waiting_approval";
+  const running = state.currentSession.session.status === "running" || waitingApproval;
   const messages = [...state.currentSession.messages];
   const live = state.liveAssistant
     ? `
@@ -284,13 +385,55 @@ function sessionPane() {
 
   return `
     <div class="timeline" id="timeline">
+      ${state.currentSession.failureMessage ? `<div class="notice error">${escapeHtml(state.currentSession.failureMessage)}</div>` : ""}
+      ${waitingApproval ? `<div class="notice approval">Waiting for approval: ${escapeHtml(state.currentSession.pendingPermission?.title ?? "Permission requested")}</div>` : ""}
       ${messages.map(renderMessage).join("")}
       ${live}
     </div>
     <form id="prompt-form" class="composer">
-      <textarea id="prompt-input" placeholder="Ask Codex..." rows="3" ${running ? "disabled" : ""}></textarea>
+      <textarea id="prompt-input" placeholder="${waitingApproval ? "Resolve approval before sending another prompt" : "Ask Codex..."}" rows="3" ${running ? "disabled" : ""}></textarea>
       <button type="submit" ${running || state.busy ? "disabled" : ""}>Send</button>
     </form>
+  `;
+}
+
+function approvalSheet() {
+  const permission = state.currentSession?.pendingPermission;
+  if (!permission || state.currentSession?.session.status !== "waiting_approval") {
+    return "";
+  }
+
+  return `
+    <div class="sheet-backdrop">
+      <section class="approval-sheet" aria-label="Approval request">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">${escapeHtml(permission.kind)}</p>
+            <h2>${escapeHtml(permission.title)}</h2>
+          </div>
+          <button id="cancel-approval" class="secondary" ${state.busy ? "disabled" : ""}>Cancel</button>
+        </div>
+        <div class="approval-context">
+          <span>${escapeHtml(state.currentSession.workspace.name)}</span>
+          <span>${escapeHtml(state.currentSession.session.agentName)}</span>
+        </div>
+        <pre class="tool-summary">${escapeHtml(toolSummary(permission.toolCall))}</pre>
+        <div class="approval-actions">
+          ${permission.options.map(renderPermissionOption).join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderPermissionOption(option: PermissionOption) {
+  const disabled = option.kind === "allow_always" || option.kind === "reject_always" || state.busy;
+  const copy = option.kind === "allow_always" || option.kind === "reject_always" ? "Not available yet" : "";
+  return `
+    <button class="approval-option ${escapeHtml(option.kind)}" data-permission-option="${escapeHtml(option.optionId)}" ${disabled ? "disabled" : ""}>
+      <span>${escapeHtml(option.name)}</span>
+      ${copy ? `<small>${copy}</small>` : ""}
+    </button>
   `;
 }
 
@@ -313,6 +456,29 @@ function statusPill(stateText: string, detail: string) {
 }
 
 function bindEvents() {
+  document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const view = button.dataset.view;
+      if (view === "inbox" || view === "session") {
+        state.view = view;
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".inbox-item").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const sessionId = button.dataset.session;
+      if (!sessionId) {
+        return;
+      }
+      await withBusy(async () => {
+        await loadSession(sessionId);
+        state.view = "session";
+      });
+    });
+  });
+
   document.querySelector<HTMLFormElement>("#workspace-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const input = document.querySelector<HTMLInputElement>("#workspace-path");
@@ -331,6 +497,7 @@ function bindEvents() {
       state.workspaces.unshift(workspace);
       state.currentWorkspaceId = workspace.id;
       state.currentSession = null;
+      state.view = "session";
       localStorage.setItem("currentWorkspaceId", workspace.id);
       localStorage.removeItem("currentSessionId");
     });
@@ -346,6 +513,7 @@ function bindEvents() {
         localStorage.setItem("currentWorkspaceId", workspaceId);
       }
       localStorage.removeItem("currentSessionId");
+      state.view = "session";
       render();
     });
   });
@@ -359,6 +527,7 @@ function bindEvents() {
       state.currentSession = await api<SessionDetail>(`/api/workspaces/${workspace.id}/sessions`, {
         method: "POST"
       });
+      state.view = "session";
       localStorage.setItem("currentSessionId", state.currentSession.session.id);
     });
   });
@@ -383,6 +552,38 @@ function bindEvents() {
       if (input) {
         input.value = "";
       }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-permission-option]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const optionId = button.dataset.permissionOption;
+      const permission = state.currentSession?.pendingPermission;
+      if (!optionId || !permission) {
+        return;
+      }
+      await withBusy(async () => {
+        await api<PermissionRequest>(`/api/permission-requests/${permission.id}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ optionId })
+        });
+        state.currentSession!.pendingPermission = null;
+        state.currentSession!.session.status = "running";
+        state.inbox = state.inbox.filter((item) => item.permission.id !== permission.id);
+      });
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("#cancel-approval")?.addEventListener("click", async () => {
+    const sessionId = state.currentSession?.session.id;
+    if (!sessionId) {
+      return;
+    }
+    await withBusy(async () => {
+      state.currentSession = await api<SessionDetail>(`/api/sessions/${sessionId}/cancel`, {
+        method: "POST"
+      });
+      state.inbox = state.inbox.filter((item) => item.session.id !== sessionId);
     });
   });
 }
@@ -437,4 +638,28 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function toolSummary(toolCall: unknown) {
+  if (!toolCall || typeof toolCall !== "object") {
+    return "No additional details.";
+  }
+  const value = toolCall as Record<string, unknown>;
+  const content = value.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (!part || typeof part !== "object") {
+          return "";
+        }
+        const partValue = part as Record<string, unknown>;
+        return typeof partValue.text === "string" ? partValue.text : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (text) {
+      return text;
+    }
+  }
+  return JSON.stringify(toolCall, null, 2);
 }

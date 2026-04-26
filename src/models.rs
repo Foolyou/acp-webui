@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::FromRow;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -39,6 +40,67 @@ pub struct SessionDetail {
     pub session: Session,
     pub workspace: Workspace,
     pub messages: Vec<Message>,
+    pub pending_permission: Option<PermissionRequest>,
+    pub failure_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequestRow {
+    pub id: String,
+    pub session_id: String,
+    pub acp_session_id: String,
+    pub acp_request_id: String,
+    pub tool_call_id: Option<String>,
+    pub title: String,
+    pub kind: String,
+    pub status: String,
+    pub selected_option_id: Option<String>,
+    pub tool_call_json: String,
+    pub options_json: String,
+    pub failure_message: Option<String>,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    pub id: String,
+    pub session_id: String,
+    pub acp_session_id: String,
+    pub tool_call_id: Option<String>,
+    pub title: String,
+    pub kind: String,
+    pub status: String,
+    pub selected_option_id: Option<String>,
+    pub tool_call: Value,
+    pub options: Vec<PermissionOption>,
+    pub failure_message: Option<String>,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePermissionRequest {
+    pub option_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxItem {
+    pub session: Session,
+    pub workspace: Workspace,
+    pub permission: PermissionRequest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +119,7 @@ pub struct PromptRequest {
 pub mod status {
     pub const IDLE: &str = "idle";
     pub const RUNNING: &str = "running";
-    pub const BLOCKED: &str = "blocked";
+    pub const WAITING_APPROVAL: &str = "waiting_approval";
     pub const FAILED: &str = "failed";
 }
 
@@ -65,4 +127,16 @@ pub mod role {
     pub const USER: &str = "user";
     pub const ASSISTANT: &str = "assistant";
     pub const SYSTEM: &str = "system";
+}
+
+pub mod permission_status {
+    pub const PENDING: &str = "pending";
+    pub const SELECTED: &str = "selected";
+    pub const CANCELLED: &str = "cancelled";
+    pub const EXPIRED: &str = "expired";
+}
+
+pub mod permission_option_kind {
+    pub const ALLOW_ONCE: &str = "allow_once";
+    pub const REJECT_ONCE: &str = "reject_once";
 }
