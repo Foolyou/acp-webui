@@ -1,0 +1,7 @@
+/.data/
+/target/
+/frontend/dist/
+/frontend/node_modules/
+/frontend/test-results/
+*.log
+.claude/settings.local.json
