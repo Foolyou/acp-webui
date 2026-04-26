@@ -478,8 +478,10 @@ function WorkbenchShell() {
 
       <section className="workbench">
         <header className="mobile-topbar">
-          <Button className="icon-button" onPress={() => setMobileNavOpen(true)}>
-            Menu
+          <Button aria-label="Menu" className="icon-button menu-trigger" onPress={() => setMobileNavOpen(true)}>
+            <span aria-hidden="true" />
+            <span aria-hidden="true" />
+            <span aria-hidden="true" />
           </Button>
           <div>
             <p className="eyebrow">ACP Web UI</p>
