@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::process::Command;
 use tokio::sync::broadcast;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
     acp::{CodexRuntime, ConnectionStatus, RealtimeEvent},
@@ -80,8 +80,8 @@ pub fn api_router() -> Router<AppState> {
         .route("/api/ws", get(websocket))
 }
 
-pub fn frontend_service(frontend_dist: &PathBuf) -> ServeDir {
-    ServeDir::new(frontend_dist)
+pub fn frontend_service(frontend_dist: &PathBuf) -> ServeDir<ServeFile> {
+    ServeDir::new(frontend_dist).fallback(ServeFile::new(frontend_dist.join("index.html")))
 }
 
 async fn app_state(State(state): State<AppState>) -> AppResult<Json<AppStateResponse>> {

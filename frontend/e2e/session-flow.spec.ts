@@ -56,17 +56,22 @@ test.afterAll(async () => {
 test("creates a workspace and session, sends a prompt, and restores after refresh", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByText("ready").first()).toBeVisible();
-  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await page.getByRole("button", { name: "Menu" }).click();
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
+
   await page.getByPlaceholder("/home/user/project").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("button", { name: /acp-webui/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
 
-  await page.getByRole("button", { name: "New Codex Session" }).click();
+  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.getByText("Starting Codex...")).toBeVisible();
   await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
 
   await page.getByPlaceholder("Ask Codex...").fill("Reply with the smoke phrase.");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.keyboard.press("Control+Enter");
 
   await expect(page.getByText("Reply with the smoke phrase.")).toBeVisible();
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
@@ -75,17 +80,35 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByText("Reply with the smoke phrase.")).toBeVisible();
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
 
-  await page.getByRole("button", { name: "Sessions" }).click();
-  await expect(page.getByRole("button", { name: /acp-webui.*codex.*idle/ })).toBeVisible();
+  const ids = sessionRouteIds(page);
+  await openMenuAndClick(page, /Sessions/);
+  await expect(page.getByRole("link", { name: /acp-webui.*codex.*idle/ })).toBeVisible();
+
+  const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
+  const detail = await detailResponse.json();
+  await page.route(`**/api/sessions/${ids.sessionId}`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        ...detail,
+        continuable: false,
+        viewOnlyReason: "This session history is available for review, but the live Codex runtime context is not available."
+      })
+    });
+  });
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await expect(page.locator(".notice.warning", { hasText: "This session history is available for review" })).toBeVisible();
+  await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
 });
 
 test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByText("ready").first()).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Codex Session" }).click();
+  await page.getByRole("button", { name: "New Session" }).click();
   await page.getByPlaceholder("Ask Codex...").fill("Trigger approval flow.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -93,42 +116,45 @@ test("approves a pending permission request and keeps always options disabled", 
   await expect(page.getByRole("button", { name: /Allow always/ })).toBeDisabled();
   await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
 
+  const workspaceId = sessionWorkspaceId(page);
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
   await page.reload();
-  await page.getByRole("button", { name: "Sessions" }).click();
-  await expect(page.getByRole("button", { name: /Approval: Run approval smoke command/ })).toBeVisible();
-  await page.getByRole("button", { name: /Approval: Run approval smoke command/ }).click();
+  await page.goto(`/workspaces/${workspaceId}/sessions`);
+  await expect(page.getByRole("link", { name: /Approval: Run approval smoke command/ })).toBeVisible();
+  await page.getByRole("link", { name: /Approval: Run approval smoke command/ }).click();
 
   await page.getByRole("button", { name: "Allow once" }).click();
   await expect(page.getByText("Approval result: allow-once")).toBeVisible();
-  await page.getByRole("button", { name: "Inbox" }).click();
+  await openMenuAndClick(page, /Inbox/);
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });
 
 test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByText("ready").first()).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review" })).toHaveCount(0);
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Codex Session" }).click();
+  await page.getByRole("button", { name: "New Session" }).click();
   await page.getByPlaceholder("Ask Codex...").fill("Trigger review artifact.");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
+  await expect(page.locator("details.tool-row")).toHaveCount(1);
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
-  await page.getByRole("button", { name: "Sessions" }).click();
-  await expect(page.getByRole("button", { name: /1 review items/ })).toBeVisible();
-  await page.getByRole("button", { name: /1 review items/ }).click();
+  await openMenuAndClick(page, /Sessions/);
+  await expect(page.getByRole("link", { name: /1 review items/ })).toBeVisible();
+  await page.getByRole("link", { name: /1 review items/ }).click();
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
   await page.getByRole("button", { name: /Inspect review evidence/ }).click();
-  await expect(page.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
-  await expect(page.getByText("git diff -- README.md")).toBeVisible();
+  const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
+  await expect(reviewDialog.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
+  await expect(reviewDialog.getByText("git diff -- README.md")).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.reload();
@@ -136,16 +162,32 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
 });
 
 async function ensureWorkspace(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: "Sessions" }).click();
-  await page.getByRole("button", { name: "New Session" }).click();
-  const existing = page.getByRole("button", { name: /acp-webui/ }).first();
+  await openMenuAndClick(page, /Workspaces/);
+  const existing = page.getByRole("link", { name: /acp-webui/ }).first();
   if (await existing.isVisible().catch(() => false)) {
     await existing.click();
     return;
   }
   await page.getByPlaceholder("/home/user/project").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("button", { name: /acp-webui/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
+}
+
+async function openMenuAndClick(page: import("@playwright/test").Page, name: RegExp) {
+  await page.getByRole("button", { name: "Menu" }).click();
+  await page.getByRole("link", { name }).click();
+}
+
+function sessionWorkspaceId(page: import("@playwright/test").Page) {
+  return sessionRouteIds(page).workspaceId;
+}
+
+function sessionRouteIds(page: import("@playwright/test").Page) {
+  const match = new URL(page.url()).pathname.match(/^\/workspaces\/([^/]+)\/sessions\/([^/]+)/);
+  if (!match) {
+    throw new Error(`Current page is not a session route: ${page.url()}`);
+  }
+  return { sessionId: match[2], workspaceId: match[1] };
 }
 
 async function waitForBackend() {

@@ -4,7 +4,8 @@ import type {
   PermissionRequest,
   RealtimeEvent,
   ReviewArtifactSummary,
-  SessionDetail
+  SessionDetail,
+  TimelineItem
 } from "./types";
 
 export type AppSnapshot = {
@@ -67,7 +68,7 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
       return applyReviewArtifact(state, event.artifact);
 
     case "timeline_item_upsert":
-      return state;
+      return applyTimelineItemUpsert(state, event.item);
 
     case "error":
       return { ...state, error: event.message };
@@ -136,10 +137,52 @@ function applyReviewArtifact(state: AppSnapshot, artifact: ReviewArtifactSummary
     currentSession: {
       ...state.currentSession,
       messages,
-      reviewArtifacts
+      reviewArtifacts,
+      timeline: upsertTimelineItem(
+        state.currentSession.timeline,
+        {
+          kind: "review_artifact",
+          id: artifact.id,
+          sessionId: artifact.sessionId,
+          timestamp: artifact.createdAt,
+          status: "idle",
+          toolCallId: artifact.toolCallId,
+          artifactKind: artifact.kind,
+          title: artifact.title,
+          summary: artifact.summary,
+          source: artifact.source
+        }
+      )
     },
     liveAssistant: ""
   };
+}
+
+function applyTimelineItemUpsert(state: AppSnapshot, item: TimelineItem): AppSnapshot {
+  if (state.currentSession?.session.id !== item.sessionId) {
+    return state;
+  }
+  return {
+    ...state,
+    currentSession: {
+      ...state.currentSession,
+      timeline: upsertTimelineItem(state.currentSession.timeline, item)
+    },
+    liveAssistant: item.kind === "message" && item.role === "assistant" ? "" : state.liveAssistant
+  };
+}
+
+function upsertTimelineItem(items: TimelineItem[], item: TimelineItem): TimelineItem[] {
+  const key = `${item.kind}-${item.id}`;
+  const existing = items.some((candidate) => `${candidate.kind}-${candidate.id}` === key);
+  const next = existing
+    ? items.map((candidate) => (`${candidate.kind}-${candidate.id}` === key ? item : candidate))
+    : [...items, item];
+  return next.sort((left, right) => Date.parse(timestamp(left)) - Date.parse(timestamp(right)));
+}
+
+function timestamp(item: TimelineItem) {
+  return item.timestamp;
 }
 
 function assistantMessage(sessionId: string, content: string): ChatMessage {

@@ -26,7 +26,9 @@
     "vite": "^8.0.10"
   },
   "dependencies": {
+    "@tanstack/react-router": "^1.168.24",
     "react": "^19.2.5",
+    "react-aria-components": "^1.17.0",
     "react-dom": "^19.2.5"
   }
 }

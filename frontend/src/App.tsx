@@ -1,5 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import {
+  Link,
+  Outlet,
+  RouterProvider,
+  createRootRouteWithContext,
+  createRoute,
+  createRouter,
+  useNavigate,
+  useRouterState
+} from "@tanstack/react-router";
+import { Button, Dialog, Heading, Modal, ModalOverlay } from "react-aria-components";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { api, errorMessage } from "./api";
 import { applyRealtimeEvent } from "./realtime";
 import type {
@@ -15,14 +26,14 @@ import type {
   SessionListItem,
   SessionListPermission,
   SocketState,
-  View,
+  TimelineItem,
   Workspace
 } from "./types";
 
 type UiState = {
   codex: ConnectionStatus;
   socketState: SocketState;
-  view: View;
+  initialized: boolean;
   workspaces: Workspace[];
   inbox: InboxItem[];
   sessions: SessionListItem[];
@@ -32,13 +43,34 @@ type UiState = {
   activeReview: ReviewArtifact | null;
   liveAssistant: string;
   busy: boolean;
+  creatingSessionWorkspaceId: string | null;
   error: string | null;
+};
+
+type AppActions = {
+  cancelApproval: () => Promise<void>;
+  createSession: (workspaceId: string) => Promise<void>;
+  createWorkspace: (path: string) => Promise<void>;
+  loadSession: (sessionId: string) => Promise<void>;
+  loadSessionList: (workspaceId?: string | null) => Promise<void>;
+  openDiffFallback: () => Promise<void>;
+  openReviewArtifact: (artifactId: string) => Promise<void>;
+  resolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
+  sendPrompt: (prompt: string) => Promise<void>;
+  setActiveReview: (artifact: ReviewArtifact | null) => void;
+  setCurrentWorkspace: (workspaceId: string | null) => void;
+};
+
+type AppRouterContext = {
+  actions: AppActions;
+  selectedWorkspace: Workspace | null;
+  state: UiState;
 };
 
 const initialState: UiState = {
   codex: { state: "starting", message: "Loading app state" },
   socketState: "connecting",
-  view: "inbox",
+  initialized: false,
   workspaces: [],
   inbox: [],
   sessions: [],
@@ -48,8 +80,94 @@ const initialState: UiState = {
   activeReview: null,
   liveAssistant: "",
   busy: false,
+  creatingSessionWorkspaceId: null,
   error: null
 };
+
+const rootRoute = createRootRouteWithContext<AppRouterContext>()({
+  component: WorkbenchShell
+});
+
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: IndexRoute
+});
+
+const inboxRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inbox",
+  component: InboxRoute
+});
+
+const workspacesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces",
+  component: WorkspacesRoute
+});
+
+const workspaceSessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/sessions",
+  component: WorkspaceSessionsRoute
+});
+
+const newSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/sessions/new",
+  component: NewSessionRoute
+});
+
+const sessionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/sessions/$sessionId",
+  component: SessionDetailRoute
+});
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  inboxRoute,
+  workspacesRoute,
+  workspaceSessionsRoute,
+  newSessionRoute,
+  sessionDetailRoute
+]);
+
+const noopAsync = async () => {};
+const placeholderContext: AppRouterContext = {
+  actions: {
+    cancelApproval: noopAsync,
+    createSession: noopAsync,
+    createWorkspace: noopAsync,
+    loadSession: noopAsync,
+    loadSessionList: noopAsync,
+    openDiffFallback: noopAsync,
+    openReviewArtifact: noopAsync,
+    resolvePermission: noopAsync,
+    sendPrompt: noopAsync,
+    setActiveReview: () => {},
+    setCurrentWorkspace: () => {}
+  },
+  selectedWorkspace: null,
+  state: initialState
+};
+
+const router = createRouter({ routeTree, context: placeholderContext });
+const AppDataContext = createContext<AppRouterContext | null>(null);
+
+function useAppContext() {
+  const context = useContext(AppDataContext);
+  if (!context) {
+    throw new Error("Missing AppDataContext provider");
+  }
+  return context;
+}
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}
 
 export function App() {
   const [state, setState] = useState<UiState>(initialState);
@@ -64,15 +182,12 @@ export function App() {
         if (cancelled) return;
 
         const storedWorkspaceId = localStorage.getItem("currentWorkspaceId");
-        const workspaceId = storedWorkspaceId ?? workspaces[0]?.id ?? null;
         const storedSessionId = localStorage.getItem("currentSessionId");
         let currentSession: SessionDetail | null = null;
-        let view: View = "sessions";
 
         if (storedSessionId) {
           try {
             currentSession = await api.session(storedSessionId);
-            view = "session";
           } catch {
             localStorage.removeItem("currentSessionId");
           }
@@ -85,13 +200,13 @@ export function App() {
           inbox: appState.inbox,
           sessions,
           workspaces,
-          currentWorkspaceId: currentSession?.workspace.id ?? workspaceId,
+          currentWorkspaceId: currentSession?.workspace.id ?? storedWorkspaceId ?? workspaces[0]?.id ?? null,
           currentSession,
-          view
+          initialized: true
         }));
       } catch (error) {
         if (!cancelled) {
-          setState((current) => ({ ...current, error: errorMessage(error) }));
+          setState((current) => ({ ...current, error: errorMessage(error), initialized: true }));
         }
       }
     }
@@ -172,19 +287,14 @@ export function App() {
     }
   }
 
-  async function loadSessionList() {
+  async function loadSessionList(workspaceId?: string | null) {
     setState((current) => ({ ...current, sessionsLoading: true, error: null }));
     try {
-      const sessions = await api.sessions();
+      const sessions = workspaceId ? await api.workspaceSessions(workspaceId) : await api.sessions();
       setState((current) => ({ ...current, sessions, sessionsLoading: false }));
     } catch (error) {
       setState((current) => ({ ...current, error: errorMessage(error), sessionsLoading: false }));
     }
-  }
-
-  function showSessions() {
-    setState((current) => ({ ...current, view: "sessions" }));
-    void loadSessionList();
   }
 
   async function loadSession(sessionId: string) {
@@ -195,20 +305,7 @@ export function App() {
       ...current,
       currentSession: detail,
       currentWorkspaceId: detail.workspace.id,
-      liveAssistant: "",
-      view: "session"
-    }));
-  }
-
-  function selectWorkspace(workspaceId: string) {
-    localStorage.setItem("currentWorkspaceId", workspaceId);
-    localStorage.removeItem("currentSessionId");
-    setState((current) => ({
-      ...current,
-      currentWorkspaceId: workspaceId,
-      currentSession: null,
-      liveAssistant: "",
-      view: "session"
+      liveAssistant: ""
     }));
   }
 
@@ -219,28 +316,41 @@ export function App() {
       localStorage.removeItem("currentSessionId");
       setState((current) => ({
         ...current,
-        workspaces: [workspace, ...current.workspaces],
+        workspaces: [workspace, ...current.workspaces.filter((item) => item.id !== workspace.id)],
         currentWorkspaceId: workspace.id,
-        currentSession: null,
-        view: "session"
+        currentSession: null
       }));
+      await router.navigate({ to: "/workspaces/$workspaceId/sessions", params: { workspaceId: workspace.id } });
     });
   }
 
-  async function createSession() {
-    if (!selectedWorkspace) return;
-    await runBusy(async () => {
-      const detail = await api.createSession(selectedWorkspace.id);
+  async function createSession(workspaceId: string) {
+    setState((current) => ({ ...current, creatingSessionWorkspaceId: workspaceId, error: null }));
+    await router.navigate({ to: "/workspaces/$workspaceId/sessions/new", params: { workspaceId } });
+    try {
+      const detail = await api.createSession(workspaceId);
+      localStorage.setItem("currentWorkspaceId", detail.workspace.id);
       localStorage.setItem("currentSessionId", detail.session.id);
       setState((current) => ({
         ...current,
         currentSession: detail,
         currentWorkspaceId: detail.workspace.id,
+        creatingSessionWorkspaceId: null,
         sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
-        liveAssistant: "",
-        view: "session"
+        liveAssistant: ""
       }));
-    });
+      await router.navigate({
+        to: "/workspaces/$workspaceId/sessions/$sessionId",
+        params: { workspaceId: detail.workspace.id, sessionId: detail.session.id },
+        replace: true
+      });
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        creatingSessionWorkspaceId: null,
+        error: errorMessage(error)
+      }));
+    }
   }
 
   async function sendPrompt(prompt: string) {
@@ -255,6 +365,7 @@ export function App() {
               currentSession: {
                 ...current.currentSession,
                 messages: [...current.currentSession.messages, response.message],
+                timeline: [...current.currentSession.timeline, messageToTimelineItem(response.message)],
                 session: { ...current.currentSession.session, status: "running" }
               },
               sessions: updateSessionListStatus(current.sessions, sessionId, "running"),
@@ -320,66 +431,268 @@ export function App() {
     });
   }
 
+  const context = useMemo<AppRouterContext>(
+    () => ({
+      actions: {
+        cancelApproval,
+        createSession,
+        createWorkspace,
+        loadSession,
+        loadSessionList,
+        openDiffFallback,
+        openReviewArtifact,
+        resolvePermission,
+        sendPrompt,
+        setActiveReview: (artifact) => setState((current) => ({ ...current, activeReview: artifact })),
+        setCurrentWorkspace: (workspaceId) => {
+          if (workspaceId) localStorage.setItem("currentWorkspaceId", workspaceId);
+          setState((current) => ({ ...current, currentWorkspaceId: workspaceId }));
+        }
+      },
+      selectedWorkspace,
+      state
+    }),
+    [selectedWorkspace, state]
+  );
+
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">ACP Web UI</p>
-          <h1>Codex Session</h1>
-        </div>
-        <div className="status-stack">
-          <StatusPill stateText={state.codex.state} detail={state.codex.message ?? "Codex"} />
-          <StatusPill stateText={state.socketState} detail="Realtime" />
-        </div>
-      </header>
+    <AppDataContext.Provider value={context}>
+      <RouterProvider context={placeholderContext} router={router} />
+    </AppDataContext.Provider>
+  );
+}
 
-      {state.error ? <div className="notice error">{state.error}</div> : null}
+function WorkbenchShell() {
+  const { actions, state, selectedWorkspace } = useAppContext();
+  const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const showSessionApproval = /\/sessions\/[^/]+$/.test(pathname);
 
-      <nav className="bottom-nav" aria-label="Primary">
-        <button className={state.view === "inbox" ? "active" : ""} onClick={() => setState((current) => ({ ...current, view: "inbox" }))}>
-          Inbox
-        </button>
-        <button className={state.view !== "inbox" ? "active" : ""} onClick={showSessions}>
-          Sessions
-        </button>
-      </nav>
+  return (
+    <main className="app-shell">
+      <aside className="sidebar" aria-label="Primary">
+        <BrandBlock />
+        <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
+        <StatusStack codex={state.codex} socketState={state.socketState} />
+      </aside>
 
-      {state.view === "inbox" ? (
-        <InboxPane inbox={state.inbox} onOpen={(sessionId) => runBusy(() => loadSession(sessionId))} />
-      ) : state.view === "sessions" ? (
-        <SessionsPane
-          loading={state.sessionsLoading}
-          onCreate={() => setState((current) => ({ ...current, view: "session" }))}
-          onOpen={(sessionId) => runBusy(() => loadSession(sessionId))}
-          sessions={state.sessions}
-        />
-      ) : (
-        <SessionWorkspacePane
-          busy={state.busy}
-          codex={state.codex}
-          currentSession={state.currentSession}
-          liveAssistant={state.liveAssistant}
-          selectedWorkspace={selectedWorkspace}
-          workspaces={state.workspaces}
-          onCreateSession={createSession}
-          onCreateWorkspace={createWorkspace}
-          onOpenDiffFallback={openDiffFallback}
-          onOpenReviewArtifact={openReviewArtifact}
-          onSelectWorkspace={selectWorkspace}
-          onSendPrompt={sendPrompt}
-        />
-      )}
+      <section className="workbench">
+        <header className="mobile-topbar">
+          <Button className="icon-button" onPress={() => setMobileNavOpen(true)}>
+            Menu
+          </Button>
+          <div>
+            <p className="eyebrow">ACP Web UI</p>
+            <h1>{selectedWorkspace?.name ?? "Codex Session"}</h1>
+          </div>
+          <div className="mobile-status">
+            <StatusDot stateText={state.codex.state} />
+            <span>{state.codex.state}</span>
+          </div>
+        </header>
+
+        {state.error ? <div className="notice error">{state.error}</div> : null}
+        <Outlet />
+      </section>
 
       <ApprovalSheet
         busy={state.busy}
-        currentSession={state.currentSession}
-        onCancel={cancelApproval}
-        onResolve={resolvePermission}
+        currentSession={showSessionApproval ? state.currentSession : null}
+        onCancel={actions.cancelApproval}
+        onResolve={actions.resolvePermission}
       />
+      <ReviewOverlay artifact={state.activeReview} onClose={() => actions.setActiveReview(null)} />
 
-      <ReviewOverlay artifact={state.activeReview} onClose={() => setState((current) => ({ ...current, activeReview: null }))} />
+      <ModalOverlay
+        className="modal-backdrop nav-backdrop"
+        isDismissable
+        isOpen={mobileNavOpen}
+        onOpenChange={setMobileNavOpen}
+      >
+        <Modal className="mobile-nav-modal">
+          <Dialog aria-label="Navigation" className="modal-dialog">
+            <div className="modal-header">
+              <BrandBlock />
+              <Button className="secondary small" onPress={() => setMobileNavOpen(false)}>
+                Close
+              </Button>
+            </div>
+            <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
+          </Dialog>
+        </Modal>
+      </ModalOverlay>
     </main>
   );
+}
+
+function IndexRoute() {
+  const { state } = useAppContext();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!state.initialized) return;
+    const session = state.currentSession;
+    if (session) {
+      void navigate({
+        to: "/workspaces/$workspaceId/sessions/$sessionId",
+        params: { workspaceId: session.workspace.id, sessionId: session.session.id },
+        replace: true
+      });
+      return;
+    }
+    if (state.currentWorkspaceId) {
+      void navigate({
+        to: "/workspaces/$workspaceId/sessions",
+        params: { workspaceId: state.currentWorkspaceId },
+        replace: true
+      });
+      return;
+    }
+    void navigate({ to: "/workspaces", replace: true });
+  }, [navigate, state.currentSession, state.currentWorkspaceId, state.initialized]);
+
+  return <LoadingPanel text="Loading workspace" />;
+}
+
+function InboxRoute() {
+  const { actions, state } = useAppContext();
+  return <InboxPane inbox={state.inbox} onOpen={(sessionId) => actions.loadSession(sessionId)} />;
+}
+
+function WorkspacesRoute() {
+  const { actions, state } = useAppContext();
+  return (
+    <div className="page-surface">
+      <PageHeader eyebrow="Workspaces" title="Local projects" />
+      <WorkspaceForm busy={state.busy} onCreateWorkspace={actions.createWorkspace} />
+      <WorkspaceList workspaces={state.workspaces} />
+    </div>
+  );
+}
+
+function WorkspaceSessionsRoute() {
+  const { workspaceId } = workspaceSessionsRoute.useParams();
+  const { actions, state } = useAppContext();
+  const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+
+  useEffect(() => {
+    actions.setCurrentWorkspace(workspaceId);
+    void actions.loadSessionList(workspaceId);
+  }, [workspaceId]);
+
+  return (
+    <SessionsPane
+      loading={state.sessionsLoading}
+      onCreate={() => actions.createSession(workspaceId)}
+      sessions={state.sessions}
+      workspace={workspace}
+    />
+  );
+}
+
+function NewSessionRoute() {
+  const { workspaceId } = newSessionRoute.useParams();
+  const { actions, state } = useAppContext();
+  const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+  return (
+    <CreatingSessionPane
+      creating={state.creatingSessionWorkspaceId === workspaceId}
+      onRetry={() => actions.createSession(workspaceId)}
+      workspace={workspace}
+    />
+  );
+}
+
+function SessionDetailRoute() {
+  const { sessionId, workspaceId } = sessionDetailRoute.useParams();
+  const { actions, state } = useAppContext();
+
+  useEffect(() => {
+    actions.setCurrentWorkspace(workspaceId);
+    if (state.currentSession?.session.id !== sessionId) {
+      void actions.loadSession(sessionId);
+    }
+  }, [sessionId, state.currentSession?.session.id, workspaceId]);
+
+  if (!state.currentSession || state.currentSession.session.id !== sessionId) {
+    return <LoadingPanel text="Loading session" />;
+  }
+
+  return (
+    <SessionPane
+      busy={state.busy}
+      codex={state.codex}
+      currentSession={state.currentSession}
+      liveAssistant={state.liveAssistant}
+      onOpenDiffFallback={actions.openDiffFallback}
+      onOpenReviewArtifact={actions.openReviewArtifact}
+      onSendPrompt={actions.sendPrompt}
+    />
+  );
+}
+
+function BrandBlock() {
+  return (
+    <div className="brand">
+      <p className="eyebrow">ACP Web UI</p>
+      <h1>Codex Session</h1>
+    </div>
+  );
+}
+
+function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
+  const { state } = useAppContext();
+  const currentWorkspaceId = state.currentWorkspaceId ?? state.workspaces[0]?.id ?? "";
+  return (
+    <nav className="nav-stack">
+      <Link activeProps={{ className: "nav-link active" }} className="nav-link" onClick={onNavigate} to="/inbox">
+        Inbox <span>{state.inbox.length}</span>
+      </Link>
+      <Link activeProps={{ className: "nav-link active" }} className="nav-link" onClick={onNavigate} to="/workspaces">
+        Workspaces <span>{state.workspaces.length}</span>
+      </Link>
+      {currentWorkspaceId ? (
+        <Link
+          activeProps={{ className: "nav-link active" }}
+          className="nav-link"
+          onClick={onNavigate}
+          params={{ workspaceId: currentWorkspaceId }}
+          to="/workspaces/$workspaceId/sessions"
+        >
+          Sessions <span>{state.sessions.length}</span>
+        </Link>
+      ) : null}
+      <div className="nav-section">
+        <span>Projects</span>
+        {state.workspaces.slice(0, 6).map((workspace) => (
+          <Link
+            activeProps={{ className: "workspace-nav active" }}
+            className="workspace-nav"
+            key={workspace.id}
+            onClick={onNavigate}
+            params={{ workspaceId: workspace.id }}
+            to="/workspaces/$workspaceId/sessions"
+          >
+            <strong>{workspace.name}</strong>
+            <small>{workspace.path}</small>
+          </Link>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function StatusStack({ codex, socketState }: { codex: ConnectionStatus; socketState: SocketState }) {
+  return (
+    <div className="status-stack">
+      <StatusPill detail={codex.message ?? "Codex"} stateText={codex.state} />
+      <StatusPill detail="Realtime" stateText={socketState} />
+    </div>
+  );
+}
+
+function StatusDot({ stateText }: { stateText: string }) {
+  return <span aria-label={stateText} className={`status-dot ${stateText}`} />;
 }
 
 function StatusPill({ stateText, detail }: { stateText: string; detail: string }) {
@@ -391,25 +704,52 @@ function StatusPill({ stateText, detail }: { stateText: string; detail: string }
   );
 }
 
-function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sessionId: string) => void }) {
+function PageHeader({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
-    <section className="section">
-      <div className="section-head">
-        <h2>Needs Approval</h2>
-        <span className="muted">{inbox.length}</span>
-      </div>
+    <div className="page-header">
+      <p className="eyebrow">{eyebrow}</p>
+      <h2>{title}</h2>
+    </div>
+  );
+}
+
+function LoadingPanel({ text }: { text: string }) {
+  return (
+    <div className="page-surface loading-panel">
+      <div className="skeleton-line wide" />
+      <div className="skeleton-line" />
+      <p className="muted">{text}</p>
+    </div>
+  );
+}
+
+function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sessionId: string) => void }) {
+  const navigate = useNavigate();
+  return (
+    <section className="page-surface">
+      <PageHeader eyebrow="Inbox" title="Needs approval" />
       {inbox.length === 0 ? (
         <p className="empty">No approvals waiting.</p>
       ) : (
-        <div className="inbox-list">
+        <div className="item-list">
           {inbox.map((item) => (
-            <button className="inbox-item" key={item.permission.id} onClick={() => onOpen(item.session.id)}>
-              <span className="inbox-title">{item.permission.title}</span>
+            <Button
+              className="list-item"
+              key={item.permission.id}
+              onPress={() => {
+                void onOpen(item.session.id);
+                void navigate({
+                  to: "/workspaces/$workspaceId/sessions/$sessionId",
+                  params: { workspaceId: item.workspace.id, sessionId: item.session.id }
+                });
+              }}
+            >
+              <span className="item-title">{item.permission.title}</span>
               <span>
                 {item.workspace.name} · {item.session.agentName} · {item.session.status}
               </span>
               <small>{item.permission.kind}</small>
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -420,34 +760,36 @@ function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sessionId: 
 function SessionsPane({
   loading,
   onCreate,
-  onOpen,
-  sessions
+  sessions,
+  workspace
 }: {
   loading: boolean;
   onCreate: () => void;
-  onOpen: (sessionId: string) => void;
   sessions: SessionListItem[];
+  workspace: Workspace | null;
 }) {
   return (
-    <section className="section">
+    <section className="page-surface">
       <div className="section-head">
-        <h2>Sessions</h2>
+        <PageHeader eyebrow="Sessions" title={workspace?.name ?? "Sessions"} />
         <div className="section-actions">
           <span className="muted">{loading ? "Loading" : sessions.length}</span>
-          <button className="secondary small" onClick={onCreate}>
+          <Button className="primary small" onPress={onCreate}>
             New Session
-          </button>
+          </Button>
         </div>
       </div>
       {sessions.length === 0 ? (
         <div className="empty-panel">
           <p className="empty">No sessions yet.</p>
-          <button onClick={onCreate}>Start Session</button>
+          <Button className="primary" onPress={onCreate}>
+            Start Session
+          </Button>
         </div>
       ) : (
-        <div className="session-list">
+        <div className="item-list">
           {sessions.map((item) => (
-            <SessionListRow item={item} key={item.session.id} onOpen={onOpen} />
+            <SessionListRow item={item} key={item.session.id} />
           ))}
         </div>
       )}
@@ -455,65 +797,56 @@ function SessionsPane({
   );
 }
 
-function SessionListRow({ item, onOpen }: { item: SessionListItem; onOpen: (sessionId: string) => void }) {
+function SessionListRow({ item }: { item: SessionListItem }) {
   return (
-    <button className="session-list-item" onClick={() => onOpen(item.session.id)}>
-      <span className="session-list-title">{item.workspace.name}</span>
+    <Link
+      className="list-item session-row"
+      params={{ workspaceId: item.workspace.id, sessionId: item.session.id }}
+      to="/workspaces/$workspaceId/sessions/$sessionId"
+    >
+      <span className="item-title">{item.workspace.name}</span>
       <span>
         {item.session.agentName} · {item.session.status} · {formatRelativeTime(item.lastActivityAt)}
       </span>
-      <span className="session-list-path">{item.workspace.path}</span>
+      <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
+        {!item.continuable ? <strong>View only</strong> : null}
         {item.pendingPermission ? <strong>Approval: {item.pendingPermission.title}</strong> : null}
         {item.hasReviewArtifacts ? <strong>{item.reviewArtifactCount} review items</strong> : null}
       </span>
-    </button>
+    </Link>
   );
 }
 
-function SessionWorkspacePane(props: {
-  busy: boolean;
-  codex: ConnectionStatus;
-  currentSession: SessionDetail | null;
-  liveAssistant: string;
-  selectedWorkspace: Workspace | null;
-  workspaces: Workspace[];
-  onCreateSession: () => void;
-  onCreateWorkspace: (path: string) => Promise<void>;
-  onOpenDiffFallback: () => void;
-  onOpenReviewArtifact: (artifactId: string) => void;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onSendPrompt: (prompt: string) => Promise<void>;
+function CreatingSessionPane({
+  creating,
+  onRetry,
+  workspace
+}: {
+  creating: boolean;
+  onRetry: () => void;
+  workspace: Workspace | null;
 }) {
   return (
-    <>
-      <section className="section">
-        <div className="section-head">
-          <h2>Workspace</h2>
+    <section className="session-layout">
+      <PageHeader eyebrow="New Session" title={workspace?.name ?? "Starting Codex"} />
+      <div className="timeline">
+        <div className="message assistant live">
+          <div className="message-role">codex</div>
+          <div className="skeleton-line wide" />
+          <div className="skeleton-line" />
+          <div className="message-content">Starting Codex...</div>
         </div>
-        <WorkspaceForm busy={props.busy} onCreateWorkspace={props.onCreateWorkspace} />
-        <WorkspaceList
-          currentWorkspaceId={props.selectedWorkspace?.id ?? null}
-          onSelectWorkspace={props.onSelectWorkspace}
-          workspaces={props.workspaces}
-        />
-      </section>
-
-      <section className="section session-section">
-        <div className="section-head">
-          <h2>Session</h2>
-          <div className="section-actions">
-            {props.currentSession ? (
-              <button className="secondary small" disabled={props.busy} onClick={props.onOpenDiffFallback}>
-                Diff
-              </button>
-            ) : null}
-            {props.currentSession ? <span className="muted">{props.currentSession.session.status}</span> : null}
-          </div>
+      </div>
+      {!creating ? (
+        <div className="composer-status error">
+          Session creation did not complete.
+          <Button className="secondary small" onPress={onRetry}>
+            Retry
+          </Button>
         </div>
-        <SessionPane {...props} />
-      </section>
-    </>
+      ) : null}
+    </section>
   );
 }
 
@@ -537,37 +870,30 @@ function WorkspaceForm({ busy, onCreateWorkspace }: { busy: boolean; onCreateWor
         placeholder="/home/user/project"
         value={path}
       />
-      <button disabled={busy} type="submit">
+      <Button className="primary" isDisabled={busy} type="submit">
         Add
-      </button>
+      </Button>
     </form>
   );
 }
 
-function WorkspaceList({
-  currentWorkspaceId,
-  onSelectWorkspace,
-  workspaces
-}: {
-  currentWorkspaceId: string | null;
-  onSelectWorkspace: (workspaceId: string) => void;
-  workspaces: Workspace[];
-}) {
+function WorkspaceList({ workspaces }: { workspaces: Workspace[] }) {
   if (workspaces.length === 0) {
     return <p className="empty">No workspaces yet.</p>;
   }
 
   return (
-    <div className="workspace-list">
+    <div className="item-list">
       {workspaces.map((workspace) => (
-        <button
-          className={`workspace-item ${workspace.id === currentWorkspaceId ? "selected" : ""}`}
+        <Link
+          className="list-item"
           key={workspace.id}
-          onClick={() => onSelectWorkspace(workspace.id)}
+          params={{ workspaceId: workspace.id }}
+          to="/workspaces/$workspaceId/sessions"
         >
-          <strong>{workspace.name}</strong>
-          <span>{workspace.path}</span>
-        </button>
+          <span className="item-title">{workspace.name}</span>
+          <span className="item-path">{workspace.path}</span>
+        </Link>
       ))}
     </div>
   );
@@ -578,96 +904,218 @@ function SessionPane({
   codex,
   currentSession,
   liveAssistant,
-  onCreateSession,
+  onOpenDiffFallback,
   onOpenReviewArtifact,
-  onSendPrompt,
-  selectedWorkspace
+  onSendPrompt
 }: {
   busy: boolean;
   codex: ConnectionStatus;
-  currentSession: SessionDetail | null;
+  currentSession: SessionDetail;
   liveAssistant: string;
-  onCreateSession: () => void;
+  onOpenDiffFallback: () => void;
   onOpenReviewArtifact: (artifactId: string) => void;
   onSendPrompt: (prompt: string) => Promise<void>;
-  selectedWorkspace: Workspace | null;
 }) {
-  if (!selectedWorkspace) {
-    return <p className="empty">Create or select a workspace to start.</p>;
-  }
-
-  if (!currentSession || currentSession.workspace.id !== selectedWorkspace.id) {
-    return (
-      <div className="start-session">
-        <p className="muted">{selectedWorkspace.path}</p>
-        <button disabled={codex.state !== "ready" || busy} onClick={onCreateSession}>
-          New Codex Session
-        </button>
-      </div>
-    );
-  }
-
   const waitingApproval = currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
-  const timelineEntries = buildTimelineEntries(currentSession);
+  const canSend = currentSession.continuable && !running;
 
   return (
-    <>
+    <section className="session-layout">
+      <div className="session-toolbar">
+        <PageHeader eyebrow={currentSession.workspace.name} title="Session" />
+        <div className="section-actions">
+          <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
+            Diff
+          </Button>
+          <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
+        </div>
+      </div>
       <div className="timeline" id="timeline">
         {currentSession.failureMessage ? <div className="notice error">{currentSession.failureMessage}</div> : null}
+        {!currentSession.continuable ? <div className="notice warning">{currentSession.viewOnlyReason}</div> : null}
         {waitingApproval ? (
           <div className="notice approval">
             Waiting for approval: {currentSession.pendingPermission?.title ?? "Permission requested"}
           </div>
         ) : null}
-        {timelineEntries.map((entry) =>
-          entry.kind === "message" ? (
-            <MessageBubble key={`message-${entry.message.id}`} message={entry.message} />
-          ) : (
-            <ReviewArtifactCard artifact={entry.artifact} key={`artifact-${entry.artifact.id}`} onOpen={onOpenReviewArtifact} />
-          )
-        )}
+        {currentSession.timeline.map((item) => (
+          <TimelineRow item={item} key={`${item.kind}-${item.id}`} onOpenReviewArtifact={onOpenReviewArtifact} />
+        ))}
+        {running && !liveAssistant ? <RunningSkeleton waitingApproval={waitingApproval} /> : null}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
       </div>
-      <PromptComposer busy={busy} disabled={running} waitingApproval={waitingApproval} onSendPrompt={onSendPrompt} />
-    </>
+      <PromptComposer
+        busy={busy}
+        codex={codex}
+        disabled={!canSend}
+        running={running}
+        viewOnlyReason={currentSession.viewOnlyReason}
+        waitingApproval={waitingApproval}
+        onSendPrompt={onSendPrompt}
+      />
+    </section>
+  );
+}
+
+function TimelineRow({
+  item,
+  onOpenReviewArtifact
+}: {
+  item: TimelineItem;
+  onOpenReviewArtifact: (artifactId: string) => void;
+}) {
+  switch (item.kind) {
+    case "message":
+      return <MessageBubble message={timelineMessage(item)} />;
+    case "tool_call":
+      return <ToolCallRow item={item} onOpenReviewArtifact={onOpenReviewArtifact} />;
+    case "review_artifact":
+      return (
+        <ReviewArtifactCard
+          artifact={{
+            id: item.id,
+            sessionId: item.sessionId,
+            toolCallId: item.toolCallId,
+            kind: item.artifactKind,
+            title: item.title,
+            summary: item.summary,
+            source: item.source,
+            createdAt: item.timestamp
+          }}
+          onOpen={onOpenReviewArtifact}
+        />
+      );
+    case "permission":
+      return (
+        <div className="timeline-event">
+          <span>{item.status}</span>
+          <strong>{item.title}</strong>
+        </div>
+      );
+  }
+}
+
+function ToolCallRow({
+  item,
+  onOpenReviewArtifact
+}: {
+  item: Extract<TimelineItem, { kind: "tool_call" }>;
+  onOpenReviewArtifact: (artifactId: string) => void;
+}) {
+  return (
+    <details className={`tool-row ${item.status}`}>
+      <summary>
+        <span className="tool-kind">{item.toolKind}</span>
+        <strong>{item.title}</strong>
+        <span>{item.status}</span>
+      </summary>
+      <p>{item.summary}</p>
+      {item.reviewArtifactIds.length ? (
+        <div className="tool-links">
+          {item.reviewArtifactIds.map((artifactId) => (
+            <Button className="secondary small" key={artifactId} onPress={() => onOpenReviewArtifact(artifactId)}>
+              Open artifact
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      <details className="raw-details">
+        <summary>Raw</summary>
+        <pre className="review-pre">{JSON.stringify({ input: item.input, output: item.output }, null, 2)}</pre>
+      </details>
+    </details>
+  );
+}
+
+function RunningSkeleton({ waitingApproval }: { waitingApproval: boolean }) {
+  return (
+    <div className="message assistant live">
+      <div className="message-role">{waitingApproval ? "approval" : "codex"}</div>
+      <div className="skeleton-line wide" />
+      <div className="skeleton-line" />
+    </div>
   );
 }
 
 function PromptComposer({
   busy,
+  codex,
   disabled,
   onSendPrompt,
+  running,
+  viewOnlyReason,
   waitingApproval
 }: {
   busy: boolean;
+  codex: ConnectionStatus;
   disabled: boolean;
   onSendPrompt: (prompt: string) => Promise<void>;
+  running: boolean;
+  viewOnlyReason?: string | null;
   waitingApproval: boolean;
 }) {
   const [prompt, setPrompt] = useState("");
+  const [composing, setComposing] = useState(false);
 
-  async function onSubmit(event: FormEvent) {
-    event.preventDefault();
+  async function submitPrompt() {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
+    if (!trimmed || disabled || busy) return;
     await onSendPrompt(trimmed);
     setPrompt("");
   }
 
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    await submitPrompt();
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (composing) return;
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void submitPrompt();
+    }
+  }
+
+  const status = viewOnlyReason
+    ? viewOnlyReason
+    : waitingApproval
+      ? "Waiting for approval"
+      : running
+        ? "Codex is working..."
+        : codex.state !== "ready"
+          ? codex.message ?? "Codex is not ready"
+          : null;
+
   return (
-    <form className="composer" onSubmit={onSubmit}>
-      <textarea
-        disabled={disabled}
-        onChange={(event) => setPrompt(event.target.value)}
-        placeholder={waitingApproval ? "Resolve approval before sending another prompt" : "Ask Codex..."}
-        rows={3}
-        value={prompt}
-      />
-      <button disabled={disabled || busy} type="submit">
-        Send
-      </button>
-    </form>
+    <div className="composer-wrap">
+      {status ? <div className={`composer-status ${viewOnlyReason ? "warning" : ""}`}>{status}</div> : null}
+      <form className="composer" onSubmit={onSubmit}>
+        <textarea
+          disabled={disabled}
+          onChange={(event) => setPrompt(event.target.value)}
+          onCompositionEnd={() => setComposing(false)}
+          onCompositionStart={() => setComposing(true)}
+          onKeyDown={onKeyDown}
+          placeholder={
+            viewOnlyReason
+              ? "Start a new session to continue"
+              : waitingApproval
+                ? "Resolve approval before sending another prompt"
+                : "Ask Codex..."
+          }
+          rows={3}
+          value={prompt}
+        />
+        <div className="composer-actions">
+          <span className="shortcut-hint">Ctrl Enter</span>
+          <Button className="primary" isDisabled={disabled || busy} type="submit">
+            Send
+          </Button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -688,7 +1136,7 @@ function ReviewArtifactCard({
   onOpen: (artifactId: string) => void;
 }) {
   return (
-    <button className="review-card" onClick={() => onOpen(artifact.id)}>
+    <Button className="review-card" onPress={() => onOpen(artifact.id)}>
       <span className="message-role">{artifact.kind}</span>
       <strong>{artifact.title}</strong>
       <span>{artifact.summary}</span>
@@ -696,7 +1144,7 @@ function ReviewArtifactCard({
         {artifact.source}
         {artifact.toolCallId ? ` · ${artifact.toolCallId}` : ""}
       </small>
-    </button>
+    </Button>
   );
 }
 
@@ -712,39 +1160,44 @@ function ApprovalSheet({
   onResolve: (permission: PermissionRequest, optionId: string) => void;
 }) {
   const permission = currentSession?.pendingPermission;
-  if (!permission || currentSession?.session.status !== "waiting_approval") {
-    return null;
-  }
-
+  const open = Boolean(permission && currentSession?.session.status === "waiting_approval");
   return (
-    <div className="sheet-backdrop">
-      <section aria-label="Approval request" className="approval-sheet">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">{permission.kind}</p>
-            <h2>{permission.title}</h2>
-          </div>
-          <button className="secondary" disabled={busy} onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-        <div className="approval-context">
-          <span>{currentSession.workspace.name}</span>
-          <span>{currentSession.session.agentName}</span>
-        </div>
-        <pre className="tool-summary">{toolSummary(permission.toolCall)}</pre>
-        <div className="approval-actions">
-          {permission.options.map((option) => (
-            <PermissionOptionButton
-              busy={busy}
-              key={option.optionId}
-              onResolve={() => onResolve(permission, option.optionId)}
-              option={option}
-            />
-          ))}
-        </div>
-      </section>
-    </div>
+    <ModalOverlay className="modal-backdrop" isDismissable={false} isOpen={open}>
+      <Modal className="sheet-modal">
+        <Dialog aria-label="Approval request" className="modal-dialog">
+          {permission && currentSession ? (
+            <>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">{permission.kind}</p>
+                  <Heading slot="title">{permission.title}</Heading>
+                </div>
+                <Button className="secondary small" isDisabled={busy} onPress={onCancel}>
+                  Cancel
+                </Button>
+              </div>
+              <div className="modal-body">
+                <div className="approval-context">
+                  <span>{currentSession.workspace.name}</span>
+                  <span>{currentSession.session.agentName}</span>
+                </div>
+                <pre className="tool-summary">{toolSummary(permission.toolCall)}</pre>
+              </div>
+              <div className="modal-footer approval-actions">
+                {permission.options.map((option) => (
+                  <PermissionOptionButton
+                    busy={busy}
+                    key={option.optionId}
+                    onResolve={() => onResolve(permission, option.optionId)}
+                    option={option}
+                  />
+                ))}
+              </div>
+            </>
+          ) : null}
+        </Dialog>
+      </Modal>
+    </ModalOverlay>
   );
 }
 
@@ -759,34 +1212,38 @@ function PermissionOptionButton({
 }) {
   const isAlways = option.kind === "allow_always" || option.kind === "reject_always";
   return (
-    <button className={`approval-option ${option.kind}`} disabled={busy || isAlways} onClick={onResolve}>
+    <Button className={`approval-option ${option.kind}`} isDisabled={busy || isAlways} onPress={onResolve}>
       <span>{option.name}</span>
       {isAlways ? <small>Not available yet</small> : null}
-    </button>
+    </Button>
   );
 }
 
 function ReviewOverlay({ artifact, onClose }: { artifact: ReviewArtifact | null; onClose: () => void }) {
-  if (!artifact) {
-    return null;
-  }
-
   return (
-    <div className="sheet-backdrop">
-      <section aria-label="Review artifact" className="review-overlay">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">{artifact.kind}</p>
-            <h2>{artifact.title}</h2>
-          </div>
-          <button className="secondary" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <p className="muted">{artifact.summary}</p>
-        <ReviewPayload artifact={artifact} />
-      </section>
-    </div>
+    <ModalOverlay className="modal-backdrop" isDismissable isOpen={Boolean(artifact)} onOpenChange={(open) => !open && onClose()}>
+      <Modal className="review-modal">
+        <Dialog aria-label="Review artifact" className="modal-dialog">
+          {artifact ? (
+            <>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">{artifact.kind}</p>
+                  <Heading slot="title">{artifact.title}</Heading>
+                </div>
+                <Button className="secondary small" onPress={onClose}>
+                  Close
+                </Button>
+              </div>
+              <div className="modal-body">
+                <p className="muted">{artifact.summary}</p>
+                <ReviewPayload artifact={artifact} />
+              </div>
+            </>
+          ) : null}
+        </Dialog>
+      </Modal>
+    </ModalOverlay>
   );
 }
 
@@ -855,17 +1312,6 @@ function MarkdownPayload({ payload }: { payload: unknown }) {
   );
 }
 
-function liveMessage(sessionId: string, content: string): ChatMessage {
-  return {
-    id: "live-assistant",
-    sessionId,
-    role: "assistant",
-    content,
-    status: "running",
-    createdAt: new Date().toISOString()
-  };
-}
-
 function payloadText(payload: unknown) {
   if (typeof payload === "string") {
     return payload;
@@ -890,50 +1336,49 @@ function toolSummary(toolCall: unknown) {
   if (Array.isArray(content)) {
     const text = content
       .map((part) => {
-        if (!part || typeof part !== "object") {
-          return "";
-        }
+        if (!part || typeof part !== "object") return "";
         const partValue = part as Record<string, unknown>;
         return typeof partValue.text === "string" ? partValue.text : "";
       })
       .filter(Boolean)
       .join("\n");
-    if (text) {
-      return text;
-    }
+    if (text) return text;
   }
   return JSON.stringify(toolCall, null, 2);
 }
 
-type TimelineEntry =
-  | { kind: "message"; message: ChatMessage; timestamp: number; index: number }
-  | { kind: "artifact"; artifact: ReviewArtifactSummary; timestamp: number; index: number };
-
-function buildTimelineEntries(detail: SessionDetail): TimelineEntry[] {
-  const messages = detail.messages.map((message, index): TimelineEntry => ({
-    kind: "message",
-    message,
-    timestamp: timestampValue(message.createdAt),
-    index
-  }));
-  const artifacts = detail.reviewArtifacts.map((artifact, index): TimelineEntry => ({
-    kind: "artifact",
-    artifact,
-    timestamp: timestampValue(artifact.createdAt),
-    index: detail.messages.length + index
-  }));
-
-  return [...messages, ...artifacts].sort((left, right) => {
-    if (left.timestamp !== right.timestamp) {
-      return left.timestamp - right.timestamp;
-    }
-    return left.index - right.index;
-  });
+function liveMessage(sessionId: string, content: string): ChatMessage {
+  return {
+    id: "live-assistant",
+    sessionId,
+    role: "assistant",
+    content,
+    status: "running",
+    createdAt: new Date().toISOString()
+  };
 }
 
-function timestampValue(value: string) {
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+function timelineMessage(item: Extract<TimelineItem, { kind: "message" }>): ChatMessage {
+  return {
+    id: item.id,
+    sessionId: item.sessionId,
+    role: item.role,
+    content: item.content,
+    status: item.status,
+    createdAt: item.timestamp
+  };
+}
+
+function messageToTimelineItem(message: ChatMessage): TimelineItem {
+  return {
+    kind: "message",
+    id: message.id,
+    sessionId: message.sessionId,
+    timestamp: message.createdAt,
+    status: message.status,
+    role: message.role,
+    content: message.content
+  };
 }
 
 function sessionDetailToListItem(detail: SessionDetail): SessionListItem {
@@ -980,8 +1425,6 @@ function applySessionListRealtime(
       return clearSessionListPermission(sessions, event.sessionId);
     case "review_artifact":
       return updateSessionListReviewAvailability(sessions, event.artifact.sessionId);
-    case "timeline_item_upsert":
-      return sessions;
     default:
       return sessions;
   }
@@ -1056,9 +1499,7 @@ function updateSessionListReviewAvailability(sessions: SessionListItem[], sessio
 
 function formatRelativeTime(value: string) {
   const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) {
-    return value;
-  }
+  if (Number.isNaN(timestamp)) return value;
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (seconds < 60) return "just now";
   const minutes = Math.floor(seconds / 60);
