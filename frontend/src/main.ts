@@ -58,8 +58,24 @@ type SessionDetail = {
   session: Session;
   workspace: Workspace;
   messages: ChatMessage[];
+  reviewArtifacts: ReviewArtifactSummary[];
   pendingPermission?: PermissionRequest | null;
   failureMessage?: string | null;
+};
+
+type ReviewArtifactSummary = {
+  id: string;
+  sessionId: string;
+  toolCallId?: string | null;
+  kind: string;
+  title: string;
+  summary: string;
+  source: string;
+  createdAt: string;
+};
+
+type ReviewArtifact = ReviewArtifactSummary & {
+  payload: unknown;
 };
 
 type InboxItem = {
@@ -75,6 +91,7 @@ type RealtimeEvent =
   | { type: "assistant_message"; sessionId: string; content: string }
   | { type: "permission_requested"; permission: PermissionRequest }
   | { type: "permission_resolved"; sessionId: string; permissionId: string }
+  | { type: "review_artifact"; artifact: ReviewArtifactSummary }
   | { type: "error"; message: string };
 
 type AppData = {
@@ -90,6 +107,7 @@ type State = {
   inbox: InboxItem[];
   currentWorkspaceId: string | null;
   currentSession: SessionDetail | null;
+  activeReview: ReviewArtifact | null;
   liveAssistant: string;
   busy: boolean;
   error: string | null;
@@ -103,6 +121,7 @@ const state: State = {
   inbox: [],
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),
   currentSession: null,
+  activeReview: null,
   liveAssistant: "",
   busy: false,
   error: null
@@ -213,11 +232,28 @@ function applyRealtimeEvent(event: RealtimeEvent) {
         state.currentSession.pendingPermission = null;
       }
       break;
+    case "review_artifact":
+      if (state.currentSession?.session.id === event.artifact.sessionId) {
+        upsertReviewArtifact(event.artifact);
+      }
+      break;
     case "error":
       state.error = event.message;
       break;
   }
   render();
+}
+
+function upsertReviewArtifact(artifact: ReviewArtifactSummary) {
+  if (!state.currentSession) {
+    return;
+  }
+  const existingIndex = state.currentSession.reviewArtifacts.findIndex((item) => item.id === artifact.id);
+  if (existingIndex >= 0) {
+    state.currentSession.reviewArtifacts[existingIndex] = artifact;
+  } else {
+    state.currentSession.reviewArtifacts.push(artifact);
+  }
 }
 
 function upsertInboxItemFromPermission(permission: PermissionRequest) {
@@ -273,6 +309,7 @@ function render() {
 
       ${state.view === "inbox" ? inboxPane() : sessionWorkspacePane()}
       ${approvalSheet()}
+      ${reviewOverlay()}
     </main>
   `;
 
@@ -319,7 +356,10 @@ function sessionWorkspacePane() {
       <section class="section session-section">
         <div class="section-head">
           <h2>Session</h2>
-          ${state.currentSession ? `<span class="muted">${escapeHtml(state.currentSession.session.status)}</span>` : ""}
+          <div class="section-actions">
+            ${state.currentSession ? `<button id="open-diff-fallback" class="secondary small" ${state.busy ? "disabled" : ""}>Diff</button>` : ""}
+            ${state.currentSession ? `<span class="muted">${escapeHtml(state.currentSession.session.status)}</span>` : ""}
+          </div>
         </div>
         ${sessionPane()}
       </section>
@@ -388,6 +428,7 @@ function sessionPane() {
       ${state.currentSession.failureMessage ? `<div class="notice error">${escapeHtml(state.currentSession.failureMessage)}</div>` : ""}
       ${waitingApproval ? `<div class="notice approval">Waiting for approval: ${escapeHtml(state.currentSession.pendingPermission?.title ?? "Permission requested")}</div>` : ""}
       ${messages.map(renderMessage).join("")}
+      ${state.currentSession.reviewArtifacts.map(renderReviewArtifactCard).join("")}
       ${live}
     </div>
     <form id="prompt-form" class="composer">
@@ -395,6 +436,107 @@ function sessionPane() {
       <button type="submit" ${running || state.busy ? "disabled" : ""}>Send</button>
     </form>
   `;
+}
+
+function renderReviewArtifactCard(artifact: ReviewArtifactSummary) {
+  return `
+    <button class="review-card" data-review-artifact="${escapeHtml(artifact.id)}">
+      <span class="message-role">${escapeHtml(artifact.kind)}</span>
+      <strong>${escapeHtml(artifact.title)}</strong>
+      <span>${escapeHtml(artifact.summary)}</span>
+      <small>${escapeHtml(artifact.source)}${artifact.toolCallId ? ` · ${escapeHtml(artifact.toolCallId)}` : ""}</small>
+    </button>
+  `;
+}
+
+function reviewOverlay() {
+  const artifact = state.activeReview;
+  if (!artifact) {
+    return "";
+  }
+  return `
+    <div class="sheet-backdrop">
+      <section class="review-overlay" aria-label="Review artifact">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">${escapeHtml(artifact.kind)}</p>
+            <h2>${escapeHtml(artifact.title)}</h2>
+          </div>
+          <button id="close-review" class="secondary">Close</button>
+        </div>
+        <p class="muted">${escapeHtml(artifact.summary)}</p>
+        ${renderReviewPayload(artifact)}
+      </section>
+    </div>
+  `;
+}
+
+function renderReviewPayload(artifact: ReviewArtifact) {
+  if (artifact.kind === "diff") {
+    return renderDiffPayload(artifact.payload);
+  }
+  if (artifact.kind === "markdown") {
+    return renderMarkdownPayload(artifact.payload);
+  }
+  if (artifact.kind === "terminal") {
+    return `<pre class="review-pre">${escapeHtml(payloadText(artifact.payload))}</pre>`;
+  }
+  return `<pre class="review-pre">${escapeHtml(JSON.stringify(artifact.payload, null, 2))}</pre>`;
+}
+
+function renderDiffPayload(payload: unknown) {
+  const diff = payloadText(payload);
+  const files = diff
+    .split("\n")
+    .filter((line) => line.startsWith("diff --git "))
+    .map((line) => line.split(" b/")[1] ?? line)
+    .map(escapeHtml);
+  const hunks = diff
+    .split("\n")
+    .filter((line) => line.startsWith("@@"))
+    .map(escapeHtml);
+  return `
+    ${files.length ? `<div class="review-nav">${files.map((file) => `<span>${file}</span>`).join("")}</div>` : ""}
+    ${hunks.length ? `<div class="review-nav hunks">${hunks.map((hunk) => `<span>${hunk}</span>`).join("")}</div>` : ""}
+    <pre class="review-pre diff">${escapeHtml(diff || "No diff content.")}</pre>
+  `;
+}
+
+function renderMarkdownPayload(payload: unknown) {
+  const text = payloadText(payload);
+  const html = text
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("### ")) return `<h3>${escapeHtml(line.slice(4))}</h3>`;
+      if (line.startsWith("## ")) return `<h2>${escapeHtml(line.slice(3))}</h2>`;
+      if (line.startsWith("# ")) return `<h2>${escapeHtml(line.slice(2))}</h2>`;
+      if (line.startsWith("- ")) return `<li>${escapeHtml(line.slice(2))}</li>`;
+      if (!line.trim()) return "";
+      return `<p>${escapeHtml(line)}</p>`;
+    })
+    .join("");
+  return `
+    <div class="markdown-preview">${html}</div>
+    <details class="raw-details">
+      <summary>Raw</summary>
+      <pre class="review-pre">${escapeHtml(text)}</pre>
+    </details>
+  `;
+}
+
+function payloadText(payload: unknown) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (payload && typeof payload === "object") {
+    const value = payload as Record<string, unknown>;
+    for (const key of ["diff", "markdown", "content", "text", "output"]) {
+      if (typeof value[key] === "string") {
+        return value[key] as string;
+      }
+    }
+  }
+  return JSON.stringify(payload, null, 2);
 }
 
 function approvalSheet() {
@@ -530,6 +672,35 @@ function bindEvents() {
       state.view = "session";
       localStorage.setItem("currentSessionId", state.currentSession.session.id);
     });
+  });
+
+  document.querySelector<HTMLButtonElement>("#open-diff-fallback")?.addEventListener("click", async () => {
+    const sessionId = state.currentSession?.session.id;
+    if (!sessionId) {
+      return;
+    }
+    await withBusy(async () => {
+      const response = await api<{ artifact: ReviewArtifact }>(`/api/sessions/${sessionId}/review-diff`);
+      state.activeReview = response.artifact;
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-review-artifact]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const artifactId = button.dataset.reviewArtifact;
+      const sessionId = state.currentSession?.session.id;
+      if (!artifactId || !sessionId) {
+        return;
+      }
+      await withBusy(async () => {
+        state.activeReview = await api<ReviewArtifact>(`/api/sessions/${sessionId}/review-artifacts/${artifactId}`);
+      });
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("#close-review")?.addEventListener("click", () => {
+    state.activeReview = null;
+    render();
   });
 
   document.querySelector<HTMLFormElement>("#prompt-form")?.addEventListener("submit", async (event) => {

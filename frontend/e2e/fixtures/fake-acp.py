@@ -90,6 +90,30 @@ for line in sys.stdin:
                 .get("optionId", "cancelled")
             )
             text = f"Approval result: {option_id}"
+        elif "review" in prompt_text.lower():
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-review",
+                            "title": "Inspect review evidence",
+                            "kind": "execute",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "git diff -- README.md",
+                                }
+                            ],
+                        },
+                    },
+                }
+            )
+            text = "Review artifact emitted"
         else:
             text = "ACP Web UI smoke test OK"
         send(

@@ -12,10 +12,12 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Text prompts and text replies
 - Permission approval requests with allow-once and reject-once resolution
 - Inbox view for sessions waiting on approval
+- Session review artifact cards for ACP tool call evidence
+- Full-screen review drill-downs for artifact details and on-demand workspace diffs
 - SQLite persistence
 - WebSocket live updates
 
-Not included yet: diff/review, terminal output, Markdown preview, yolo mode, remembered allow-always/reject-always policies, multi-agent selection.
+Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, multi-agent selection.
 
 `allow_always` and `reject_always` ACP options are shown in the browser when an agent provides them, but they are disabled until a deliberate local policy model exists.
 
@@ -90,6 +92,7 @@ npm run e2e
 
 The E2E test starts `target/debug/acp-webui` on `127.0.0.1:7638`, creates a workspace and session, sends a prompt through the browser, receives a fake assistant text reply, refreshes the page, and verifies the persisted timeline is restored.
 It also exercises a fake permission request, verifies the mobile approval sheet, confirms always options are disabled, and approves the request with an allow-once option.
+The suite also exercises a fake ACP tool call review artifact, opens its session-scoped drill-down, and verifies that Review is not exposed as a first-level navigation item.
 
 ## Useful Endpoints
 
@@ -99,6 +102,9 @@ It also exercises a fake permission request, verifies the mobile approval sheet,
 - `POST /api/workspaces`
 - `POST /api/workspaces/:workspace_id/sessions`
 - `GET /api/sessions/:session_id`
+- `GET /api/sessions/:session_id/review-artifacts`
+- `GET /api/sessions/:session_id/review-artifacts/:artifact_id`
+- `GET /api/sessions/:session_id/review-diff`
 - `POST /api/sessions/:session_id/prompt`
 - `POST /api/sessions/:session_id/cancel`
 - `POST /api/permission-requests/:permission_id/resolve`

@@ -11,8 +11,9 @@ use uuid::Uuid;
 use serde_json::Value;
 
 use crate::models::{
-    permission_status, role, status, InboxItem, Message, PermissionOption, PermissionRequest,
-    PermissionRequestRow, Session, SessionDetail, Workspace,
+    permission_status, role, status, InboxItem, Message, NewReviewArtifact, PermissionOption,
+    PermissionRequest, PermissionRequestRow, ReviewArtifact, ReviewArtifactRow,
+    ReviewArtifactSummary, Session, SessionDetail, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -279,6 +280,7 @@ impl Storage {
         let session = self.get_session(session_id).await?;
         let workspace = self.get_workspace(&session.workspace_id).await?;
         let messages = self.list_messages(&session.id).await?;
+        let review_artifacts = self.list_review_artifact_summaries(&session.id).await?;
         let pending_permission = self.pending_permission_for_session(&session.id).await?;
         let failure_message = self
             .latest_permission_failure_for_session(&session.id)
@@ -288,9 +290,110 @@ impl Storage {
             session,
             workspace,
             messages,
+            review_artifacts,
             pending_permission,
             failure_message,
         })
+    }
+
+    pub async fn create_review_artifact(
+        &self,
+        input: NewReviewArtifact,
+    ) -> anyhow::Result<ReviewArtifact> {
+        let id = Uuid::new_v4().to_string();
+        let now = now();
+        let payload_json = serde_json::to_string(&input.payload)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO review_artifacts (
+                id,
+                session_id,
+                tool_call_id,
+                kind,
+                title,
+                summary,
+                payload_json,
+                source,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(&input.session_id)
+        .bind(&input.tool_call_id)
+        .bind(&input.kind)
+        .bind(&input.title)
+        .bind(&input.summary)
+        .bind(&payload_json)
+        .bind(&input.source)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_review_artifact_for_session(&input.session_id, &id)
+            .await
+    }
+
+    pub async fn list_review_artifact_summaries(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<ReviewArtifactSummary>> {
+        let rows = sqlx::query_as::<_, ReviewArtifactRow>(
+            r#"
+            SELECT
+                id,
+                session_id,
+                tool_call_id,
+                kind,
+                title,
+                summary,
+                payload_json,
+                source,
+                created_at
+            FROM review_artifacts
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(row_to_review_artifact_summary)
+            .collect())
+    }
+
+    pub async fn get_review_artifact_for_session(
+        &self,
+        session_id: &str,
+        artifact_id: &str,
+    ) -> anyhow::Result<ReviewArtifact> {
+        let row = sqlx::query_as::<_, ReviewArtifactRow>(
+            r#"
+            SELECT
+                id,
+                session_id,
+                tool_call_id,
+                kind,
+                title,
+                summary,
+                payload_json,
+                source,
+                created_at
+            FROM review_artifacts
+            WHERE session_id = ? AND id = ?
+            "#,
+        )
+        .bind(session_id)
+        .bind(artifact_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        row_to_review_artifact(row)
     }
 
     pub async fn add_system_message(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
@@ -564,6 +667,34 @@ fn row_to_permission_request(row: PermissionRequestRow) -> anyhow::Result<Permis
     })
 }
 
+fn row_to_review_artifact(row: ReviewArtifactRow) -> anyhow::Result<ReviewArtifact> {
+    let payload: Value = serde_json::from_str(&row.payload_json)?;
+    Ok(ReviewArtifact {
+        id: row.id,
+        session_id: row.session_id,
+        tool_call_id: row.tool_call_id,
+        kind: row.kind,
+        title: row.title,
+        summary: row.summary,
+        payload,
+        source: row.source,
+        created_at: row.created_at,
+    })
+}
+
+fn row_to_review_artifact_summary(row: ReviewArtifactRow) -> ReviewArtifactSummary {
+    ReviewArtifactSummary {
+        id: row.id,
+        session_id: row.session_id,
+        tool_call_id: row.tool_call_id,
+        kind: row.kind,
+        title: row.title,
+        summary: row.summary,
+        source: row.source,
+        created_at: row.created_at,
+    }
+}
+
 pub fn parse_permission_options(options_json: &Value) -> Vec<PermissionOption> {
     options_json
         .as_array()
@@ -731,5 +862,58 @@ mod tests {
             .failure_message
             .unwrap()
             .contains("backend restarted"));
+    }
+
+    #[tokio::test]
+    async fn stores_and_scopes_review_artifacts() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+        let other_session = storage
+            .create_session(&workspace.id, "acp-session-2".to_string())
+            .await
+            .unwrap();
+
+        let artifact = storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: "tool_call".to_string(),
+                title: "Run command".to_string(),
+                summary: "execute completed".to_string(),
+                payload: serde_json::json!({"toolCallId": "tool-1", "status": "completed"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let summaries = storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].tool_call_id.as_deref(), Some("tool-1"));
+
+        let detail = storage
+            .get_review_artifact_for_session(&session.id, &artifact.id)
+            .await
+            .unwrap();
+        assert_eq!(detail.payload["status"], "completed");
+
+        assert!(storage
+            .get_review_artifact_for_session(&other_session.id, &artifact.id)
+            .await
+            .is_err());
+
+        let session_detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(session_detail.review_artifacts.len(), 1);
     }
 }

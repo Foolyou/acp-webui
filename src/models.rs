@@ -40,8 +40,67 @@ pub struct SessionDetail {
     pub session: Session,
     pub workspace: Workspace,
     pub messages: Vec<Message>,
+    pub review_artifacts: Vec<ReviewArtifactSummary>,
     pub pending_permission: Option<PermissionRequest>,
     pub failure_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewArtifactRow {
+    pub id: String,
+    pub session_id: String,
+    pub tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub payload_json: String,
+    pub source: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewArtifactSummary {
+    pub id: String,
+    pub session_id: String,
+    pub tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub source: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewArtifact {
+    pub id: String,
+    pub session_id: String,
+    pub tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub payload: Value,
+    pub source: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewReviewArtifact {
+    pub session_id: String,
+    pub tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub payload: Value,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFallbackResponse {
+    pub artifact: ReviewArtifact,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -139,4 +198,12 @@ pub mod permission_status {
 pub mod permission_option_kind {
     pub const ALLOW_ONCE: &str = "allow_once";
     pub const REJECT_ONCE: &str = "reject_once";
+}
+
+pub mod review_artifact_kind {
+    pub const DIFF: &str = "diff";
+    pub const MARKDOWN: &str = "markdown";
+    pub const TERMINAL: &str = "terminal";
+    pub const TOOL_CALL: &str = "tool_call";
+    pub const GENERIC: &str = "generic";
 }

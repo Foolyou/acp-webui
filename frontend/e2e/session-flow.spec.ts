@@ -96,6 +96,27 @@ test("approves a pending permission request and keeps always options disabled", 
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });
 
+test("shows session review artifacts in the conversation", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByText("ready").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review" })).toHaveCount(0);
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Codex Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Trigger review artifact.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
+  await page.getByRole("button", { name: /Inspect review evidence/ }).click();
+  await expect(page.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
+  await expect(page.getByText("git diff -- README.md")).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toHaveCount(1);
+});
+
 async function ensureWorkspace(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Session" }).click();
   const existing = page.getByRole("button", { name: /acp-webui/ }).first();

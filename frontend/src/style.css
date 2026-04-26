@@ -186,6 +186,12 @@ h2 {
   margin-bottom: 0.75rem;
 }
 
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .inline-form,
 .composer {
   display: grid;
@@ -286,6 +292,27 @@ h2 {
   padding: 0.75rem;
 }
 
+.review-card {
+  display: grid;
+  gap: 0.3rem;
+  width: 100%;
+  border: 1px solid #ccd6dc;
+  border-radius: 8px;
+  background: #f6fbfd;
+  color: #20231f;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.review-card span,
+.review-card small {
+  overflow-wrap: anywhere;
+}
+
+.review-card small {
+  color: #657065;
+}
+
 .message.user {
   background: #eef6f3;
   border-color: #c8dcd5;
@@ -340,6 +367,75 @@ h2 {
   background: #fff;
   padding: 1rem;
   box-shadow: 0 -16px 40px rgba(32, 35, 31, 0.18);
+}
+
+.review-overlay {
+  width: min(100%, 820px);
+  max-height: 92dvh;
+  margin: 0 auto;
+  overflow: auto;
+  border: 1px solid #d4d8ce;
+  border-radius: 8px 8px 0 0;
+  background: #fff;
+  padding: 1rem;
+  box-shadow: 0 -16px 40px rgba(32, 35, 31, 0.18);
+}
+
+.review-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.review-nav span {
+  border: 1px solid #dfe3d9;
+  border-radius: 8px;
+  background: #f7f7f3;
+  color: #20231f;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.review-nav.hunks span {
+  color: #657065;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.review-pre {
+  max-height: 58dvh;
+  overflow: auto;
+  border: 1px solid #dfe3d9;
+  border-radius: 8px;
+  background: #f7f7f3;
+  color: #20231f;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-pre.diff {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown-preview {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #dfe3d9;
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview p {
+  margin: 0;
+}
+
+.raw-details {
+  margin-top: 0.75rem;
 }
 
 .approval-context {
@@ -400,6 +496,11 @@ h2 {
   background: #fff;
   color: #20231f;
   border: 1px solid #d4d8ce;
+}
+
+.small {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.82rem;
 }
 
 @media (max-width: 560px) {

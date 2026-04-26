@@ -9,7 +9,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
 use serde::Serialize;
+use serde_json::json;
+use tokio::process::Command;
 use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
@@ -17,8 +20,9 @@ use crate::{
     acp::{CodexRuntime, ConnectionStatus, RealtimeEvent},
     error::{AppError, AppResult},
     models::{
-        role, status, CreateWorkspaceRequest, InboxItem, Message, PermissionRequest, PromptRequest,
-        ResolvePermissionRequest, SessionDetail, Workspace,
+        review_artifact_kind, role, status, CreateWorkspaceRequest, DiffFallbackResponse,
+        InboxItem, Message, PermissionRequest, PromptRequest, ResolvePermissionRequest,
+        ReviewArtifact, ReviewArtifactSummary, SessionDetail, Workspace,
     },
     storage::Storage,
 };
@@ -56,6 +60,15 @@ pub fn api_router() -> Router<AppState> {
             post(create_session),
         )
         .route("/api/sessions/{session_id}", get(get_session))
+        .route(
+            "/api/sessions/{session_id}/review-artifacts",
+            get(list_review_artifacts),
+        )
+        .route(
+            "/api/sessions/{session_id}/review-artifacts/{artifact_id}",
+            get(get_review_artifact),
+        )
+        .route("/api/sessions/{session_id}/review-diff", get(review_diff))
         .route("/api/sessions/{session_id}/prompt", post(submit_prompt))
         .route("/api/sessions/{session_id}/cancel", post(cancel_session))
         .route(
@@ -151,6 +164,84 @@ async fn get_session(
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
     Ok(Json(detail))
+}
+
+async fn list_review_artifacts(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> AppResult<Json<Vec<ReviewArtifactSummary>>> {
+    state
+        .storage
+        .get_session(&session_id)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    Ok(Json(
+        state
+            .storage
+            .list_review_artifact_summaries(&session_id)
+            .await?,
+    ))
+}
+
+async fn get_review_artifact(
+    State(state): State<AppState>,
+    Path((session_id, artifact_id)): Path<(String, String)>,
+) -> AppResult<Json<ReviewArtifact>> {
+    let artifact = state
+        .storage
+        .get_review_artifact_for_session(&session_id, &artifact_id)
+        .await
+        .map_err(|_| AppError::NotFound("Review artifact not found".to_string()))?;
+    Ok(Json(artifact))
+}
+
+async fn review_diff(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> AppResult<Json<DiffFallbackResponse>> {
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    let workspace = state.storage.get_workspace(&session.workspace_id).await?;
+    let output = Command::new("git")
+        .args(["diff", "--no-ext-diff"])
+        .current_dir(&workspace.path)
+        .output()
+        .await
+        .map_err(|error| {
+            AppError::ServiceUnavailable(format!("Failed to run git diff: {error}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::ServiceUnavailable(if stderr.is_empty() {
+            "git diff failed for this workspace".to_string()
+        } else {
+            stderr
+        }));
+    }
+
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+    let summary = summarize_diff(&diff);
+    let artifact = ReviewArtifact {
+        id: format!("diff-fallback-{session_id}"),
+        session_id,
+        tool_call_id: None,
+        kind: review_artifact_kind::DIFF.to_string(),
+        title: "Workspace diff".to_string(),
+        summary,
+        payload: json!({
+            "format": "unified_diff",
+            "diff": diff,
+            "source": "git diff --no-ext-diff"
+        }),
+        source: "git_diff".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+
+    Ok(Json(DiffFallbackResponse { artifact }))
 }
 
 async fn submit_prompt(
@@ -369,6 +460,25 @@ async fn send_ws_event(socket: &mut WebSocket, event: &RealtimeEvent) -> anyhow:
     Ok(())
 }
 
+fn summarize_diff(diff: &str) -> String {
+    if diff.trim().is_empty() {
+        return "No workspace changes".to_string();
+    }
+    let files = diff
+        .lines()
+        .filter(|line| line.starts_with("diff --git "))
+        .count();
+    let additions = diff
+        .lines()
+        .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        .count();
+    let deletions = diff
+        .lines()
+        .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+        .count();
+    format!("{files} files changed, +{additions} -{deletions}")
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -379,7 +489,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::{config::Config, storage::NewPermissionRequest};
+    use std::process::Command as StdCommand;
+
+    use crate::{config::Config, models::NewReviewArtifact, storage::NewPermissionRequest};
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -524,6 +636,184 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.as_array().unwrap().len(), 1);
         assert_eq!(json[0]["permission"]["title"], "Run command");
+    }
+
+    #[tokio::test]
+    async fn review_artifact_routes_are_session_scoped() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let other_session = state
+            .storage
+            .create_session(&workspace.id, "other-acp-session".to_string())
+            .await
+            .unwrap();
+        let artifact = state
+            .storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: review_artifact_kind::TOOL_CALL.to_string(),
+                title: "Run command".to_string(),
+                summary: "execute completed".to_string(),
+                payload: serde_json::json!({"status": "completed"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        let app = api_router().with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{}/review-artifacts", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["title"], "Run command");
+        assert!(json[0].get("payload").is_none());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sessions/{}/review-artifacts/{}",
+                        session.id, artifact.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["payload"]["status"], "completed");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/sessions/{}/review-artifacts/{}",
+                        other_session.id, artifact.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn review_diff_returns_workspace_git_diff() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        StdCommand::new("git")
+            .args(["init"])
+            .current_dir(workspace_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(workspace_dir.path().join("note.txt"), "hello\n").unwrap();
+        StdCommand::new("git")
+            .args(["add", "note.txt"])
+            .current_dir(workspace_dir.path())
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args([
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "Initial",
+            ])
+            .current_dir(workspace_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(workspace_dir.path().join("note.txt"), "hello\nreview\n").unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{}/review-diff", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["artifact"]["kind"], "diff");
+        assert!(json["artifact"]["payload"]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("note.txt"));
+    }
+
+    #[tokio::test]
+    async fn review_diff_reports_git_errors_without_changing_status() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{}/review-diff", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            state.storage.get_session(&session.id).await.unwrap().status,
+            status::IDLE
+        );
     }
 
     #[tokio::test]
