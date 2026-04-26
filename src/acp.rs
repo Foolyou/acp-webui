@@ -19,8 +19,8 @@ use tokio::{
 use crate::{
     config::Config,
     models::{
-        permission_option_kind, permission_status, review_artifact_kind, status, NewReviewArtifact,
-        PermissionRequest, ReviewArtifact, ReviewArtifactSummary,
+        permission_option_kind, permission_status, review_artifact_kind, role, status,
+        NewReviewArtifact, PermissionRequest, ReviewArtifact, ReviewArtifactSummary,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -695,6 +695,14 @@ async fn handle_session_update(
                 tracing::debug!(acp_session_id, "review update for unknown ACP session");
                 return;
             };
+            flush_assistant_buffer(
+                acp_session_id,
+                events_tx,
+                storage,
+                session_map,
+                assistant_buffers,
+            )
+            .await;
             let artifact_input = review_artifact_from_update(&local_session_id, update);
             match storage.create_review_artifact(artifact_input).await {
                 Ok(artifact) => {
@@ -714,6 +722,41 @@ async fn handle_session_update(
             );
         }
     }
+}
+
+async fn flush_assistant_buffer(
+    acp_session_id: &str,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    storage: &Storage,
+    session_map: &Arc<RwLock<HashMap<String, String>>>,
+    assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+) {
+    let content = {
+        let mut buffers = assistant_buffers.lock().await;
+        let Some(buffer) = buffers.get_mut(acp_session_id) else {
+            return;
+        };
+        if buffer.is_empty() {
+            return;
+        }
+        std::mem::take(buffer)
+    };
+
+    let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned() else {
+        tracing::debug!(acp_session_id, "assistant buffer for unknown ACP session");
+        return;
+    };
+
+    if let Err(error) = storage
+        .create_message(&local_session_id, role::ASSISTANT, &content, status::IDLE)
+        .await
+    {
+        tracing::error!(?error, "failed to persist assistant message segment");
+    }
+    let _ = events_tx.send(RealtimeEvent::AssistantMessage {
+        session_id: local_session_id,
+        content,
+    });
 }
 
 fn review_artifact_from_update(session_id: &str, update: &Value) -> NewReviewArtifact {
@@ -1087,6 +1130,49 @@ for line in sys.stdin:
                     }
                 }
             })
+        elif mode == "interleaved":
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "First segment"
+                        }
+                    }
+                }
+            })
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tool-1",
+                        "title": "Run fake tool",
+                        "kind": "execute",
+                        "status": "completed"
+                    }
+                }
+            })
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "Second segment"
+                        }
+                    }
+                }
+            })
 
         send({
             "jsonrpc": "2.0",
@@ -1264,6 +1350,80 @@ for line in sys.stdin:
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_acp_tool_call_flushes_pending_assistant_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "interleaved"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        let acp_session_id = runtime
+            .new_session(dir.path().to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, acp_session_id.clone())
+            .await
+            .unwrap();
+        runtime
+            .register_session(acp_session_id.clone(), session.id.clone())
+            .await;
+
+        let mut rx = events_tx.subscribe();
+        let outcome = runtime
+            .prompt(acp_session_id, "Interleave".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.content, "Second segment");
+        assert_eq!(
+            storage
+                .list_messages(&session.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|message| message.content)
+                .collect::<Vec<_>>(),
+            vec!["First segment"]
+        );
+
+        let events = timeout(Duration::from_secs(1), async move {
+            let mut events = Vec::new();
+            while events.len() < 2 {
+                match rx.recv().await.unwrap() {
+                    RealtimeEvent::AssistantMessage { content, .. } => {
+                        events.push(format!("message:{content}"));
+                    }
+                    RealtimeEvent::ReviewArtifact { artifact } => {
+                        events.push(format!("artifact:{}", artifact.title));
+                    }
+                    _ => continue,
+                }
+            }
+            events
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            events,
+            vec![
+                "message:First segment".to_string(),
+                "artifact:Run fake tool".to_string()
+            ]
         );
     }
 

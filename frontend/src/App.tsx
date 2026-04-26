@@ -609,6 +609,7 @@ function SessionPane({
 
   const waitingApproval = currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
+  const timelineEntries = buildTimelineEntries(currentSession);
 
   return (
     <>
@@ -619,12 +620,13 @@ function SessionPane({
             Waiting for approval: {currentSession.pendingPermission?.title ?? "Permission requested"}
           </div>
         ) : null}
-        {currentSession.messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
-        {currentSession.reviewArtifacts.map((artifact) => (
-          <ReviewArtifactCard artifact={artifact} key={artifact.id} onOpen={onOpenReviewArtifact} />
-        ))}
+        {timelineEntries.map((entry) =>
+          entry.kind === "message" ? (
+            <MessageBubble key={`message-${entry.message.id}`} message={entry.message} />
+          ) : (
+            <ReviewArtifactCard artifact={entry.artifact} key={`artifact-${entry.artifact.id}`} onOpen={onOpenReviewArtifact} />
+          )
+        )}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
       </div>
       <PromptComposer busy={busy} disabled={running} waitingApproval={waitingApproval} onSendPrompt={onSendPrompt} />
@@ -901,6 +903,37 @@ function toolSummary(toolCall: unknown) {
     }
   }
   return JSON.stringify(toolCall, null, 2);
+}
+
+type TimelineEntry =
+  | { kind: "message"; message: ChatMessage; timestamp: number; index: number }
+  | { kind: "artifact"; artifact: ReviewArtifactSummary; timestamp: number; index: number };
+
+function buildTimelineEntries(detail: SessionDetail): TimelineEntry[] {
+  const messages = detail.messages.map((message, index): TimelineEntry => ({
+    kind: "message",
+    message,
+    timestamp: timestampValue(message.createdAt),
+    index
+  }));
+  const artifacts = detail.reviewArtifacts.map((artifact, index): TimelineEntry => ({
+    kind: "artifact",
+    artifact,
+    timestamp: timestampValue(artifact.createdAt),
+    index: detail.messages.length + index
+  }));
+
+  return [...messages, ...artifacts].sort((left, right) => {
+    if (left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp;
+    }
+    return left.index - right.index;
+  });
+}
+
+function timestampValue(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
 }
 
 function sessionDetailToListItem(detail: SessionDetail): SessionListItem {

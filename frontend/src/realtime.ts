@@ -124,13 +124,18 @@ function applyReviewArtifact(state: AppSnapshot, artifact: ReviewArtifactSummary
     existingIndex >= 0
       ? state.currentSession.reviewArtifacts.map((item) => (item.id === artifact.id ? artifact : item))
       : [...state.currentSession.reviewArtifacts, artifact];
+  const messages = state.liveAssistant
+    ? [...state.currentSession.messages, assistantMessage(state.currentSession.session.id, state.liveAssistant)]
+    : state.currentSession.messages;
 
   return {
     ...state,
     currentSession: {
       ...state.currentSession,
+      messages,
       reviewArtifacts
-    }
+    },
+    liveAssistant: ""
   };
 }
 
