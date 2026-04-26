@@ -66,6 +66,9 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
     case "review_artifact":
       return applyReviewArtifact(state, event.artifact);
 
+    case "timeline_item_upsert":
+      return state;
+
     case "error":
       return { ...state, error: event.message };
 

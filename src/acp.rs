@@ -20,7 +20,8 @@ use crate::{
     config::Config,
     models::{
         permission_option_kind, permission_status, review_artifact_kind, role, status,
-        NewReviewArtifact, PermissionRequest, ReviewArtifact, ReviewArtifactSummary,
+        tool_call_status, NewReviewArtifact, PermissionRequest, ReviewArtifact,
+        ReviewArtifactSummary, TimelineItem, ToolCallRow, UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -90,6 +91,9 @@ pub enum RealtimeEvent {
     },
     ReviewArtifact {
         artifact: ReviewArtifactSummary,
+    },
+    TimelineItemUpsert {
+        item: TimelineItem,
     },
     Error {
         message: String,
@@ -208,6 +212,13 @@ impl CodexRuntime {
             .write()
             .await
             .insert(acp_session_id, local_session_id);
+    }
+
+    pub async fn has_registered_session(&self, acp_session_id: Option<&str>) -> bool {
+        let Some(acp_session_id) = acp_session_id else {
+            return false;
+        };
+        self.session_map.read().await.contains_key(acp_session_id)
     }
 
     pub async fn prompt(
@@ -703,6 +714,17 @@ async fn handle_session_update(
                 assistant_buffers,
             )
             .await;
+            let tool_input = tool_call_from_update(&local_session_id, update);
+            match storage.upsert_tool_call(tool_input).await {
+                Ok(tool_call) => {
+                    if let Some(item) = tool_call_timeline_item(&tool_call) {
+                        let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert { item });
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(?error, ?update, "failed to persist tool call");
+                }
+            }
             let artifact_input = review_artifact_from_update(&local_session_id, update);
             match storage.create_review_artifact(artifact_input).await {
                 Ok(artifact) => {
@@ -722,6 +744,62 @@ async fn handle_session_update(
             );
         }
     }
+}
+
+fn tool_call_from_update(session_id: &str, update: &Value) -> UpsertToolCall {
+    let status = normalized_tool_status(update);
+    UpsertToolCall {
+        session_id: session_id.to_string(),
+        acp_tool_call_id: tool_call_id(update),
+        kind: tool_call_kind(update),
+        title: tool_call_title(update),
+        summary: review_summary(
+            update
+                .get("sessionUpdate")
+                .and_then(Value::as_str)
+                .unwrap_or("tool_call"),
+            update,
+        ),
+        status,
+        input: update.clone(),
+        output: update.get("output").cloned(),
+    }
+}
+
+fn normalized_tool_status(update: &Value) -> String {
+    let status = update
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or(tool_call_status::RUNNING)
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "completed" | "complete" | "succeeded" | "success" => {
+            tool_call_status::COMPLETED.to_string()
+        }
+        "failed" | "error" => tool_call_status::FAILED.to_string(),
+        _ => tool_call_status::RUNNING.to_string(),
+    }
+}
+
+fn tool_call_timeline_item(row: &ToolCallRow) -> Option<TimelineItem> {
+    let input = serde_json::from_str(&row.input_json).ok()?;
+    let output = row
+        .output_json
+        .as_ref()
+        .and_then(|value| serde_json::from_str(value).ok());
+    Some(TimelineItem::ToolCall {
+        id: row.id.clone(),
+        session_id: row.session_id.clone(),
+        timestamp: row.created_at.clone(),
+        status: row.status.clone(),
+        tool_call_id: row.acp_tool_call_id.clone(),
+        tool_kind: row.kind.clone(),
+        title: row.title.clone(),
+        summary: row.summary.clone(),
+        input,
+        output,
+        review_artifact_ids: Vec::new(),
+    })
 }
 
 async fn flush_assistant_buffer(
@@ -747,11 +825,25 @@ async fn flush_assistant_buffer(
         return;
     };
 
-    if let Err(error) = storage
+    match storage
         .create_message(&local_session_id, role::ASSISTANT, &content, status::IDLE)
         .await
     {
-        tracing::error!(?error, "failed to persist assistant message segment");
+        Ok(message) => {
+            let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+                item: TimelineItem::Message {
+                    id: message.id.clone(),
+                    session_id: message.session_id.clone(),
+                    timestamp: message.created_at.clone(),
+                    status: message.status.clone(),
+                    role: message.role.clone(),
+                    content: message.content.clone(),
+                },
+            });
+        }
+        Err(error) => {
+            tracing::error!(?error, "failed to persist assistant message segment");
+        }
     }
     let _ = events_tx.send(RealtimeEvent::AssistantMessage {
         session_id: local_session_id,

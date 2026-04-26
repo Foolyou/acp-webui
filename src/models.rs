@@ -41,8 +41,61 @@ pub struct SessionDetail {
     pub workspace: Workspace,
     pub messages: Vec<Message>,
     pub review_artifacts: Vec<ReviewArtifactSummary>,
+    pub timeline: Vec<TimelineItem>,
     pub pending_permission: Option<PermissionRequest>,
     pub failure_message: Option<String>,
+    pub continuable: bool,
+    pub view_only_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum TimelineItem {
+    Message {
+        id: String,
+        session_id: String,
+        timestamp: String,
+        status: String,
+        role: String,
+        content: String,
+    },
+    ToolCall {
+        id: String,
+        session_id: String,
+        timestamp: String,
+        status: String,
+        tool_call_id: Option<String>,
+        tool_kind: String,
+        title: String,
+        summary: String,
+        input: Value,
+        output: Option<Value>,
+        review_artifact_ids: Vec<String>,
+    },
+    Permission {
+        id: String,
+        session_id: String,
+        timestamp: String,
+        status: String,
+        tool_call_id: Option<String>,
+        title: String,
+        permission_kind: String,
+    },
+    ReviewArtifact {
+        id: String,
+        session_id: String,
+        timestamp: String,
+        status: String,
+        tool_call_id: Option<String>,
+        artifact_kind: String,
+        title: String,
+        summary: String,
+        source: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -95,6 +148,35 @@ pub struct NewReviewArtifact {
     pub summary: String,
     pub payload: Value,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallRow {
+    pub id: String,
+    pub session_id: String,
+    pub acp_tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub input_json: String,
+    pub output_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertToolCall {
+    pub session_id: String,
+    pub acp_tool_call_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub input: Value,
+    pub output: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +253,8 @@ pub struct SessionListItem {
     pub pending_permission: Option<SessionListPermission>,
     pub review_artifact_count: i64,
     pub has_review_artifacts: bool,
+    pub continuable: bool,
+    pub view_only_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,4 +310,10 @@ pub mod review_artifact_kind {
     pub const TERMINAL: &str = "terminal";
     pub const TOOL_CALL: &str = "tool_call";
     pub const GENERIC: &str = "generic";
+}
+
+pub mod tool_call_status {
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
 }

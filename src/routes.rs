@@ -22,7 +22,8 @@ use crate::{
     models::{
         review_artifact_kind, role, status, CreateWorkspaceRequest, DiffFallbackResponse,
         InboxItem, Message, PermissionRequest, PromptRequest, ResolvePermissionRequest,
-        ReviewArtifact, ReviewArtifactSummary, SessionDetail, SessionListItem, Workspace,
+        ReviewArtifact, ReviewArtifactSummary, SessionDetail, SessionListItem, TimelineItem,
+        Workspace,
     },
     storage::Storage,
 };
@@ -57,7 +58,7 @@ pub fn api_router() -> Router<AppState> {
         )
         .route(
             "/api/workspaces/{workspace_id}/sessions",
-            post(create_session),
+            get(list_workspace_sessions).post(create_session),
         )
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
@@ -96,7 +97,20 @@ async fn inbox(State(state): State<AppState>) -> AppResult<Json<Vec<InboxItem>>>
 }
 
 async fn list_sessions(State(state): State<AppState>) -> AppResult<Json<Vec<SessionListItem>>> {
-    Ok(Json(state.storage.list_session_items().await?))
+    let items = state.storage.list_session_items().await?;
+    Ok(Json(apply_session_list_continuity(&state, items).await))
+}
+
+async fn list_workspace_sessions(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<String>,
+) -> AppResult<Json<Vec<SessionListItem>>> {
+    let items = state
+        .storage
+        .list_session_items_for_workspace(&workspace_id)
+        .await
+        .map_err(|_| AppError::NotFound("Workspace not found".to_string()))?;
+    Ok(Json(apply_session_list_continuity(&state, items).await))
 }
 
 async fn list_workspaces(State(state): State<AppState>) -> AppResult<Json<Vec<Workspace>>> {
@@ -165,7 +179,11 @@ async fn get_session(
 ) -> AppResult<Json<SessionDetail>> {
     let detail = state
         .storage
-        .session_detail(&session_id)
+        .session_detail_with_continuity(
+            &session_id,
+            state.session_is_continuable_by_id(&session_id).await?,
+            state.view_only_reason_for_session_id(&session_id).await?,
+        )
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
     Ok(Json(detail))
@@ -274,6 +292,14 @@ async fn submit_prompt(
         return Err(AppError::Conflict(message.to_string()));
     }
 
+    if !state
+        .codex
+        .has_registered_session(session.acp_session_id.as_deref())
+        .await
+    {
+        return Err(AppError::Conflict(view_only_reason().to_string()));
+    }
+
     let Some(acp_session_id) = session.acp_session_id.clone() else {
         return Err(AppError::Conflict(
             "Session is missing an ACP session id".to_string(),
@@ -304,6 +330,53 @@ async fn submit_prompt(
     ));
 
     Ok(Json(PromptAcceptedResponse { message }))
+}
+
+impl AppState {
+    async fn session_is_continuable_by_id(&self, session_id: &str) -> AppResult<bool> {
+        let session = self
+            .storage
+            .get_session(session_id)
+            .await
+            .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+        Ok(self
+            .codex
+            .has_registered_session(session.acp_session_id.as_deref())
+            .await)
+    }
+
+    async fn view_only_reason_for_session_id(&self, session_id: &str) -> AppResult<Option<String>> {
+        if self.session_is_continuable_by_id(session_id).await? {
+            Ok(None)
+        } else {
+            Ok(Some(view_only_reason().to_string()))
+        }
+    }
+}
+
+async fn apply_session_list_continuity(
+    state: &AppState,
+    items: Vec<SessionListItem>,
+) -> Vec<SessionListItem> {
+    let mut updated = Vec::with_capacity(items.len());
+    for mut item in items {
+        let continuable = state
+            .codex
+            .has_registered_session(item.session.acp_session_id.as_deref())
+            .await;
+        item.continuable = continuable;
+        item.view_only_reason = if continuable {
+            None
+        } else {
+            Some(view_only_reason().to_string())
+        };
+        updated.push(item);
+    }
+    updated
+}
+
+fn view_only_reason() -> &'static str {
+    "This session history is available for review, but the live Codex runtime context is not available. Start a new session to continue working."
 }
 
 async fn resolve_permission(
@@ -382,11 +455,25 @@ async fn run_prompt_turn(
                 }
             }
             if !outcome.content.is_empty() {
-                if let Err(error) = storage
+                match storage
                     .create_message(&session_id, role::ASSISTANT, &outcome.content, status::IDLE)
                     .await
                 {
-                    tracing::error!(?error, "failed to persist assistant message");
+                    Ok(message) => {
+                        let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+                            item: TimelineItem::Message {
+                                id: message.id.clone(),
+                                session_id: message.session_id.clone(),
+                                timestamp: message.created_at.clone(),
+                                status: message.status.clone(),
+                                role: message.role.clone(),
+                                content: message.content.clone(),
+                            },
+                        });
+                    }
+                    Err(error) => {
+                        tracing::error!(?error, "failed to persist assistant message");
+                    }
                 }
                 let _ = events_tx.send(RealtimeEvent::AssistantMessage {
                     session_id: session_id.clone(),
@@ -711,6 +798,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_sessions_endpoint_filters_by_workspace() {
+        let (state, _db_dir) = test_state().await;
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let first_workspace = state
+            .storage
+            .create_workspace(
+                first_dir.path().to_string_lossy(),
+                Some("First".to_string()),
+            )
+            .await
+            .unwrap();
+        let second_workspace = state
+            .storage
+            .create_workspace(
+                second_dir.path().to_string_lossy(),
+                Some("Second".to_string()),
+            )
+            .await
+            .unwrap();
+        let first_session = state
+            .storage
+            .create_session(&first_workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+        state
+            .storage
+            .create_session(&second_workspace.id, "acp-session-2".to_string())
+            .await
+            .unwrap();
+        let app = api_router().with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/workspaces/{}/sessions", first_workspace.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["session"]["id"], first_session.id);
+        assert_eq!(json[0]["workspace"]["id"], first_workspace.id);
+        assert_eq!(json[0]["continuable"], false);
+        assert!(json[0]["viewOnlyReason"]
+            .as_str()
+            .unwrap()
+            .contains("review"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workspaces/missing-workspace/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn review_artifact_routes_are_session_scoped() {
         let (state, _db_dir) = test_state().await;
         let workspace_dir = tempfile::tempdir().unwrap();
@@ -923,6 +1078,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn prompt_is_rejected_for_non_continuable_session() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router().with_state(state);
+
+        let body = serde_json::json!({"prompt": "continue"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("runtime context"));
     }
 
     #[tokio::test]

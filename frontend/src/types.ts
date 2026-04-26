@@ -67,13 +67,63 @@ export type ReviewArtifact = ReviewArtifactSummary & {
   payload: unknown;
 };
 
+export type TimelineItem =
+  | {
+      kind: "message";
+      id: string;
+      sessionId: string;
+      timestamp: string;
+      status: string;
+      role: "user" | "assistant" | "system" | string;
+      content: string;
+    }
+  | {
+      kind: "tool_call";
+      id: string;
+      sessionId: string;
+      timestamp: string;
+      status: string;
+      toolCallId?: string | null;
+      toolKind: string;
+      title: string;
+      summary: string;
+      input: unknown;
+      output?: unknown | null;
+      reviewArtifactIds: string[];
+    }
+  | {
+      kind: "permission";
+      id: string;
+      sessionId: string;
+      timestamp: string;
+      status: string;
+      toolCallId?: string | null;
+      title: string;
+      permissionKind: string;
+    }
+  | {
+      kind: "review_artifact";
+      id: string;
+      sessionId: string;
+      timestamp: string;
+      status: string;
+      toolCallId?: string | null;
+      artifactKind: string;
+      title: string;
+      summary: string;
+      source: string;
+    };
+
 export type SessionDetail = {
   session: Session;
   workspace: Workspace;
   messages: ChatMessage[];
   reviewArtifacts: ReviewArtifactSummary[];
+  timeline: TimelineItem[];
   pendingPermission?: PermissionRequest | null;
   failureMessage?: string | null;
+  continuable: boolean;
+  viewOnlyReason?: string | null;
 };
 
 export type InboxItem = {
@@ -96,6 +146,8 @@ export type SessionListItem = {
   pendingPermission?: SessionListPermission | null;
   reviewArtifactCount: number;
   hasReviewArtifacts: boolean;
+  continuable: boolean;
+  viewOnlyReason?: string | null;
 };
 
 export type AppData = {
@@ -111,6 +163,7 @@ export type RealtimeEvent =
   | { type: "permission_requested"; permission: PermissionRequest }
   | { type: "permission_resolved"; sessionId: string; permissionId: string }
   | { type: "review_artifact"; artifact: ReviewArtifactSummary }
+  | { type: "timeline_item_upsert"; item: TimelineItem }
   | { type: "error"; message: string };
 
 export type SocketState = "connecting" | "connected" | "disconnected";

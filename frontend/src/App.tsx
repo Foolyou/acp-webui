@@ -950,7 +950,9 @@ function sessionDetailToListItem(detail: SessionDetail): SessionListItem {
         }
       : null,
     reviewArtifactCount: detail.reviewArtifacts.length,
-    hasReviewArtifacts: detail.reviewArtifacts.length > 0
+    hasReviewArtifacts: detail.reviewArtifacts.length > 0,
+    continuable: detail.continuable,
+    viewOnlyReason: detail.viewOnlyReason ?? null
   };
 }
 
@@ -978,6 +980,8 @@ function applySessionListRealtime(
       return clearSessionListPermission(sessions, event.sessionId);
     case "review_artifact":
       return updateSessionListReviewAvailability(sessions, event.artifact.sessionId);
+    case "timeline_item_upsert":
+      return sessions;
     default:
       return sessions;
   }
