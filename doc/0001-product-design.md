@@ -121,7 +121,7 @@ The product should support a yolo mode, but yolo mode must be visible and scoped
 
 Diff and review data should prefer ACP-provided updates or artifacts.
 
-If ACP does not provide enough diff data, the Review page may fall back to running `git diff` in the workspace. This fallback should happen when the Review page requests it, not eagerly after every file write.
+If ACP does not provide enough diff data, the session review drill-down may fall back to running `git diff` in the workspace. This fallback should happen when the user opens review evidence for a session, not eagerly after every file write.
 
 ### 3.8 Persistence
 
@@ -139,10 +139,11 @@ The mobile UI should use a small set of bottom-level areas:
 
 - Inbox
 - Sessions
-- Review
 - Settings
 
 Inbox and Session Detail are expected to be the highest-frequency surfaces.
+
+Review should not be a first-level navigation destination in the first version. It should be entered from Session Detail when the user opens a diff, terminal output, Markdown artifact, or other evidence item from the conversation.
 
 ### 4.2 Inbox
 
@@ -238,10 +239,10 @@ Mobile display space is limited, so the timeline should be grouped and editorial
 - Tool calls should be grouped where possible.
 - High-risk tool calls should expose important details by default.
 - Terminal output should show a tail snippet with an option to open full output.
-- Diff changes should show a summary and link to Review.
-- Markdown artifacts should offer preview.
+- Diff changes should show a summary and open a session-scoped diff viewer.
+- Markdown artifacts should offer preview from the conversation.
 
-Session Detail should tell the story of the work. Review should expose the evidence in detail.
+Session Detail should tell the story of the work and expose detailed evidence through inline cards and full-screen drill-downs. Review is a mode of inspecting session evidence, not a separate primary surface.
 
 ### 4.7 Approval Experience
 
@@ -261,11 +262,13 @@ It should include enough context to decide:
 
 If the browser disconnects, the pending approval should remain stored on the backend. After reconnect, the UI should immediately restore the pending approval state.
 
-### 4.8 Review Experience
+### 4.8 Session Review Experience
 
-Review is for detailed inspection, not for first-level session narration.
+Session review is for detailed inspection, not for first-level session narration.
 
-The Review page should support:
+The first version should embed review entry points inside Session Detail. Timeline cards should summarize changed files, terminal output, Markdown artifacts, and ACP artifacts. Selecting one of those cards should open a full-screen drill-down that remains scoped to the current session.
+
+Session review drill-downs should support:
 
 - Unified diff browsing optimized for mobile
 - Changed file list
@@ -281,7 +284,7 @@ Side-by-side diff is not a first-version priority on mobile.
 
 Markdown output should be previewable because agent work often produces plans, reports, summaries, and documentation.
 
-Markdown preview is part of review, not a replacement for raw artifact access.
+Markdown preview is part of session review, not a replacement for raw artifact access.
 
 ### 4.10 Full-Screen and Reconnect
 
@@ -306,7 +309,7 @@ The system needs an internal event model because the UI requires:
 - Session timeline rendering
 - Inbox projections
 - Pending approval queues
-- Review artifacts
+- Session review artifacts
 - Terminal snapshots
 - Durable local history
 
@@ -327,7 +330,7 @@ Normalized Event
 
 Projection
   query-friendly current state
-  used by Inbox, Session list, Approval queue, Review list
+  used by Inbox, Session list, Approval queue, and session review drill-downs
 ```
 
 ### 5.3 Candidate Normalized Events
@@ -461,7 +464,7 @@ Potential backend modules:
 - `events`: raw and normalized event persistence
 - `storage`: SQLite access
 - `workspace`: workspace allowlist and path safety
-- `review`: ACP diff and on-demand `git diff` fallback
+- `review`: session-scoped ACP diff, artifacts, terminal evidence, and on-demand `git diff` fallback
 
 ### 6.5 Platform Priorities
 
@@ -482,7 +485,7 @@ These are not yet decided:
 - How much raw ACP data should be retained by default.
 - What retention policy should apply to terminal output.
 - How yolo mode should be scoped in the final product: session, workspace, process, or app-level.
-- Whether Review should support comments or checklist-style review notes later.
+- Whether session review should support comments or checklist-style review notes later.
 - How much agent capability discovery should be reflected directly in the UI.
 - Whether `git diff` fallback should support unstaged only, staged plus unstaged, or configurable modes.
 - How cancellation maps to ACP and individual agent behavior across Codex, Claude Code, and OpenCode.
@@ -503,13 +506,14 @@ Product architecture decisions:
 
 Core experience decisions:
 
-- Primary surfaces: Inbox, Sessions, Review, Settings.
+- Primary surfaces: Inbox, Sessions, Settings.
 - Session Detail is the core cockpit.
 - Session Detail should combine chat-like flow with structured job-like cards.
 - Approval must be prominent, blocking, durable, and recoverable after reconnect.
 - Running turns do not accept queued prompts in the first version; show cancel instead.
-- Review supports mobile unified diff, Markdown preview, terminal output, and artifacts.
-- Diff source prefers ACP and falls back to `git diff` on Review page request.
+- Review is embedded in Session Detail through session-scoped evidence cards and full-screen drill-downs.
+- Session review supports mobile unified diff, Markdown preview, terminal output, and artifacts.
+- Diff source prefers ACP and falls back to `git diff` when the user opens session review evidence.
 - The frontend does not need to be a PWA, but must support full-screen-friendly layout and reconnect.
 
 Technical initial information:
@@ -517,5 +521,4 @@ Technical initial information:
 - Backend: Rust, likely `tokio`, `axum`, `sqlx`, SQLite, ACP Rust crate.
 - Communication: browser to backend over HTTP/WebSocket; backend to agent over stdio JSON-RPC.
 - Persistence: raw ACP messages, normalized events, projections, permissions, artifacts, terminal output.
-- Event model: normalized append-only events with projections for Inbox, timeline, approval, and review.
-
+- Event model: normalized append-only events with projections for Inbox, timeline, approval, and session review.
