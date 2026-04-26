@@ -109,7 +109,7 @@ impl Storage {
 
         sqlx::query(
             r#"
-            INSERT INTO workspaces (id, name, path, created_at)
+            INSERT OR IGNORE INTO workspaces (id, name, path, created_at)
             VALUES (?, ?, ?, ?)
             "#,
         )
@@ -120,7 +120,24 @@ impl Storage {
         .execute(&self.pool)
         .await?;
 
-        self.get_workspace(&id).await
+        self.find_workspace_by_path(&path)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workspace was not created"))
+    }
+
+    async fn find_workspace_by_path(&self, path: &str) -> anyhow::Result<Option<Workspace>> {
+        let workspace = sqlx::query_as::<_, Workspace>(
+            r#"
+            SELECT id, name, path, created_at
+            FROM workspaces
+            WHERE path = ?
+            "#,
+        )
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(workspace)
     }
 
     pub async fn list_workspaces(&self) -> anyhow::Result<Vec<Workspace>> {
@@ -877,6 +894,26 @@ mod tests {
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn create_workspace_is_idempotent_for_existing_path() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let first = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("First".to_string()))
+            .await
+            .unwrap();
+        let second = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Second".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.name, "First");
+        assert_eq!(storage.list_workspaces().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
