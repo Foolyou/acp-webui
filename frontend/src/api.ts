@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   PermissionRequest,
   ReviewArtifact,
+  SessionListItem,
   SessionDetail,
   Workspace
 } from "./types";
@@ -42,6 +43,7 @@ export const api = {
     request<SessionDetail>(`/api/workspaces/${workspaceId}/sessions`, {
       method: "POST"
     }),
+  sessions: () => request<SessionListItem[]>("/api/sessions"),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),
   prompt: (sessionId: string, prompt: string) =>
     request<{ message: ChatMessage }>(`/api/sessions/${sessionId}/prompt`, {

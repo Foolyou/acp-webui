@@ -22,7 +22,7 @@ use crate::{
     models::{
         review_artifact_kind, role, status, CreateWorkspaceRequest, DiffFallbackResponse,
         InboxItem, Message, PermissionRequest, PromptRequest, ResolvePermissionRequest,
-        ReviewArtifact, ReviewArtifactSummary, SessionDetail, Workspace,
+        ReviewArtifact, ReviewArtifactSummary, SessionDetail, SessionListItem, Workspace,
     },
     storage::Storage,
 };
@@ -59,6 +59,7 @@ pub fn api_router() -> Router<AppState> {
             "/api/workspaces/{workspace_id}/sessions",
             post(create_session),
         )
+        .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
         .route(
             "/api/sessions/{session_id}/review-artifacts",
@@ -92,6 +93,10 @@ async fn app_state(State(state): State<AppState>) -> AppResult<Json<AppStateResp
 
 async fn inbox(State(state): State<AppState>) -> AppResult<Json<Vec<InboxItem>>> {
     Ok(Json(state.storage.list_inbox_items().await?))
+}
+
+async fn list_sessions(State(state): State<AppState>) -> AppResult<Json<Vec<SessionListItem>>> {
+    Ok(Json(state.storage.list_session_items().await?))
 }
 
 async fn list_workspaces(State(state): State<AppState>) -> AppResult<Json<Vec<Workspace>>> {
@@ -636,6 +641,73 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.as_array().unwrap().len(), 1);
         assert_eq!(json[0]["permission"]["title"], "Run command");
+    }
+
+    #[tokio::test]
+    async fn sessions_endpoint_returns_compact_projection() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        state
+            .storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session.id.clone(),
+                acp_session_id: "acp-session".to_string(),
+                acp_request_id: "1".to_string(),
+                tool_call_id: Some("tool-1".to_string()),
+                title: "Run command".to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-1"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+        state
+            .storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-review".to_string()),
+                kind: review_artifact_kind::TOOL_CALL.to_string(),
+                title: "Inspect review evidence".to_string(),
+                summary: "Review evidence available".to_string(),
+                payload: serde_json::json!({"toolCallId": "tool-review"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        let app = api_router().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["session"]["id"], session.id);
+        assert_eq!(json[0]["workspace"]["id"], workspace.id);
+        assert_eq!(json[0]["pendingPermission"]["title"], "Run command");
+        assert_eq!(json[0]["reviewArtifactCount"], 1);
+        assert_eq!(json[0]["hasReviewArtifacts"], true);
+        assert!(json[0].get("messages").is_none());
     }
 
     #[tokio::test]

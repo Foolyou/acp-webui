@@ -162,6 +162,26 @@ pub struct InboxItem {
     pub permission: PermissionRequest,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListItem {
+    pub session: Session,
+    pub workspace: Workspace,
+    pub last_activity_at: String,
+    pub pending_permission: Option<SessionListPermission>,
+    pub review_artifact_count: i64,
+    pub has_review_artifacts: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListPermission {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceRequest {

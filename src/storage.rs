@@ -13,7 +13,8 @@ use serde_json::Value;
 use crate::models::{
     permission_status, role, status, InboxItem, Message, NewReviewArtifact, PermissionOption,
     PermissionRequest, PermissionRequestRow, ReviewArtifact, ReviewArtifactRow,
-    ReviewArtifactSummary, Session, SessionDetail, Workspace,
+    ReviewArtifactSummary, Session, SessionDetail, SessionListItem, SessionListPermission,
+    Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -198,6 +199,51 @@ impl Storage {
         .await?;
 
         Ok(session)
+    }
+
+    pub async fn list_session_items(&self) -> anyhow::Result<Vec<SessionListItem>> {
+        let rows = sqlx::query_as::<_, SessionListItemRow>(
+            r#"
+            SELECT
+                s.id AS session_id,
+                s.workspace_id,
+                s.agent_name,
+                s.acp_session_id,
+                s.status,
+                s.created_at AS session_created_at,
+                s.updated_at AS session_updated_at,
+                w.id AS workspace_row_id,
+                w.name AS workspace_name,
+                w.path AS workspace_path,
+                w.created_at AS workspace_created_at,
+                COALESCE(artifacts.review_artifact_count, 0) AS review_artifact_count,
+                p.id AS permission_id,
+                p.title AS permission_title,
+                p.kind AS permission_kind,
+                p.created_at AS permission_created_at
+            FROM sessions s
+            INNER JOIN workspaces w ON w.id = s.workspace_id
+            LEFT JOIN (
+                SELECT session_id, COUNT(*) AS review_artifact_count
+                FROM review_artifacts
+                GROUP BY session_id
+            ) artifacts ON artifacts.session_id = s.id
+            LEFT JOIN permission_requests p
+                ON p.id = (
+                    SELECT pr.id
+                    FROM permission_requests pr
+                    WHERE pr.session_id = s.id AND pr.status = ?
+                    ORDER BY pr.created_at DESC
+                    LIMIT 1
+                )
+            ORDER BY s.updated_at DESC
+            "#,
+        )
+        .bind(permission_status::PENDING)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(row_to_session_list_item).collect())
     }
 
     pub async fn update_session_status(&self, id: &str, next_status: &str) -> anyhow::Result<()> {
@@ -641,6 +687,26 @@ impl Storage {
     }
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct SessionListItemRow {
+    session_id: String,
+    workspace_id: String,
+    agent_name: String,
+    acp_session_id: Option<String>,
+    status: String,
+    session_created_at: String,
+    session_updated_at: String,
+    workspace_row_id: String,
+    workspace_name: String,
+    workspace_path: String,
+    workspace_created_at: String,
+    review_artifact_count: i64,
+    permission_id: Option<String>,
+    permission_title: Option<String>,
+    permission_kind: Option<String>,
+    permission_created_at: Option<String>,
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
@@ -692,6 +758,46 @@ fn row_to_review_artifact_summary(row: ReviewArtifactRow) -> ReviewArtifactSumma
         summary: row.summary,
         source: row.source,
         created_at: row.created_at,
+    }
+}
+
+fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
+    let pending_permission = match (
+        row.permission_id,
+        row.permission_title,
+        row.permission_kind,
+        row.permission_created_at,
+    ) {
+        (Some(id), Some(title), Some(kind), Some(created_at)) => Some(SessionListPermission {
+            id,
+            title,
+            kind,
+            created_at,
+        }),
+        _ => None,
+    };
+    let review_artifact_count = row.review_artifact_count;
+
+    SessionListItem {
+        session: Session {
+            id: row.session_id,
+            workspace_id: row.workspace_id,
+            agent_name: row.agent_name,
+            acp_session_id: row.acp_session_id,
+            status: row.status,
+            created_at: row.session_created_at,
+            updated_at: row.session_updated_at.clone(),
+        },
+        workspace: Workspace {
+            id: row.workspace_row_id,
+            name: row.workspace_name,
+            path: row.workspace_path,
+            created_at: row.workspace_created_at,
+        },
+        last_activity_at: row.session_updated_at,
+        pending_permission,
+        review_artifact_count,
+        has_review_artifacts: review_artifact_count > 0,
     }
 }
 
@@ -915,5 +1021,66 @@ mod tests {
 
         let session_detail = storage.session_detail(&session.id).await.unwrap();
         assert_eq!(session_detail.review_artifacts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lists_session_items_with_projection_metadata() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let first = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+        let second = storage
+            .create_session(&workspace.id, "acp-session-2".to_string())
+            .await
+            .unwrap();
+
+        storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: second.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: "tool_call".to_string(),
+                title: "Run command".to_string(),
+                summary: "execute completed".to_string(),
+                payload: serde_json::json!({"toolCallId": "tool-1"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: second.id.clone(),
+                acp_session_id: "acp-session-2".to_string(),
+                acp_request_id: "7".to_string(),
+                tool_call_id: Some("tool-2".to_string()),
+                title: "Approve write".to_string(),
+                kind: "edit".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-2"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+
+        let items = storage.list_session_items().await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].session.id, second.id);
+        assert_eq!(items[0].workspace.name, "Test");
+        assert_eq!(items[0].last_activity_at, items[0].session.updated_at);
+        assert_eq!(
+            items[0].pending_permission.as_ref().unwrap().title,
+            "Approve write"
+        );
+        assert_eq!(items[0].review_artifact_count, 1);
+        assert!(items[0].has_review_artifacts);
+        assert_eq!(items[1].session.id, first.id);
+        assert!(items[1].pending_permission.is_none());
     }
 }

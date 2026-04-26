@@ -12,6 +12,8 @@ import type {
   ReviewArtifact,
   ReviewArtifactSummary,
   SessionDetail,
+  SessionListItem,
+  SessionListPermission,
   SocketState,
   View,
   Workspace
@@ -23,6 +25,8 @@ type UiState = {
   view: View;
   workspaces: Workspace[];
   inbox: InboxItem[];
+  sessions: SessionListItem[];
+  sessionsLoading: boolean;
   currentWorkspaceId: string | null;
   currentSession: SessionDetail | null;
   activeReview: ReviewArtifact | null;
@@ -37,6 +41,8 @@ const initialState: UiState = {
   view: "inbox",
   workspaces: [],
   inbox: [],
+  sessions: [],
+  sessionsLoading: false,
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),
   currentSession: null,
   activeReview: null,
@@ -54,14 +60,14 @@ export function App() {
 
     async function loadInitialState() {
       try {
-        const [appState, workspaces] = await Promise.all([api.appState(), api.workspaces()]);
+        const [appState, workspaces, sessions] = await Promise.all([api.appState(), api.workspaces(), api.sessions()]);
         if (cancelled) return;
 
         const storedWorkspaceId = localStorage.getItem("currentWorkspaceId");
         const workspaceId = storedWorkspaceId ?? workspaces[0]?.id ?? null;
         const storedSessionId = localStorage.getItem("currentSessionId");
         let currentSession: SessionDetail | null = null;
-        let view: View = "inbox";
+        let view: View = "sessions";
 
         if (storedSessionId) {
           try {
@@ -77,6 +83,7 @@ export function App() {
           ...current,
           codex: appState.codex,
           inbox: appState.inbox,
+          sessions,
           workspaces,
           currentWorkspaceId: currentSession?.workspace.id ?? workspaceId,
           currentSession,
@@ -123,7 +130,8 @@ export function App() {
               error: current.error
             },
             message
-          )
+          ),
+          sessions: applySessionListRealtime(current.sessions, message, current.currentSession)
         }));
       });
 
@@ -162,6 +170,21 @@ export function App() {
     } finally {
       setState((current) => ({ ...current, busy: false }));
     }
+  }
+
+  async function loadSessionList() {
+    setState((current) => ({ ...current, sessionsLoading: true, error: null }));
+    try {
+      const sessions = await api.sessions();
+      setState((current) => ({ ...current, sessions, sessionsLoading: false }));
+    } catch (error) {
+      setState((current) => ({ ...current, error: errorMessage(error), sessionsLoading: false }));
+    }
+  }
+
+  function showSessions() {
+    setState((current) => ({ ...current, view: "sessions" }));
+    void loadSessionList();
   }
 
   async function loadSession(sessionId: string) {
@@ -213,6 +236,7 @@ export function App() {
         ...current,
         currentSession: detail,
         currentWorkspaceId: detail.workspace.id,
+        sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
         liveAssistant: "",
         view: "session"
       }));
@@ -233,6 +257,7 @@ export function App() {
                 messages: [...current.currentSession.messages, response.message],
                 session: { ...current.currentSession.session, status: "running" }
               },
+              sessions: updateSessionListStatus(current.sessions, sessionId, "running"),
               liveAssistant: ""
             }
           : current
@@ -252,6 +277,7 @@ export function App() {
                 pendingPermission: null,
                 session: { ...current.currentSession.session, status: "running" }
               },
+              sessions: clearSessionListPermission(updateSessionListStatus(current.sessions, permission.sessionId, "running"), permission.sessionId),
               inbox: current.inbox.filter((item) => item.permission.id !== permission.id)
             }
           : current
@@ -267,6 +293,10 @@ export function App() {
       setState((current) => ({
         ...current,
         currentSession: detail,
+        sessions: [
+          sessionDetailToListItem(detail),
+          ...current.sessions.filter((item) => item.session.id !== detail.session.id)
+        ],
         inbox: current.inbox.filter((item) => item.session.id !== sessionId)
       }));
     });
@@ -309,13 +339,20 @@ export function App() {
         <button className={state.view === "inbox" ? "active" : ""} onClick={() => setState((current) => ({ ...current, view: "inbox" }))}>
           Inbox
         </button>
-        <button className={state.view === "session" ? "active" : ""} onClick={() => setState((current) => ({ ...current, view: "session" }))}>
-          Session
+        <button className={state.view !== "inbox" ? "active" : ""} onClick={showSessions}>
+          Sessions
         </button>
       </nav>
 
       {state.view === "inbox" ? (
         <InboxPane inbox={state.inbox} onOpen={(sessionId) => runBusy(() => loadSession(sessionId))} />
+      ) : state.view === "sessions" ? (
+        <SessionsPane
+          loading={state.sessionsLoading}
+          onCreate={() => setState((current) => ({ ...current, view: "session" }))}
+          onOpen={(sessionId) => runBusy(() => loadSession(sessionId))}
+          sessions={state.sessions}
+        />
       ) : (
         <SessionWorkspacePane
           busy={state.busy}
@@ -377,6 +414,60 @@ function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sessionId: 
         </div>
       )}
     </section>
+  );
+}
+
+function SessionsPane({
+  loading,
+  onCreate,
+  onOpen,
+  sessions
+}: {
+  loading: boolean;
+  onCreate: () => void;
+  onOpen: (sessionId: string) => void;
+  sessions: SessionListItem[];
+}) {
+  return (
+    <section className="section">
+      <div className="section-head">
+        <h2>Sessions</h2>
+        <div className="section-actions">
+          <span className="muted">{loading ? "Loading" : sessions.length}</span>
+          <button className="secondary small" onClick={onCreate}>
+            New Session
+          </button>
+        </div>
+      </div>
+      {sessions.length === 0 ? (
+        <div className="empty-panel">
+          <p className="empty">No sessions yet.</p>
+          <button onClick={onCreate}>Start Session</button>
+        </div>
+      ) : (
+        <div className="session-list">
+          {sessions.map((item) => (
+            <SessionListRow item={item} key={item.session.id} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SessionListRow({ item, onOpen }: { item: SessionListItem; onOpen: (sessionId: string) => void }) {
+  return (
+    <button className="session-list-item" onClick={() => onOpen(item.session.id)}>
+      <span className="session-list-title">{item.workspace.name}</span>
+      <span>
+        {item.session.agentName} · {item.session.status} · {formatRelativeTime(item.lastActivityAt)}
+      </span>
+      <span className="session-list-path">{item.workspace.path}</span>
+      <span className="session-badges">
+        {item.pendingPermission ? <strong>Approval: {item.pendingPermission.title}</strong> : null}
+        {item.hasReviewArtifacts ? <strong>{item.reviewArtifactCount} review items</strong> : null}
+      </span>
+    </button>
   );
 }
 
@@ -810,4 +901,133 @@ function toolSummary(toolCall: unknown) {
     }
   }
   return JSON.stringify(toolCall, null, 2);
+}
+
+function sessionDetailToListItem(detail: SessionDetail): SessionListItem {
+  return {
+    session: detail.session,
+    workspace: detail.workspace,
+    lastActivityAt: detail.session.updatedAt,
+    pendingPermission: detail.pendingPermission
+      ? {
+          id: detail.pendingPermission.id,
+          title: detail.pendingPermission.title,
+          kind: detail.pendingPermission.kind,
+          createdAt: detail.pendingPermission.createdAt
+        }
+      : null,
+    reviewArtifactCount: detail.reviewArtifacts.length,
+    hasReviewArtifacts: detail.reviewArtifacts.length > 0
+  };
+}
+
+function applySessionListRealtime(
+  sessions: SessionListItem[],
+  event: RealtimeEvent,
+  currentSession: SessionDetail | null
+): SessionListItem[] {
+  switch (event.type) {
+    case "session_status":
+      return updateSessionListStatus(sessions, event.sessionId, event.status);
+    case "permission_requested":
+      return updateSessionListPermission(
+        sessions,
+        event.permission.sessionId,
+        {
+          id: event.permission.id,
+          title: event.permission.title,
+          kind: event.permission.kind,
+          createdAt: event.permission.createdAt
+        },
+        currentSession
+      );
+    case "permission_resolved":
+      return clearSessionListPermission(sessions, event.sessionId);
+    case "review_artifact":
+      return updateSessionListReviewAvailability(sessions, event.artifact.sessionId);
+    default:
+      return sessions;
+  }
+}
+
+function updateSessionListStatus(sessions: SessionListItem[], sessionId: string, status: string) {
+  const now = new Date().toISOString();
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          lastActivityAt: now,
+          session: { ...item.session, status, updatedAt: now }
+        }
+      : item
+  );
+}
+
+function updateSessionListPermission(
+  sessions: SessionListItem[],
+  sessionId: string,
+  pendingPermission: SessionListPermission,
+  currentSession: SessionDetail | null
+) {
+  const existing = sessions.some((item) => item.session.id === sessionId);
+  const updated = sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          pendingPermission,
+          session: { ...item.session, status: "waiting_approval" }
+        }
+      : item
+  );
+
+  if (existing || currentSession?.session.id !== sessionId) {
+    return updated;
+  }
+
+  return [
+    {
+      ...sessionDetailToListItem(currentSession),
+      pendingPermission,
+      session: { ...currentSession.session, status: "waiting_approval" }
+    },
+    ...updated
+  ];
+}
+
+function clearSessionListPermission(sessions: SessionListItem[], sessionId: string) {
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          pendingPermission: null
+        }
+      : item
+  );
+}
+
+function updateSessionListReviewAvailability(sessions: SessionListItem[], sessionId: string) {
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          reviewArtifactCount: item.reviewArtifactCount + 1,
+          hasReviewArtifacts: true
+        }
+      : item
+  );
+}
+
+function formatRelativeTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return value;
+  }
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }

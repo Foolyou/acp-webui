@@ -15,7 +15,7 @@ The browser frontend SHALL be implemented as a React and TypeScript single-page 
 #### Scenario: App initializes in the browser
 - **WHEN** the browser loads the frontend entrypoint
 - **THEN** React SHALL mount the application into the page root
-- **AND** the user SHALL see the current Codex connection status and primary Inbox and Session navigation surfaces
+- **AND** the user SHALL see the current Codex connection status and primary Inbox and Sessions navigation surfaces
 
 ### Requirement: React frontend preserves current session workflows
 The React frontend SHALL preserve the existing browser workflows for local workspaces, Codex sessions, prompt submission, timeline rendering, and persisted session restore.

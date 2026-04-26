@@ -9,6 +9,7 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Codex only, through `codex-acp`
 - Local workspaces
 - Session creation
+- Sessions list for reopening persisted sessions
 - Text prompts and text replies
 - Permission approval requests with allow-once and reject-once resolution
 - Inbox view for sessions waiting on approval
@@ -98,6 +99,7 @@ The suite also exercises a fake ACP tool call review artifact, opens its session
 
 - `GET /api/app-state`
 - `GET /api/inbox`
+- `GET /api/sessions`
 - `GET /api/workspaces`
 - `POST /api/workspaces`
 - `POST /api/workspaces/:workspace_id/sessions`

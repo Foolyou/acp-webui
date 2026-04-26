@@ -82,6 +82,22 @@ export type InboxItem = {
   permission: PermissionRequest;
 };
 
+export type SessionListPermission = {
+  id: string;
+  title: string;
+  kind: string;
+  createdAt: string;
+};
+
+export type SessionListItem = {
+  session: Session;
+  workspace: Workspace;
+  lastActivityAt: string;
+  pendingPermission?: SessionListPermission | null;
+  reviewArtifactCount: number;
+  hasReviewArtifacts: boolean;
+};
+
 export type AppData = {
   codex: ConnectionStatus;
   inbox: InboxItem[];
@@ -98,4 +114,4 @@ export type RealtimeEvent =
   | { type: "error"; message: string };
 
 export type SocketState = "connecting" | "connected" | "disconnected";
-export type View = "inbox" | "session";
+export type View = "inbox" | "sessions" | "session";
