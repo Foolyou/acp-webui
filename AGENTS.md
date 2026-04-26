@@ -5,6 +5,7 @@
 - Use concise imperative sentence case.
 - Do not add a trailing period.
 - Keep the subject focused on one change.
+- Provide a concise commit title, and include a richer commit body when the rationale, scope, or follow-up context is useful.
 - Prefer wording consistent with recent history, for example:
   - `Implement initial Codex session flow`
   - `Propose permission approval flow`
