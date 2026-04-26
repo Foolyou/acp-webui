@@ -2,10 +2,9 @@
 
 ## Purpose
 Define session-scoped review artifacts, including persistence, summary/detail access, mobile diff and artifact review, workspace diff fallback, and realtime restoration behavior.
-
 ## Requirements
 ### Requirement: Session review artifacts are persisted
-The system SHALL persist review artifacts that belong to a session.
+The system SHALL persist review artifacts that belong to a session and link them to structured tool calls when available.
 
 #### Scenario: Review artifact is created for a session
 - **WHEN** the backend receives or derives review evidence for a known session
@@ -13,17 +12,17 @@ The system SHALL persist review artifacts that belong to a session.
 - **AND** the artifact SHALL be available when loading that session after browser reload
 
 #### Scenario: Review artifact is linked to a tool call
-- **WHEN** review evidence includes a tool call id
-- **THEN** the persisted artifact SHALL retain that tool call id
-- **AND** the session review UI SHALL be able to group or label the artifact with the related tool call
+- **WHEN** review evidence includes a tool call id or can be associated with a structured tool call timeline item
+- **THEN** the persisted artifact SHALL retain that tool call relation
+- **AND** the session review UI SHALL be able to open the artifact from the related tool call row
 
 ### Requirement: Session review artifacts are listed for Session Detail
-The system SHALL expose review artifact summaries as part of session-scoped review data.
+The system SHALL expose review artifact summaries as session-scoped drill-down evidence.
 
 #### Scenario: Session has review artifacts
 - **WHEN** the browser loads Session Detail for a session with review artifacts
-- **THEN** the backend SHALL return artifact summaries for that session
-- **AND** each summary SHALL include enough information to render a timeline card without loading the full payload
+- **THEN** the backend SHALL return artifact summaries or timeline references for that session
+- **AND** each summary or reference SHALL include enough information to indicate drill-down evidence without loading the full payload
 
 #### Scenario: Browser requests artifact detail
 - **WHEN** the browser requests a specific review artifact for the current session
@@ -35,12 +34,12 @@ The system SHALL support mobile-friendly unified diff review for session evidenc
 
 #### Scenario: Diff artifact is opened
 - **WHEN** the user opens a diff review artifact from Session Detail
-- **THEN** the browser SHALL show a full-screen session-scoped unified diff viewer
-- **AND** it SHALL provide changed file navigation and hunk-level navigation
+- **THEN** the browser SHALL show a session-scoped unified diff viewer in an overlay suitable for the current viewport
+- **AND** it SHALL provide changed file navigation, hunk-level navigation, and a fixed close affordance
 
 #### Scenario: Diff is too large for compact display
 - **WHEN** a diff artifact contains more content than fits comfortably in the timeline
-- **THEN** the timeline card SHALL show only a compact summary
+- **THEN** the timeline card or linked tool row SHALL show only a compact summary
 - **AND** the full diff SHALL remain available in the drill-down viewer
 
 ### Requirement: Markdown artifacts can be previewed
@@ -48,7 +47,7 @@ The system SHALL support previewing Markdown artifacts from session review.
 
 #### Scenario: Markdown artifact is opened
 - **WHEN** the user opens a Markdown review artifact from Session Detail
-- **THEN** the browser SHALL show a full-screen preview of the rendered Markdown
+- **THEN** the browser SHALL show a viewport-appropriate preview of the rendered Markdown with a fixed close affordance
 - **AND** it SHALL preserve access to the raw artifact content for inspection
 
 ### Requirement: Terminal output can be reviewed
@@ -56,8 +55,8 @@ The system SHALL support terminal output review without turning the timeline int
 
 #### Scenario: Terminal output artifact is shown in the timeline
 - **WHEN** terminal output evidence is available for a session
-- **THEN** the timeline SHALL show a tail snippet or compact summary
-- **AND** the user SHALL be able to open the full terminal output in a drill-down viewer
+- **THEN** the timeline SHALL show a compact tool row, tail snippet, or compact summary
+- **AND** the user SHALL be able to open the full terminal output in a drill-down viewer with fixed close controls
 
 ### Requirement: Workspace diff fallback is available on demand
 The system SHALL provide an on-demand workspace diff fallback for session review.
@@ -77,9 +76,9 @@ The system SHALL notify connected browsers when session review artifacts become 
 
 #### Scenario: Browser is viewing a session when an artifact is created
 - **WHEN** the backend persists a review artifact for the current session
-- **THEN** the browser SHALL receive a realtime review artifact event
-- **AND** it SHALL add or update the corresponding timeline card without polling
+- **THEN** the browser SHALL receive a realtime timeline or review artifact event
+- **AND** it SHALL add or update the corresponding timeline evidence affordance without polling
 
 #### Scenario: Browser reconnects after artifact creation
 - **WHEN** the browser reloads or reconnects after review artifacts were created
-- **THEN** loading Session Detail SHALL restore the artifact summaries for that session
+- **THEN** loading Session Detail SHALL restore the artifact summaries or timeline evidence references for that session

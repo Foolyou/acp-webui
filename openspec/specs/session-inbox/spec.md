@@ -2,10 +2,9 @@
 
 ## Purpose
 Define the session Inbox surface for sessions that need user attention, including approval-focused projections and realtime updates.
-
 ## Requirements
 ### Requirement: Inbox lists sessions needing approval
-The system SHALL provide an Inbox view that prioritizes sessions waiting for user approval.
+The system SHALL provide an Inbox view that prioritizes sessions waiting for user approval and routes into Session Detail.
 
 #### Scenario: Session has a pending permission request
 - **WHEN** a session has a pending permission request
@@ -14,8 +13,13 @@ The system SHALL provide an Inbox view that prioritizes sessions waiting for use
 
 #### Scenario: User opens a session from Inbox
 - **WHEN** the user selects a needs-approval item from the Inbox
-- **THEN** the browser SHALL navigate to or display the session detail for that session
+- **THEN** the browser SHALL navigate to the routed session detail for that session
 - **AND** the pending approval UI SHALL be available there
+
+#### Scenario: User opens Inbox from mobile navigation
+- **WHEN** the user selects Inbox from the mobile full-screen navigation layer
+- **THEN** the browser SHALL navigate to the Inbox route
+- **AND** the navigation layer SHALL close
 
 ### Requirement: Inbox updates when approval state changes
 The system SHALL keep the Inbox current as permission requests are created or resolved.
