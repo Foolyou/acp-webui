@@ -9,6 +9,7 @@ const repoRoot = path.resolve(frontendDir, "../..");
 const dataDir = path.join(repoRoot, ".data", "e2e");
 const databasePath = path.join(dataDir, "playwright.db");
 const backendUrl = "http://127.0.0.1:7638";
+const fakeAcpScript = path.join(repoRoot, "frontend", "e2e", "fixtures", "fake-acp.py");
 
 let backend: ChildProcessWithoutNullStreams | undefined;
 
@@ -26,9 +27,12 @@ test.beforeAll(async () => {
       "--database-url",
       `sqlite://${databasePath}`,
       "--codex-acp-command",
-      "python3",
+      "uv",
       "--codex-acp-arg",
-      path.join(repoRoot, "frontend", "e2e", "fixtures", "fake-acp.py")
+      "run",
+      "--codex-acp-arg=--script",
+      "--codex-acp-arg",
+      fakeAcpScript
     ],
     {
       cwd: repoRoot,
@@ -271,7 +275,7 @@ function sessionRouteIds(page: import("@playwright/test").Page) {
 }
 
 async function waitForBackend() {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${backendUrl}/api/app-state`);
