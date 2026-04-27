@@ -151,7 +151,7 @@ impl AuthService {
             client_ip: Some(client_ip.to_string()),
         };
 
-        Ok((status, session_cookie(&session_id, peer)))
+        Ok((status, session_cookie(&session_id)))
     }
 
     fn is_trusted_client(&self, ip: Option<IpAddr>) -> bool {
@@ -250,12 +250,8 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     })
 }
 
-fn session_cookie(session_id: &str, peer: Option<SocketAddr>) -> HeaderValue {
-    let secure = peer.map(|addr| !addr.ip().is_loopback()).unwrap_or(false);
-    let mut cookie = format!("{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax");
-    if secure {
-        cookie.push_str("; Secure");
-    }
+fn session_cookie(session_id: &str) -> HeaderValue {
+    let cookie = format!("{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax");
     HeaderValue::from_str(&cookie).expect("session cookie value is valid")
 }
 
@@ -290,5 +286,14 @@ mod tests {
         assert!(constant_time_eq(b"same", b"same"));
         assert!(!constant_time_eq(b"same", b"same-but-longer"));
         assert!(!constant_time_eq(b"same", b"diff"));
+    }
+
+    #[test]
+    fn session_cookie_is_usable_over_local_http() {
+        let cookie = session_cookie("session-id").to_str().unwrap().to_string();
+
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(!cookie.contains("Secure"));
     }
 }
