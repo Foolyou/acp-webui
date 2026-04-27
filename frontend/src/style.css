@@ -264,12 +264,23 @@ pre {
 }
 
 .nav-stack,
+.nav-group,
 .item-list,
 .status-stack,
 .inline-form,
 .empty-panel {
   display: grid;
   gap: 0.6rem;
+}
+
+.nav-stack {
+  align-content: start;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+}
+
+.nav-group {
+  gap: 0.45rem;
 }
 
 .nav-link,
@@ -297,16 +308,32 @@ pre {
   padding: 0.55rem 0.65rem;
 }
 
-.nav-link.active,
-.workspace-nav.active {
+.nav-link.active {
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
+}
+
+.workspace-nav.selected {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-subtle);
+}
+
+.workspace-nav.selected strong::after {
+  content: "Current";
+  display: inline-block;
+  margin-left: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .nav-section {
   display: grid;
   gap: 0.45rem;
-  margin-top: 0.6rem;
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.8rem;
 }
 
 .nav-section > span {
@@ -575,6 +602,10 @@ pre {
   box-shadow: var(--shadow-overlay);
 }
 
+.review-modal {
+  height: min(88dvh, 760px);
+}
+
 .mobile-nav-modal {
   width: 100%;
   height: calc(100dvh - 1.5rem);
@@ -583,6 +614,8 @@ pre {
 
 .modal-dialog {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
   max-height: inherit;
   outline: none;
 }
@@ -612,6 +645,7 @@ pre {
 .modal-body {
   display: grid;
   gap: 0.75rem;
+  min-height: 0;
   overflow: auto;
   padding: 0.85rem;
 }

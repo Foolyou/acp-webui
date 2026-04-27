@@ -6,29 +6,46 @@ export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
   const currentWorkspaceId = state.currentWorkspaceId ?? state.workspaces[0]?.id ?? "";
   return (
     <nav className="nav-stack">
-      <Link activeProps={{ className: "nav-link active" }} className="nav-link" onClick={onNavigate} to="/inbox">
-        Inbox <span>{state.inbox.length}</span>
-      </Link>
-      <Link activeProps={{ className: "nav-link active" }} className="nav-link" onClick={onNavigate} to="/workspaces">
-        Workspaces <span>{state.workspaces.length}</span>
-      </Link>
-      {currentWorkspaceId ? (
+      <div className="nav-group" aria-label="Primary navigation">
         <Link
-          activeProps={{ className: "nav-link active" }}
+          activeOptions={{ exact: true }}
+          activeProps={{ className: "active" }}
           className="nav-link"
           onClick={onNavigate}
-          params={{ workspaceId: currentWorkspaceId }}
-          to="/workspaces/$workspaceId/sessions"
+          to="/inbox"
         >
-          Sessions <span>{state.sessions.length}</span>
+          Inbox <span>{state.inbox.length}</span>
         </Link>
-      ) : null}
+        {currentWorkspaceId ? (
+          <Link
+            activeProps={{ className: "active" }}
+            className="nav-link"
+            onClick={onNavigate}
+            params={{ workspaceId: currentWorkspaceId }}
+            to="/workspaces/$workspaceId/sessions"
+          >
+            Sessions <span>{state.sessions.length}</span>
+          </Link>
+        ) : null}
+        <Link
+          activeOptions={{ exact: true }}
+          activeProps={{ className: "active" }}
+          className="nav-link"
+          onClick={onNavigate}
+          to="/workspaces"
+        >
+          Workspaces <span>{state.workspaces.length}</span>
+        </Link>
+      </div>
       <div className="nav-section">
         <span>Projects</span>
         {state.workspaces.slice(0, 6).map((workspace) => (
           <Link
-            activeProps={{ className: "workspace-nav active" }}
-            className="workspace-nav"
+            activeOptions={{ exact: true }}
+            activeProps={{ className: "route-active" }}
+            className={`workspace-nav ${
+              workspace.id === state.currentWorkspaceId ? "selected" : ""
+            }`}
             key={workspace.id}
             onClick={onNavigate}
             params={{ workspaceId: workspace.id }}

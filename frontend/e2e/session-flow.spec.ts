@@ -172,6 +172,12 @@ test("creates a workspace and session, sends a prompt, and restores after refres
     });
   });
   await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.getByRole("button", { name: "Menu" }).click();
+  const navigation = page.getByRole("dialog", { name: "Navigation" });
+  await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveClass(/(^|\s)active(\s|$)/);
+  await expect(navigation.getByRole("link", { name: /Workspaces/ })).not.toHaveClass(/(^|\s)active(\s|$)/);
+  await expect(navigation.getByRole("link", { name: /acp-webui/ }).first()).toHaveClass(/(^|\s)selected(\s|$)/);
+  await navigation.getByRole("button", { name: "Close" }).click();
   await expect(page.locator(".notice.warning", { hasText: "This session history is available for review" })).toBeVisible();
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
 });
