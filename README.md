@@ -28,6 +28,7 @@ Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff 
 
 - Rust toolchain
 - Node.js and npm when building the frontend or building from source
+- `uv` for the Python-backed fake ACP E2E fixture and cross-device Python setup
 - `codex-acp` available on PATH, or a custom command supplied to the backend
 - Codex authentication already configured in the local environment
 
@@ -143,8 +144,22 @@ The smoke test builds the frontend and release binary, starts the binary from a 
 ## Browser E2E
 
 The browser E2E suite uses Playwright with a fake ACP process so it can validate the UI, backend, WebSocket, and SQLite restore flow without making a real Codex call.
+The fake ACP fixture is started through `uv run --script`, so clean machines do not need a separately installed system Python as long as `uv` is available.
 
-Install Playwright Chromium inside WSL:
+Install the pinned Python runtime for the fake ACP fixture:
+
+```bash
+uv python install
+```
+
+Install Playwright Chromium:
+
+```bash
+cd frontend
+npm run e2e:install
+```
+
+On Linux or WSL machines that also need Playwright's OS packages, use:
 
 ```bash
 cd frontend
