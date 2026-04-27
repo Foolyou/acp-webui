@@ -1,4 +1,4 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{collections::HashSet, path::PathBuf, str::FromStr};
 
 use anyhow::Context;
 use chrono::Utc;
@@ -35,6 +35,12 @@ pub struct NewPermissionRequest {
 #[derive(Debug, Clone)]
 pub struct Storage {
     pool: SqlitePool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertReviewArtifactResult {
+    pub artifact: ReviewArtifact,
+    pub created: bool,
 }
 
 impl Storage {
@@ -256,7 +262,15 @@ impl Storage {
             FROM sessions s
             INNER JOIN workspaces w ON w.id = s.workspace_id
             LEFT JOIN (
-                SELECT session_id, COUNT(*) AS review_artifact_count
+                SELECT
+                    session_id,
+                    COUNT(
+                        DISTINCT CASE
+                            WHEN tool_call_id IS NOT NULL
+                                THEN tool_call_id || '|' || kind || '|' || source
+                            ELSE id
+                        END
+                    ) AS review_artifact_count
                 FROM review_artifacts
                 GROUP BY session_id
             ) artifacts ON artifacts.session_id = s.id
@@ -625,6 +639,52 @@ impl Storage {
             .await
     }
 
+    pub async fn upsert_review_artifact(
+        &self,
+        input: NewReviewArtifact,
+    ) -> anyhow::Result<UpsertReviewArtifactResult> {
+        if let Some(tool_call_id) = input.tool_call_id.as_deref() {
+            if let Some(existing) = self
+                .find_review_artifact_for_tool_call(
+                    &input.session_id,
+                    tool_call_id,
+                    &input.kind,
+                    &input.source,
+                )
+                .await?
+            {
+                let payload_json = serde_json::to_string(&input.payload)?;
+                sqlx::query(
+                    r#"
+                    UPDATE review_artifacts
+                    SET title = ?,
+                        summary = ?,
+                        payload_json = ?
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(&input.title)
+                .bind(&input.summary)
+                .bind(&payload_json)
+                .bind(&existing.id)
+                .execute(&self.pool)
+                .await?;
+
+                return Ok(UpsertReviewArtifactResult {
+                    artifact: self
+                        .get_review_artifact_for_session(&input.session_id, &existing.id)
+                        .await?,
+                    created: false,
+                });
+            }
+        }
+
+        Ok(UpsertReviewArtifactResult {
+            artifact: self.create_review_artifact(input).await?,
+            created: true,
+        })
+    }
+
     pub async fn list_review_artifact_summaries(
         &self,
         session_id: &str,
@@ -650,10 +710,11 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
+        let items = rows
             .into_iter()
             .map(row_to_review_artifact_summary)
-            .collect())
+            .collect();
+        Ok(dedupe_review_artifact_summaries(items))
     }
 
     pub async fn get_review_artifact_for_session(
@@ -683,6 +744,44 @@ impl Storage {
         .await?;
 
         row_to_review_artifact(row)
+    }
+
+    async fn find_review_artifact_for_tool_call(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        kind: &str,
+        source: &str,
+    ) -> anyhow::Result<Option<ReviewArtifactRow>> {
+        let row = sqlx::query_as::<_, ReviewArtifactRow>(
+            r#"
+            SELECT
+                id,
+                session_id,
+                tool_call_id,
+                kind,
+                title,
+                summary,
+                payload_json,
+                source,
+                created_at
+            FROM review_artifacts
+            WHERE session_id = ?
+              AND tool_call_id = ?
+              AND kind = ?
+              AND source = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(session_id)
+        .bind(tool_call_id)
+        .bind(kind)
+        .bind(source)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
     }
 
     pub async fn add_system_message(&self, session_id: &str, content: &str) -> anyhow::Result<()> {
@@ -1035,6 +1134,26 @@ fn row_to_review_artifact_summary(row: ReviewArtifactRow) -> ReviewArtifactSumma
         source: row.source,
         created_at: row.created_at,
     }
+}
+
+fn dedupe_review_artifact_summaries(
+    items: Vec<ReviewArtifactSummary>,
+) -> Vec<ReviewArtifactSummary> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(items.len());
+
+    for item in items.into_iter().rev() {
+        let key = match item.tool_call_id.as_deref() {
+            Some(tool_call_id) => format!("tool:{tool_call_id}|{}|{}", item.kind, item.source),
+            None => format!("artifact:{}", item.id),
+        };
+        if seen.insert(key) {
+            deduped.push(item);
+        }
+    }
+
+    deduped.reverse();
+    deduped
 }
 
 fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
@@ -1413,6 +1532,110 @@ mod tests {
 
         let session_detail = storage.session_detail(&session.id).await.unwrap();
         assert_eq!(session_detail.review_artifacts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn upserts_review_artifacts_for_same_tool_call_evidence() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        let first = storage
+            .upsert_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: review_artifact_kind::TERMINAL.to_string(),
+                title: "Run command".to_string(),
+                summary: "execute running".to_string(),
+                payload: serde_json::json!({"output": "first"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(first.created);
+
+        let second = storage
+            .upsert_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: review_artifact_kind::TERMINAL.to_string(),
+                title: "Run command".to_string(),
+                summary: "execute completed".to_string(),
+                payload: serde_json::json!({"output": "second"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(!second.created);
+        assert_eq!(second.artifact.id, first.artifact.id);
+        assert_eq!(second.artifact.summary, "execute completed");
+        assert_eq!(second.artifact.payload["output"], "second");
+        assert_eq!(
+            storage
+                .list_review_artifact_summaries(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn hides_historical_duplicate_review_artifacts_for_same_tool_call() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: review_artifact_kind::TERMINAL.to_string(),
+                title: "Run command".to_string(),
+                summary: "execute running".to_string(),
+                payload: serde_json::json!({"output": "first"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+        storage
+            .create_review_artifact(NewReviewArtifact {
+                session_id: session.id.clone(),
+                tool_call_id: Some("tool-1".to_string()),
+                kind: review_artifact_kind::TERMINAL.to_string(),
+                title: "Run command".to_string(),
+                summary: "execute completed".to_string(),
+                payload: serde_json::json!({"output": "second"}),
+                source: "acp".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let summaries = storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].summary, "execute completed");
+
+        let items = storage.list_session_items().await.unwrap();
+        assert_eq!(items[0].review_artifact_count, 1);
     }
 
     #[tokio::test]

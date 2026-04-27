@@ -725,15 +725,18 @@ async fn handle_session_update(
                     tracing::error!(?error, ?update, "failed to persist tool call");
                 }
             }
-            let artifact_input = review_artifact_from_update(&local_session_id, update);
-            match storage.create_review_artifact(artifact_input).await {
-                Ok(artifact) => {
-                    let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
-                        artifact: artifact_summary(&artifact),
-                    });
-                }
-                Err(error) => {
-                    tracing::error!(?error, ?update, "failed to persist review artifact");
+            if let Some(artifact_input) = review_artifact_from_update(&local_session_id, update) {
+                match storage.upsert_review_artifact(artifact_input).await {
+                    Ok(result) => {
+                        if result.created {
+                            let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
+                                artifact: artifact_summary(&result.artifact),
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(?error, ?update, "failed to persist review artifact");
+                    }
                 }
             }
         }
@@ -851,7 +854,11 @@ async fn flush_assistant_buffer(
     });
 }
 
-fn review_artifact_from_update(session_id: &str, update: &Value) -> NewReviewArtifact {
+fn review_artifact_from_update(session_id: &str, update: &Value) -> Option<NewReviewArtifact> {
+    if !should_persist_review_artifact(update) {
+        return None;
+    }
+
     let update_type = update
         .get("sessionUpdate")
         .and_then(Value::as_str)
@@ -861,7 +868,7 @@ fn review_artifact_from_update(session_id: &str, update: &Value) -> NewReviewArt
     let kind = review_kind_for_update(update);
     let summary = review_summary(update_type, update);
 
-    NewReviewArtifact {
+    Some(NewReviewArtifact {
         session_id: session_id.to_string(),
         tool_call_id,
         kind,
@@ -869,7 +876,28 @@ fn review_artifact_from_update(session_id: &str, update: &Value) -> NewReviewArt
         summary,
         payload: update.clone(),
         source: "acp".to_string(),
+    })
+}
+
+fn should_persist_review_artifact(update: &Value) -> bool {
+    let kind = review_kind_for_update(update);
+    if kind == review_artifact_kind::DIFF || kind == review_artifact_kind::MARKDOWN {
+        return true;
     }
+
+    has_nonempty_review_content(update.get("content"))
+        || has_nonempty_review_content(update.get("output"))
+}
+
+fn has_nonempty_review_content(value: Option<&Value>) -> bool {
+    text_from_content(value).is_some()
+        || value.is_some_and(|candidate| match candidate {
+            Value::Null => false,
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(fields) => !fields.is_empty(),
+            _ => true,
+        })
 }
 
 fn review_kind_for_update(update: &Value) -> String {
@@ -909,7 +937,8 @@ fn review_summary(update_type: &str, update: &Value) -> String {
         .or_else(|| update.get("type"))
         .and_then(Value::as_str)
         .unwrap_or(update_type);
-    let content = text_from_content(update.get("content"));
+    let content = text_from_content(update.get("content"))
+        .or_else(|| text_from_content(update.get("output")));
     match content {
         Some(text) if !text.trim().is_empty() => {
             let snippet: String = text.chars().take(120).collect();
@@ -1035,11 +1064,36 @@ async fn send_error_response(
 
 fn text_from_content(content: Option<&Value>) -> Option<String> {
     let content = content?;
-    match content.get("type").and_then(Value::as_str) {
-        Some("text") => content
-            .get("text")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
+    match content {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| text_from_content(Some(part)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(map) => {
+            if content.get("type").and_then(Value::as_str) == Some("text") {
+                return content
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(ToString::to_string);
+            }
+
+            for key in ["text", "content", "output", "diff", "markdown"] {
+                if let Some(text) = text_from_content(map.get(key)) {
+                    return Some(text);
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -1101,8 +1155,13 @@ mod tests {
             bind_port: 7635,
             work_dir: PathBuf::from("."),
             database_url: "sqlite::memory:".to_string(),
-            codex_acp_command: "python3".to_string(),
-            codex_acp_args: vec![script.to_string_lossy().to_string(), mode.to_string()],
+            codex_acp_command: "uv".to_string(),
+            codex_acp_args: vec![
+                "run".to_string(),
+                "--script".to_string(),
+                script.to_string_lossy().to_string(),
+                mode.to_string(),
+            ],
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
@@ -1230,6 +1289,22 @@ for line in sys.stdin:
                     }
                 }
             })
+        elif mode == "artifact":
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tool-1",
+                        "title": "Captured review artifact",
+                        "kind": "execute",
+                        "status": "completed",
+                        "content": [{"type": "text", "text": "git diff -- README.md"}]
+                    }
+                }
+            })
         elif mode == "interleaved":
             send({
                 "jsonrpc": "2.0",
@@ -1255,7 +1330,8 @@ for line in sys.stdin:
                         "toolCallId": "tool-1",
                         "title": "Run fake tool",
                         "kind": "execute",
-                        "status": "completed"
+                        "status": "completed",
+                        "content": [{"type": "text", "text": "tool output"}]
                     }
                 }
             })
@@ -1395,7 +1471,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn fake_acp_tool_call_update_creates_review_artifact() {
+    async fn fake_acp_status_only_tool_call_update_does_not_create_review_artifact() {
         let dir = tempfile::tempdir().unwrap();
         let script = write_fake_acp(&dir);
         let (events_tx, _) = broadcast::channel(32);
@@ -1406,6 +1482,51 @@ for line in sys.stdin:
             .unwrap();
         let runtime = CodexRuntime::start(
             config_for_fake(script, "nontext"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        let acp_session_id = runtime
+            .new_session(dir.path().to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, acp_session_id.clone())
+            .await
+            .unwrap();
+        runtime
+            .register_session(acp_session_id.clone(), session.id.clone())
+            .await;
+
+        let outcome = runtime
+            .prompt(acp_session_id, "Trigger non-text".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.content, "");
+        assert_eq!(
+            storage
+                .list_review_artifact_summaries(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_acp_tool_call_update_creates_review_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "artifact"),
             storage.clone(),
             events_tx.clone(),
         )
@@ -1442,7 +1563,7 @@ for line in sys.stdin:
         .unwrap();
 
         assert_eq!(artifact.session_id, session.id);
-        assert_eq!(artifact.kind, review_artifact_kind::TOOL_CALL);
+        assert_eq!(artifact.kind, review_artifact_kind::TERMINAL);
         assert_eq!(
             storage
                 .list_review_artifact_summaries(&session.id)
