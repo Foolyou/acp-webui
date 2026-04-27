@@ -23,10 +23,11 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = Config::parse_args();
+    let config = Config::parse_args()?;
     if config.disable_auth && !config.bind_addr()?.ip().is_loopback() {
         anyhow::bail!("--disable-auth is only allowed when binding to a loopback address");
     }
+    config.ensure_work_dir()?;
     let storage = storage::Storage::connect(&config.database_url).await?;
     storage.migrate().await?;
     let expired = storage
@@ -49,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(routes::api_router(state))
-        .fallback_service(routes::frontend_service(&config.frontend_dist))
+        .merge(routes::frontend_router(config.frontend_dist.as_ref()))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 

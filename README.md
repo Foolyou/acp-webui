@@ -27,14 +27,42 @@ Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff 
 ## Requirements
 
 - Rust toolchain
-- Node.js and npm
+- Node.js and npm when building the frontend or building from source
 - `codex-acp` available on PATH, or a custom command supplied to the backend
 - Codex authentication already configured in the local environment
+
+Release binaries include the ACP Web UI backend, production frontend assets, and SQLite migrations. They still require an ACP agent adapter such as `codex-acp` at runtime.
 
 `codex-acp` can be run directly if installed, or through npm:
 
 ```bash
 npx @zed-industries/codex-acp
+```
+
+## Runtime State
+
+By default, ACP Web UI stores runtime state under:
+
+```text
+~/.acp-webui
+```
+
+The default SQLite database is:
+
+```text
+~/.acp-webui/acp-webui.db
+```
+
+Use `--work-dir` or `ACP_WEBUI_WORK_DIR` to place ACP Web UI state somewhere else:
+
+```bash
+acp-webui --work-dir /path/to/acp-webui-state
+```
+
+Advanced users can still override the database URL directly. An explicit database URL takes precedence over the work directory:
+
+```bash
+acp-webui --database-url sqlite://.data/acp-webui.db
 ```
 
 ## Development
@@ -59,7 +87,6 @@ Run the backend:
 cargo run -- \
   --bind-host 127.0.0.1 \
   --bind-port 7635 \
-  --database-url sqlite://.data/acp-webui.db \
   --codex-acp-command codex-acp
 ```
 
@@ -90,7 +117,28 @@ cargo run -- \
   --codex-acp-arg @zed-industries/codex-acp
 ```
 
-The backend serves API endpoints under `/api/*` and the production frontend from `frontend/dist` when it exists. During frontend development, use the Vite dev server and point it at the backend API.
+The backend serves API endpoints under `/api/*`. Development builds serve the production frontend from `frontend/dist` when it exists. During frontend development, use the Vite dev server and point it at the backend API.
+
+## Single-Binary Release Build
+
+Build the frontend first, then build the Rust binary with embedded frontend assets:
+
+```bash
+cd frontend
+npm run build
+cd ..
+cargo build --release --features embedded-frontend
+```
+
+The resulting binary at `target/release/acp-webui` or `target/release/acp-webui.exe` serves the frontend without a runtime `frontend/dist` directory.
+
+On Windows, run the embedded frontend smoke test:
+
+```powershell
+.\scripts\smoke-embedded-frontend.ps1
+```
+
+The smoke test builds the frontend and release binary, starts the binary from a temporary directory that does not contain `frontend/dist`, and verifies that `/`, an embedded asset, and an SPA route load successfully.
 
 ## Browser E2E
 

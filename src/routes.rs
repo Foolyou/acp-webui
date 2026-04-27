@@ -9,7 +9,7 @@ use axum::{
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -31,6 +31,17 @@ use crate::{
     },
     storage::Storage,
 };
+
+#[cfg(feature = "embedded-frontend")]
+use axum::{body::Body, http::Uri, response::Response};
+
+#[cfg(feature = "embedded-frontend")]
+use rust_embed::RustEmbed;
+
+#[cfg(feature = "embedded-frontend")]
+#[derive(RustEmbed)]
+#[folder = "frontend/dist"]
+struct FrontendAsset;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -89,6 +100,8 @@ pub fn api_router(state: AppState) -> Router {
             post(resolve_permission),
         )
         .route("/api/ws", get(websocket))
+        .route("/api", any(api_not_found))
+        .route("/api/{*path}", any(api_not_found))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()
@@ -98,8 +111,83 @@ pub fn api_router(state: AppState) -> Router {
     protected.merge(public).with_state(state)
 }
 
-pub fn frontend_service(frontend_dist: &PathBuf) -> ServeDir<ServeFile> {
-    ServeDir::new(frontend_dist).fallback(ServeFile::new(frontend_dist.join("index.html")))
+pub fn frontend_router(frontend_dist: Option<&PathBuf>) -> Router {
+    match frontend_dist {
+        Some(path) => disk_frontend_router(path.clone()),
+        None => default_frontend_router(),
+    }
+}
+
+fn disk_frontend_router(frontend_dist: PathBuf) -> Router {
+    Router::new().fallback_service(
+        ServeDir::new(frontend_dist.clone())
+            .fallback(ServeFile::new(frontend_dist.join("index.html"))),
+    )
+}
+
+#[cfg(feature = "embedded-frontend")]
+fn default_frontend_router() -> Router {
+    Router::new().fallback(embedded_frontend)
+}
+
+#[cfg(not(feature = "embedded-frontend"))]
+fn default_frontend_router() -> Router {
+    disk_frontend_router(crate::config::default_frontend_dist())
+}
+
+async fn api_not_found() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "API route not found" })),
+    )
+}
+
+#[cfg(feature = "embedded-frontend")]
+async fn embedded_frontend(uri: Uri) -> Response {
+    let requested_path = uri.path().trim_start_matches('/');
+    let asset_path = if requested_path.is_empty() {
+        "index.html"
+    } else {
+        requested_path
+    };
+
+    if let Some(asset) = FrontendAsset::get(asset_path) {
+        return embedded_asset_response(asset_path, asset.data.into_owned());
+    }
+
+    match FrontendAsset::get("index.html") {
+        Some(asset) => embedded_asset_response("index.html", asset.data.into_owned()),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "embedded frontend index.html is missing",
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(feature = "embedded-frontend")]
+fn embedded_asset_response(path: &str, data: Vec<u8>) -> Response {
+    Response::builder()
+        .header("content-type", content_type_for_path(path))
+        .body(Body::from(data))
+        .expect("embedded asset response is valid")
+}
+
+#[cfg(feature = "embedded-frontend")]
+fn content_type_for_path(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or_default() {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn require_auth(
@@ -638,6 +726,7 @@ mod tests {
         body::{to_bytes, Body},
         extract::connect_info::ConnectInfo,
         http::{Request, StatusCode},
+        Router,
     };
     use serde_json::Value;
     use tower::ServiceExt;
@@ -668,10 +757,11 @@ mod tests {
         let config = Config {
             bind_host: "127.0.0.1".to_string(),
             bind_port: 7635,
+            work_dir: dir.path().to_path_buf(),
             database_url,
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
-            frontend_dist: dir.path().join("dist"),
+            frontend_dist: Some(dir.path().join("dist")),
             pairing_token,
             disable_auth,
             trusted_clients,
@@ -708,6 +798,123 @@ mod tests {
 
     fn loopback_peer() -> &'static str {
         "127.0.0.1:48152"
+    }
+
+    #[tokio::test]
+    async fn disk_frontend_serves_assets_and_spa_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("index.html"), "<html><body>app</body></html>").unwrap();
+        std::fs::write(dist.join("assets").join("app.js"), "console.log('app');").unwrap();
+        let app = frontend_router(Some(&dist));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"console.log('app');");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("<body>app</body>"));
+    }
+
+    #[cfg(feature = "embedded-frontend")]
+    #[tokio::test]
+    async fn embedded_frontend_serves_index_assets_and_spa_fallback() {
+        let app = frontend_router(None);
+
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(content_type.contains("text/html"));
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("<div id=\"app\"></div>"));
+
+        let asset_path = FrontendAsset::iter()
+            .find(|path| path.ends_with(".js") || path.ends_with(".css"))
+            .expect("frontend build contains a JavaScript or CSS asset")
+            .into_owned();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{asset_path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("content-type").is_some());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("<div id=\"app\"></div>"));
+    }
+
+    #[tokio::test]
+    async fn api_routes_do_not_fall_through_to_frontend() {
+        let (state, dir) = test_state().await;
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(
+            dist.join("index.html"),
+            "<html><body>frontend</body></html>",
+        )
+        .unwrap();
+        let app = Router::new()
+            .merge(api_router(state))
+            .merge(frontend_router(Some(&dist)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/not-a-route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("API route not found"));
     }
 
     #[tokio::test]
