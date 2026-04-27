@@ -1,13 +1,15 @@
 # ACP Web UI Product Design
 
-Status: exploratory draft
-Date: 2026-04-26
+Status: living product design
+Date: 2026-04-27
 
 ## 1. Background
 
 ACP Web UI is intended to be a mobile-first local web interface for agents that implement Agent Client Protocol (ACP).
 
 The initial target is Codex through Zed's `codex-acp`, with near-term expansion to Claude Code, OpenCode, and other ACP-compatible agents.
+
+The current implementation has moved beyond the initial exploration stage. It includes a Rust local daemon, SQLite persistence, a React/Vite frontend, session lists, permission approvals, normalized timeline projections, review artifacts, and session-scoped diff fallback. The remaining product work is concentrated around local access safety, settings, stronger reconnect replay, raw ACP diagnostics, retention policy, and multi-agent preparation.
 
 The product should not be treated as a mobile IDE. Its primary role is a local-first mobile cockpit for supervising, guiding, approving, and reviewing agent work.
 
@@ -135,7 +137,7 @@ Terminal output should be persisted, but the design should leave room for retent
 
 ### 4.1 Primary Navigation
 
-The mobile UI should use a small set of bottom-level areas:
+The intended mobile UI should use a small set of bottom-level areas:
 
 - Inbox
 - Sessions
@@ -144,6 +146,8 @@ The mobile UI should use a small set of bottom-level areas:
 Inbox and Session Detail are expected to be the highest-frequency surfaces.
 
 Review should not be a first-level navigation destination in the first version. It should be entered from Session Detail when the user opens a diff, terminal output, Markdown artifact, or other evidence item from the conversation.
+
+Current implementation note: the React application currently exposes Workspaces as a primary navigation surface so users can create and select local projects. The next navigation refinement should introduce Settings and decide whether Workspaces remains first-level, moves under Settings, or becomes an entry point inside Sessions.
 
 ### 4.2 Inbox
 
@@ -299,7 +303,7 @@ It should still support:
 
 ## 5. Event Model Exploration
 
-### 5.1 Why an Internal Event Model Is Needed
+### 5.1 Internal Event Model Status
 
 The mobile UI should not consume raw ACP messages directly.
 
@@ -314,6 +318,8 @@ The system needs an internal event model because the UI requires:
 - Durable local history
 
 The backend should keep raw ACP messages for debugging and compatibility, but normalized events should power the UI.
+
+Current implementation note: session detail and session list APIs already expose normalized projections, including timeline items, tool calls, permission rows, review artifact summaries, continuability, and view-only reasons. WebSocket events update these projections in the browser. A durable normalized event log with cursor-based replay is still a planned reliability improvement rather than a completed capability.
 
 ### 5.2 Event Layers
 
@@ -361,7 +367,7 @@ Initial normalized events may include:
 - `turn_cancelled`
 - `session_error`
 
-This list is exploratory and should be refined against actual `codex-acp` behavior.
+This list remains a target vocabulary for the durable event log. The current implementation already has product-level realtime events for connection status, session status, assistant text deltas/messages, permission requested/resolved, review artifact availability, timeline item upserts, and errors.
 
 ### 5.4 Permission as a First-Class Event
 
@@ -401,6 +407,8 @@ On reconnect, the backend should send missed normalized events and the current p
 - Disconnection banner state
 - Current artifact summaries
 
+Current implementation note: browser reload and reconnect recover current projections through existing HTTP state and WebSocket reconnect behavior. Missed-event replay from a durable cursor is not implemented yet and should be treated as a distinct next-stage reliability feature.
+
 ## 6. Technical Direction
 
 ### 6.1 Backend
@@ -419,9 +427,17 @@ Candidate libraries:
 
 ### 6.2 Frontend
 
-Frontend technology is not finalized.
+Frontend technology is now selected.
 
-The UI should be mobile-first and optimized for:
+The current frontend stack is:
+
+- React
+- Vite
+- TypeScript
+- TanStack Router for route-backed navigation
+- React Aria Components for accessible dialogs, modals, and sheets
+
+The UI should remain mobile-first and optimized for:
 
 - Touch interaction
 - Narrow viewport readability
@@ -430,6 +446,8 @@ The UI should be mobile-first and optimized for:
 - Streaming event display
 - Diff and Markdown viewing
 - Stable layout under reconnect and live updates
+
+The frontend source is organized by application state, routed surfaces, shared components, and feature modules for sessions, workspaces, approvals, and reviews.
 
 ### 6.3 Storage
 
@@ -447,6 +465,8 @@ Likely data areas:
 - Artifacts
 - Terminal output
 - App settings
+
+Current implementation note: SQLite already stores workspaces, sessions, messages, permission requests, review artifacts, and tool calls. Raw ACP message persistence, a durable normalized event table, app settings, and retention policy are still open implementation areas.
 
 The schema should leave room for retention policies, especially for terminal output and raw ACP logs.
 
@@ -466,6 +486,8 @@ Potential backend modules:
 - `workspace`: workspace allowlist and path safety
 - `review`: session-scoped ACP diff, artifacts, terminal evidence, and on-demand `git diff` fallback
 
+Current implementation note: the backend is partially organized around these concerns today, with ACP runtime, routes, models, storage, configuration, and error handling in place. Future module work should focus on `auth`, `net`, `agents`, `events`, app settings, and retention boundaries rather than reworking already stable session/review/permission flows.
+
 ### 6.5 Platform Priorities
 
 Initial platform priority:
@@ -480,8 +502,6 @@ The design should avoid Linux-only assumptions where practical, but the first va
 
 These are not yet decided:
 
-- Whether the frontend should use React, Solid, Svelte, or another stack.
-- Whether the backend should serve the frontend bundle directly or keep frontend and backend separate during early development.
 - How much raw ACP data should be retained by default.
 - What retention policy should apply to terminal output.
 - How yolo mode should be scoped in the final product: session, workspace, process, or app-level.
@@ -489,6 +509,8 @@ These are not yet decided:
 - How much agent capability discovery should be reflected directly in the UI.
 - Whether `git diff` fallback should support unstaged only, staged plus unstaged, or configurable modes.
 - How cancellation maps to ACP and individual agent behavior across Codex, Claude Code, and OpenCode.
+- Whether Workspaces should remain a first-level navigation surface after Settings is introduced.
+- How pairing token setup should be presented for first-run mobile access.
 
 ## 8. Current Decisions Summary
 
@@ -519,6 +541,8 @@ Core experience decisions:
 Technical initial information:
 
 - Backend: Rust, likely `tokio`, `axum`, `sqlx`, SQLite, ACP Rust crate.
+- Frontend: React, Vite, TypeScript, TanStack Router, React Aria Components.
 - Communication: browser to backend over HTTP/WebSocket; backend to agent over stdio JSON-RPC.
-- Persistence: raw ACP messages, normalized events, projections, permissions, artifacts, terminal output.
-- Event model: normalized append-only events with projections for Inbox, timeline, approval, and session review.
+- Persistence implemented so far: workspaces, sessions, messages, permissions, review artifacts, and tool calls.
+- Persistence still planned: raw ACP messages, durable normalized events, app settings, and retention-managed terminal/raw logs.
+- Event model: normalized projections already power Inbox, Sessions, timeline, approval, and session review; append-only event replay remains planned.
