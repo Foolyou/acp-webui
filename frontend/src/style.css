@@ -38,6 +38,35 @@ body {
   background: var(--color-bg);
 }
 
+.pairing-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-bg);
+}
+
+.pairing-panel {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.pairing-panel h1 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+.pairing-form {
+  display: grid;
+  gap: 12px;
+}
+
 button,
 input,
 textarea {

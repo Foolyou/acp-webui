@@ -53,6 +53,80 @@ test.afterAll(async () => {
   });
 });
 
+test("pairs an anonymous browser before loading app state", async ({ page }) => {
+  let paired = false;
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        access: paired ? "paired_session" : "anonymous",
+        pairingRequired: !paired,
+        clientIp: "192.168.1.23"
+      })
+    });
+  });
+  await page.route("**/api/auth/pair", async (route) => {
+    const body = route.request().postDataJSON() as { token: string };
+    if (body.token !== "test-token") {
+      await route.fulfill({
+        contentType: "application/json",
+        status: 401,
+        body: JSON.stringify({ error: "Invalid pairing token" })
+      });
+      return;
+    }
+    paired = true;
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      headers: { "set-cookie": "acp_webui_session=fake; Path=/; HttpOnly; SameSite=Lax" },
+      body: JSON.stringify({
+        access: "paired_session",
+        pairingRequired: false,
+        clientIp: "192.168.1.23"
+      })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: "Codex" },
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify([])
+    });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify([])
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Pair this browser" })).toBeVisible();
+  await expect(page.getByText("Client: 192.168.1.23")).toBeVisible();
+
+  await page.getByPlaceholder("Pairing token").fill("wrong");
+  await page.getByRole("button", { name: "Pair" }).click();
+  await expect(page.getByText("Invalid pairing token")).toBeVisible();
+
+  await page.getByPlaceholder("Pairing token").fill("test-token");
+  await page.getByRole("button", { name: "Pair" }).click();
+  await expect(page.getByRole("heading", { name: "Local projects" })).toBeVisible();
+});
+
 test("creates a workspace and session, sends a prompt, and restores after refresh", async ({ page }) => {
   await page.goto("/");
 

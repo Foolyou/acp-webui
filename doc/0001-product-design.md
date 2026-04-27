@@ -510,7 +510,7 @@ These are not yet decided:
 - Whether `git diff` fallback should support unstaged only, staged plus unstaged, or configurable modes.
 - How cancellation maps to ACP and individual agent behavior across Codex, Claude Code, and OpenCode.
 - Whether Workspaces should remain a first-level navigation surface after Settings is introduced.
-- How pairing token setup should be presented for first-run mobile access.
+- Whether persistent paired-device management is needed after the first process-scoped pairing-token implementation.
 
 ## 8. Current Decisions Summary
 
@@ -522,6 +522,8 @@ Product architecture decisions:
 - Start with Codex through `codex-acp`.
 - Design for near-term multi-agent support.
 - Use pairing token authentication in the first version.
+- Use opaque HttpOnly browser session cookies after successful pairing.
+- Trust loopback clients by default and allow explicit trusted IP/CIDR configuration; do not trust forwarded headers in the first version.
 - Let the user select bind IP/interface and port at startup.
 - Prioritize Linux/WSL first, then Windows and macOS.
 - Use SQLite for local persistence.

@@ -1,5 +1,6 @@
 import type {
   ConnectionStatus,
+  AuthStatus,
   InboxItem,
   PermissionRequest,
   ReviewArtifact,
@@ -24,6 +25,7 @@ export type UiState = {
   busy: boolean;
   creatingSessionWorkspaceId: string | null;
   error: string | null;
+  auth: AuthStatus | null;
 };
 
 export type AppActions = {
@@ -60,5 +62,6 @@ export const initialState: UiState = {
   liveAssistant: "",
   busy: false,
   creatingSessionWorkspaceId: null,
-  error: null
+  error: null,
+  auth: null
 };

@@ -1103,6 +1103,9 @@ mod tests {
             codex_acp_command: "python3".to_string(),
             codex_acp_args: vec![script.to_string_lossy().to_string(), mode.to_string()],
             frontend_dist: PathBuf::from("frontend/dist"),
+            pairing_token: Some("test-token".to_string()),
+            disable_auth: false,
+            trusted_clients: vec![],
         }
     }
 
@@ -1114,6 +1117,9 @@ mod tests {
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
             frontend_dist: PathBuf::from("frontend/dist"),
+            pairing_token: Some("test-token".to_string()),
+            disable_auth: false,
+            trusted_clients: vec![],
         }
     }
 

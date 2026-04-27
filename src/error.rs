@@ -8,6 +8,9 @@ use serde::Serialize;
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("{0}")]
+    Unauthorized(String),
+
+    #[error("{0}")]
     BadRequest(String),
 
     #[error("{0}")]
@@ -34,6 +37,7 @@ struct ErrorBody {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
+            AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,

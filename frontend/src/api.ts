@@ -1,5 +1,6 @@
 import type {
   AppData,
+  AuthStatus,
   ChatMessage,
   PermissionRequest,
   ReviewArtifact,
@@ -7,6 +8,13 @@ import type {
   SessionDetail,
   Workspace
 } from "./types";
+
+export class UnauthorizedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnauthorizedError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -25,6 +33,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Keep the HTTP status text when the body is not JSON.
     }
+    if (response.status === 401) {
+      throw new UnauthorizedError(message);
+    }
     throw new Error(message);
   }
 
@@ -32,6 +43,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  authStatus: () => request<AuthStatus>("/api/auth/status"),
+  pair: (token: string) =>
+    request<AuthStatus>("/api/auth/pair", {
+      method: "POST",
+      body: JSON.stringify({ token })
+    }),
   appState: () => request<AppData>("/api/app-state"),
   workspaces: () => request<Workspace[]>("/api/workspaces"),
   createWorkspace: (path: string) =>
@@ -68,4 +85,8 @@ export const api = {
 
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function isUnauthorized(error: unknown) {
+  return error instanceof UnauthorizedError;
 }

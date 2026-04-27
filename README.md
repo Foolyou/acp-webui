@@ -15,6 +15,8 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Inbox view for sessions waiting on approval
 - Session review artifact cards for ACP tool call evidence
 - Full-screen review drill-downs for artifact details and on-demand workspace diffs
+- Pairing token access control for non-trusted browsers
+- Trusted client IP/CIDR allowlist for deliberate local bypass
 - SQLite persistence
 - WebSocket live updates
 
@@ -61,6 +63,25 @@ cargo run -- \
   --codex-acp-command codex-acp
 ```
 
+The backend protects `/api/*` and `/api/ws` with pairing-token access control. Loopback clients (`127.0.0.1` and `::1`) are trusted by default for local development. Other client IPs must pair with the token shown in the backend terminal unless they are explicitly trusted.
+
+To use a stable pairing token:
+
+```bash
+cargo run -- \
+  --pairing-token your-local-token
+```
+
+To trust a specific device or network range, pass explicit trusted clients. Prefer a single IP or `/32` for mobile devices:
+
+```bash
+cargo run -- \
+  --bind-host 0.0.0.0 \
+  --trusted-client 100.64.12.34/32
+```
+
+`X-Forwarded-For` and `Forwarded` headers are ignored for trusted-client checks in this version. Do not bind to a broad network interface without either pairing token access or explicit trusted clients.
+
 To use the npm package instead of a binary on PATH:
 
 ```bash
@@ -98,6 +119,8 @@ The suite also exercises a fake ACP tool call review artifact, opens its session
 ## Useful Endpoints
 
 - `GET /api/app-state`
+- `GET /api/auth/status`
+- `POST /api/auth/pair`
 - `GET /api/inbox`
 - `GET /api/sessions`
 - `GET /api/workspaces`

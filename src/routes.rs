@@ -2,9 +2,12 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     extract::{
+        connect_info::ConnectInfo,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Extension, Path, Request, State,
     },
+    http::{header::SET_COOKIE, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -18,6 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
     acp::{CodexRuntime, ConnectionStatus, RealtimeEvent},
+    auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
         review_artifact_kind, role, status, CreateWorkspaceRequest, DiffFallbackResponse,
@@ -33,6 +37,7 @@ pub struct AppState {
     pub storage: Storage,
     pub codex: Arc<CodexRuntime>,
     pub events_tx: broadcast::Sender<RealtimeEvent>,
+    pub auth: AuthService,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,8 +53,14 @@ struct PromptAcceptedResponse {
     message: Message,
 }
 
-pub fn api_router() -> Router<AppState> {
-    Router::new()
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairRequest {
+    token: String,
+}
+
+pub fn api_router(state: AppState) -> Router {
+    let protected = Router::new()
         .route("/api/app-state", get(app_state))
         .route("/api/inbox", get(inbox))
         .route(
@@ -78,10 +89,60 @@ pub fn api_router() -> Router<AppState> {
             post(resolve_permission),
         )
         .route("/api/ws", get(websocket))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let public = Router::new()
+        .route("/api/auth/status", get(auth_status))
+        .route("/api/auth/pair", post(pair));
+
+    protected.merge(public).with_state(state)
 }
 
 pub fn frontend_service(frontend_dist: &PathBuf) -> ServeDir<ServeFile> {
     ServeDir::new(frontend_dist).fallback(ServeFile::new(frontend_dist.join("index.html")))
+}
+
+async fn require_auth(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<impl IntoResponse, AppError> {
+    state
+        .auth
+        .require_access(
+            &headers,
+            connect_info.map(|Extension(ConnectInfo(addr))| addr),
+        )
+        .await?;
+    Ok(next.run(request).await)
+}
+
+async fn auth_status(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    headers: HeaderMap,
+) -> AppResult<Json<AuthStatus>> {
+    Ok(Json(
+        state
+            .auth
+            .status(
+                &headers,
+                connect_info.map(|Extension(ConnectInfo(addr))| addr),
+            )
+            .await,
+    ))
+}
+
+async fn pair(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    Json(payload): Json<PairRequest>,
+) -> AppResult<impl IntoResponse> {
+    let peer = connect_info.map(|Extension(ConnectInfo(addr))| addr);
+    let (status, cookie) = state.auth.pair(&payload.token, peer).await?;
+    Ok((StatusCode::OK, [(SET_COOKIE, cookie)], Json(status)))
 }
 
 async fn app_state(State(state): State<AppState>) -> AppResult<Json<AppStateResponse>> {
@@ -575,17 +636,30 @@ fn summarize_diff(diff: &str) -> String {
 mod tests {
     use axum::{
         body::{to_bytes, Body},
+        extract::connect_info::ConnectInfo,
         http::{Request, StatusCode},
     };
     use serde_json::Value;
     use tower::ServiceExt;
 
     use super::*;
-    use std::process::Command as StdCommand;
+    use std::{net::SocketAddr, process::Command as StdCommand};
 
     use crate::{config::Config, models::NewReviewArtifact, storage::NewPermissionRequest};
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
+        test_state_with_auth(Some("test-token".to_string()), true, vec![]).await
+    }
+
+    async fn auth_test_state() -> (AppState, tempfile::TempDir) {
+        test_state_with_auth(Some("test-token".to_string()), false, vec![]).await
+    }
+
+    async fn test_state_with_auth(
+        pairing_token: Option<String>,
+        disable_auth: bool,
+        trusted_clients: Vec<String>,
+    ) -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let database_url = format!("sqlite://{}", dir.path().join("test.db").display());
         let storage = Storage::connect(&database_url).await.unwrap();
@@ -598,7 +672,11 @@ mod tests {
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
             frontend_dist: dir.path().join("dist"),
+            pairing_token,
+            disable_auth,
+            trusted_clients,
         };
+        let auth = AuthService::from_config(&config).unwrap();
         let codex = CodexRuntime::failed_for_tests(config, storage.clone(), events_tx.clone());
 
         (
@@ -606,15 +684,264 @@ mod tests {
                 storage,
                 codex,
                 events_tx,
+                auth,
             },
             dir,
         )
     }
 
+    fn request_with_peer(
+        builder: axum::http::request::Builder,
+        body: Body,
+        peer: &str,
+    ) -> Request<Body> {
+        let mut request = builder.body(body).unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+        request
+    }
+
+    fn untrusted_peer() -> &'static str {
+        "192.168.1.23:48152"
+    }
+
+    fn loopback_peer() -> &'static str {
+        "127.0.0.1:48152"
+    }
+
+    #[tokio::test]
+    async fn auth_status_reports_anonymous_paired_and_trusted_access() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/auth/status"),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["access"], "anonymous");
+        assert_eq!(json["pairingRequired"], true);
+
+        let pair_response = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pair")
+                    .header("content-type", "application/json"),
+                Body::from(r#"{"token":"test-token"}"#),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        let cookie = pair_response
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let response = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .uri("/api/auth/status")
+                    .header("cookie", cookie),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["access"], "paired_session");
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/auth/status"),
+                Body::empty(),
+                loopback_peer(),
+            ))
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["access"], "trusted_ip");
+    }
+
+    #[tokio::test]
+    async fn protected_api_rejects_anonymous_untrusted_requests() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/app-state"),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn valid_pairing_cookie_allows_protected_api_access() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let pair_response = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pair")
+                    .header("content-type", "application/json"),
+                Body::from(r#"{"token":"test-token"}"#),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(pair_response.status(), StatusCode::OK);
+        let cookie = pair_response
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .uri("/api/app-state")
+                    .header("cookie", cookie),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["codex"]["state"], "failed");
+        assert!(json.get("token").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_pairing_token_is_rejected() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pair")
+                    .header("content-type", "application/json"),
+                Body::from(r#"{"token":"wrong"}"#),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get("set-cookie").is_none());
+    }
+
+    #[tokio::test]
+    async fn trusted_clients_bypass_pairing_only_when_explicitly_configured() {
+        let (state, _dir) = test_state_with_auth(
+            Some("test-token".to_string()),
+            false,
+            vec!["100.64.0.0/10".to_string()],
+        )
+        .await;
+        let app = api_router(state);
+
+        let response = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/app-state"),
+                Body::empty(),
+                "100.64.12.34:48152",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/app-state"),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_do_not_bypass_pairing() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(request_with_peer(
+                Request::builder()
+                    .uri("/api/app-state")
+                    .header("x-forwarded-for", "127.0.0.1")
+                    .header("forwarded", "for=127.0.0.1"),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn websocket_route_is_auth_protected() {
+        let (state, _dir) = auth_test_state().await;
+        let app = api_router(state);
+
+        let anonymous = app
+            .clone()
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/ws"),
+                Body::empty(),
+                untrusted_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        let trusted = app
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/ws"),
+                Body::empty(),
+                loopback_peer(),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(trusted.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn app_state_reports_codex_status() {
         let (state, _dir) = test_state().await;
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .oneshot(
@@ -636,7 +963,7 @@ mod tests {
     async fn workspace_endpoints_create_and_list_workspaces() {
         let (state, _db_dir) = test_state().await;
         let workspace_dir = tempfile::tempdir().unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let body = serde_json::json!({
             "path": workspace_dir.path().to_string_lossy()
@@ -711,7 +1038,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .oneshot(
@@ -773,7 +1100,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .oneshot(
@@ -828,7 +1155,7 @@ mod tests {
             .create_session(&second_workspace.id, "acp-session-2".to_string())
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .clone()
@@ -897,7 +1224,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .clone()
@@ -988,7 +1315,7 @@ mod tests {
             .create_session(&workspace.id, "acp-session".to_string())
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let response = app
             .oneshot(
@@ -1024,7 +1351,7 @@ mod tests {
             .create_session(&workspace.id, "acp-session".to_string())
             .await
             .unwrap();
-        let app = api_router().with_state(state.clone());
+        let app = api_router(state.clone());
 
         let response = app
             .oneshot(
@@ -1062,7 +1389,7 @@ mod tests {
             .update_session_status(&session.id, status::WAITING_APPROVAL)
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let body = serde_json::json!({"prompt": "second prompt"});
         let response = app
@@ -1094,7 +1421,7 @@ mod tests {
             .create_session(&workspace.id, "acp-session".to_string())
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let body = serde_json::json!({"prompt": "continue"});
         let response = app
@@ -1145,7 +1472,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let app = api_router().with_state(state.clone());
+        let app = api_router(state.clone());
 
         let body = serde_json::json!({"optionId": "allow-always"});
         let response = app
@@ -1210,7 +1537,7 @@ mod tests {
             .cancel_permission_request(&permission.id)
             .await
             .unwrap();
-        let app = api_router().with_state(state);
+        let app = api_router(state);
 
         let body = serde_json::json!({"optionId": "allow-once"});
         let response = app

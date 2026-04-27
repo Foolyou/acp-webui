@@ -26,6 +26,19 @@ pub struct Config {
 
     #[arg(long, env = "ACP_WEBUI_FRONTEND_DIST", default_value = "frontend/dist")]
     pub frontend_dist: PathBuf,
+
+    #[arg(long, env = "ACP_WEBUI_PAIRING_TOKEN")]
+    pub pairing_token: Option<String>,
+
+    #[arg(long, env = "ACP_WEBUI_DISABLE_AUTH", default_value_t = false)]
+    pub disable_auth: bool,
+
+    #[arg(
+        long = "trusted-client",
+        env = "ACP_WEBUI_TRUSTED_CLIENTS",
+        value_delimiter = ','
+    )]
+    pub trusted_clients: Vec<String>,
 }
 
 impl Config {
