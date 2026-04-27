@@ -38,7 +38,10 @@ export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
         </Link>
       </div>
       <div className="nav-section">
-        <span>Projects</span>
+        <div className="nav-section-heading">
+          <span>Workspace shortcuts</span>
+          <small>Jump straight into a workspace session list.</small>
+        </div>
         {state.workspaces.slice(0, 6).map((workspace) => (
           <Link
             activeOptions={{ exact: true }}

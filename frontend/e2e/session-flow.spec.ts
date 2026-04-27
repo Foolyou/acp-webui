@@ -124,7 +124,7 @@ test("pairs an anonymous browser before loading app state", async ({ page }) => 
 
   await page.getByPlaceholder("Pairing token").fill("test-token");
   await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.getByRole("heading", { name: "Local projects" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Local workspaces" })).toBeVisible();
 });
 
 test("creates a workspace and session, sends a prompt, and restores after refresh", async ({ page }) => {

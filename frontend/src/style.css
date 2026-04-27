@@ -336,11 +336,22 @@ pre {
   padding-top: 0.8rem;
 }
 
-.nav-section > span {
+.nav-section-heading {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.nav-section-heading > span {
   color: var(--color-text-muted);
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.nav-section-heading > small {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .workspace-nav small,

@@ -48,7 +48,11 @@ export function WorkspacesRoute() {
   const { actions, state } = useAppContext();
   return (
     <div className="page-surface">
-      <PageHeader eyebrow="Workspaces" title="Local projects" />
+      <PageHeader
+        eyebrow="Workspaces"
+        title="Local workspaces"
+        description="Create a workspace or reopen one of your existing local workspaces."
+      />
       <WorkspaceForm busy={state.busy} onCreateWorkspace={actions.createWorkspace} />
       <WorkspaceList workspaces={state.workspaces} />
     </div>
