@@ -431,14 +431,24 @@ async fn submit_prompt(
         .get_session(&session_id)
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    let has_pending_permission = state
+        .storage
+        .pending_permission_for_session(&session_id)
+        .await?
+        .is_some();
 
-    if session.status == status::RUNNING || session.status == status::WAITING_APPROVAL {
-        let message = if session.status == status::WAITING_APPROVAL {
+    if has_pending_permission || session.status == status::WAITING_APPROVAL {
+        return Err(AppError::Conflict(
             "This session is waiting for approval. Resolve the pending approval before sending another prompt."
-        } else {
+                .to_string(),
+        ));
+    }
+
+    if session.status == status::RUNNING {
+        return Err(AppError::Conflict(
             "This session is already running. Wait for it to finish before sending another prompt."
-        };
-        return Err(AppError::Conflict(message.to_string()));
+                .to_string(),
+        ));
     }
 
     if !state
@@ -552,13 +562,17 @@ async fn cancel_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> AppResult<Json<SessionDetail>> {
-    let session = state
+    state
         .storage
         .get_session(&session_id)
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
-
-    if session.status != status::WAITING_APPROVAL {
+    if state
+        .storage
+        .pending_permission_for_session(&session_id)
+        .await?
+        .is_none()
+    {
         return Err(AppError::Conflict(
             "Only sessions waiting for approval can be cancelled in this version.".to_string(),
         ));
@@ -629,16 +643,32 @@ async fn run_prompt_turn(
                     content: outcome.content,
                 });
             }
-            if let Err(error) = storage
-                .update_session_status(&session_id, status::IDLE)
-                .await
-            {
-                tracing::error!(?error, "failed to mark session idle");
+            match storage.pending_permission_for_session(&session_id).await {
+                Ok(Some(_)) => {
+                    tracing::debug!(
+                        session_id,
+                        "prompt turn completed with pending permission; preserving waiting_approval"
+                    );
+                }
+                Ok(None) => {
+                    if let Err(error) = storage
+                        .update_session_status(&session_id, status::IDLE)
+                        .await
+                    {
+                        tracing::error!(?error, "failed to mark session idle");
+                    }
+                    let _ = events_tx.send(RealtimeEvent::SessionStatus {
+                        session_id,
+                        status: status::IDLE.to_string(),
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(
+                        ?error,
+                        "failed to inspect pending permission before marking session idle"
+                    );
+                }
             }
-            let _ = events_tx.send(RealtimeEvent::SessionStatus {
-                session_id,
-                status: status::IDLE.to_string(),
-            });
         }
         Err(error) => {
             tracing::error!(?error, "prompt turn failed");
@@ -1612,6 +1642,129 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn prompt_is_rejected_when_pending_permission_exists_even_if_status_drifted_idle() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        state
+            .storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session.id.clone(),
+                acp_session_id: "acp-session".to_string(),
+                acp_request_id: "1".to_string(),
+                tool_call_id: Some("tool-1".to_string()),
+                title: "Run command".to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-1"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+        state
+            .storage
+            .update_session_status(&session.id, status::IDLE)
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let body = serde_json::json!({"prompt": "second prompt"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for approval"));
+    }
+
+    #[tokio::test]
+    async fn cancel_allows_pending_permission_even_if_status_drifted_idle() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let permission = state
+            .storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session.id.clone(),
+                acp_session_id: "acp-session".to_string(),
+                acp_request_id: "1".to_string(),
+                tool_call_id: Some("tool-1".to_string()),
+                title: "Run command".to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-1"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+        state
+            .storage
+            .update_session_status(&session.id, status::IDLE)
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/cancel", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state
+                .storage
+                .get_permission_request(&permission.id)
+                .await
+                .unwrap()
+                .status,
+            crate::models::permission_status::CANCELLED
+        );
+        assert_eq!(
+            state.storage.get_session(&session.id).await.unwrap().status,
+            status::FAILED
+        );
     }
 
     #[tokio::test]

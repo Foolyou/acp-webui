@@ -238,7 +238,7 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.getByRole("button", { name: /Inspect review evidence/ }).click();
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(reviewDialog.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
-  await expect(reviewDialog.getByText("git diff -- README.md")).toBeVisible();
+  await expect(reviewDialog.locator(".muted")).toContainText("git diff -- README.md");
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.reload();

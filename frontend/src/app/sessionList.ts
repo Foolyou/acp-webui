@@ -61,7 +61,11 @@ export function updateSessionListStatus(sessions: SessionListItem[], sessionId: 
       ? {
           ...item,
           lastActivityAt: now,
-          session: { ...item.session, status, updatedAt: now }
+          session: {
+            ...item.session,
+            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission)),
+            updatedAt: now
+          }
         }
       : item
   );
@@ -119,4 +123,11 @@ function updateSessionListReviewAvailability(sessions: SessionListItem[], sessio
         }
       : item
   );
+}
+
+function normalizeSessionListStatus(status: string, hasPendingPermission: boolean) {
+  if (hasPendingPermission && status === "idle") {
+    return "waiting_approval";
+  }
+  return status;
 }

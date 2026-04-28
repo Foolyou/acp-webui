@@ -382,7 +382,7 @@ impl Storage {
         continuable: bool,
         view_only_reason: Option<String>,
     ) -> anyhow::Result<SessionDetail> {
-        let session = self.get_session(session_id).await?;
+        let mut session = self.get_session(session_id).await?;
         let workspace = self.get_workspace(&session.workspace_id).await?;
         let messages = self.list_messages(&session.id).await?;
         let review_artifacts = self.list_review_artifact_summaries(&session.id).await?;
@@ -395,6 +395,7 @@ impl Storage {
         let failure_message = self
             .latest_permission_failure_for_session(&session.id)
             .await?;
+        session.status = normalize_session_status(session.status, pending_permission.is_some());
 
         Ok(SessionDetail {
             session,
@@ -977,9 +978,10 @@ impl Storage {
         let rows = self.list_pending_permission_request_rows().await?;
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
-            let session = self.get_session(&row.session_id).await?;
+            let mut session = self.get_session(&row.session_id).await?;
             let workspace = self.get_workspace(&session.workspace_id).await?;
             let permission = row_to_permission_request(row)?;
+            session.status = normalize_session_status(session.status, true);
             items.push(InboxItem {
                 session,
                 workspace,
@@ -1156,6 +1158,14 @@ fn dedupe_review_artifact_summaries(
     deduped
 }
 
+fn normalize_session_status(status: String, has_pending_permission: bool) -> String {
+    if has_pending_permission {
+        status::WAITING_APPROVAL.to_string()
+    } else {
+        status
+    }
+}
+
 fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
     let pending_permission = match (
         row.permission_id,
@@ -1179,7 +1189,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             workspace_id: row.workspace_id,
             agent_name: row.agent_name,
             acp_session_id: row.acp_session_id,
-            status: row.status,
+            status: normalize_session_status(row.status, pending_permission.is_some()),
             created_at: row.session_created_at,
             updated_at: row.session_updated_at.clone(),
         },
@@ -1479,6 +1489,62 @@ mod tests {
             .failure_message
             .unwrap()
             .contains("backend restarted"));
+    }
+
+    #[tokio::test]
+    async fn normalizes_waiting_approval_when_pending_permission_exists() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session.id.clone(),
+                acp_session_id: "acp-session-1".to_string(),
+                acp_request_id: "7".to_string(),
+                tool_call_id: Some("tool-1".to_string()),
+                title: "Run command".to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-1"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+        storage
+            .update_session_status(&session.id, status::IDLE)
+            .await
+            .unwrap();
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.session.status, status::WAITING_APPROVAL);
+
+        let list_item = storage
+            .list_session_items()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.session.id == session.id)
+            .unwrap();
+        assert_eq!(list_item.session.status, status::WAITING_APPROVAL);
+
+        let inbox_item = storage
+            .list_inbox_items()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.session.id == session.id)
+            .unwrap();
+        assert_eq!(inbox_item.session.status, status::WAITING_APPROVAL);
     }
 
     #[tokio::test]

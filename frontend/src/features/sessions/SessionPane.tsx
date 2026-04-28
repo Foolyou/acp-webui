@@ -22,7 +22,8 @@ export function SessionPane({
   onOpenReviewArtifact: (artifactId: string) => void;
   onSendPrompt: (prompt: string) => Promise<void>;
 }) {
-  const waitingApproval = currentSession.session.status === "waiting_approval";
+  const waitingApproval =
+    Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
   const canSend = currentSession.continuable && !running;
 

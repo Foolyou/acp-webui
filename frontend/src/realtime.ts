@@ -44,7 +44,10 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
         ...state,
         currentSession: {
           ...state.currentSession,
-          session: { ...state.currentSession.session, status: event.status }
+          session: {
+            ...state.currentSession.session,
+            status: normalizeSessionStatus(event.status, Boolean(state.currentSession.pendingPermission))
+          }
         }
       };
 
@@ -76,6 +79,13 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
     case "connection_status":
       return state;
   }
+}
+
+function normalizeSessionStatus(status: string, hasPendingPermission: boolean) {
+  if (hasPendingPermission && status === "idle") {
+    return "waiting_approval";
+  }
+  return status;
 }
 
 function applyPermissionRequested(state: AppSnapshot, permission: PermissionRequest): AppSnapshot {

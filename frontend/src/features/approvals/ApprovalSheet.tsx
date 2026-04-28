@@ -14,7 +14,7 @@ export function ApprovalSheet({
   onResolve: (permission: PermissionRequest, optionId: string) => void;
 }) {
   const permission = currentSession?.pendingPermission;
-  const open = Boolean(permission && currentSession?.session.status === "waiting_approval");
+  const open = Boolean(permission);
   return (
     <ModalOverlay className="modal-backdrop" isDismissable={false} isOpen={open}>
       <Modal className="sheet-modal">
