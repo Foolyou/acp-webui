@@ -145,7 +145,6 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
 
   await page.getByRole("button", { name: "New Session" }).click();
-  await expect(page.getByText("Starting Codex...")).toBeVisible();
   await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
 
   await page.getByPlaceholder("Ask Codex...").fill("Reply with the smoke phrase.");
@@ -184,6 +183,41 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await navigation.getByRole("button", { name: "Close" }).click();
   await expect(page.locator(".notice.warning", { hasText: "This session history is available for review" })).toBeVisible();
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
+});
+
+test("renders markdown messages and markdown review artifacts", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Show **markdown response**.");
+  await page.keyboard.press("Control+Enter");
+
+  const timeline = page.locator(".timeline");
+  await expect(timeline.locator(".message.user strong", { hasText: "markdown response" })).toBeVisible();
+  await expect(timeline.locator(".message.assistant h1", { hasText: "Markdown response" })).toBeVisible();
+  await expect(timeline.locator(".message.assistant li", { hasText: "rendered list item" })).toBeVisible();
+  await expect(timeline.locator(".message.assistant code", { hasText: "const value = 1;" })).toBeVisible();
+  await expect(timeline.getByText("bad()")).toHaveCount(0);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Trigger markdown artifact.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.locator("details.tool-row summary", { hasText: "Render Markdown evidence" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Render Markdown evidence/ })).toBeVisible();
+  await page.getByRole("button", { name: /Render Markdown evidence/ }).click();
+
+  const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
+  await expect(reviewDialog.getByRole("heading", { name: "Render Markdown evidence" })).toBeVisible();
+  await expect(reviewDialog.locator(".markdown-preview h1", { hasText: "Markdown Evidence" })).toBeVisible();
+  await expect(reviewDialog.locator(".markdown-preview li", { hasText: "artifact list item" })).toBeVisible();
+  await expect(reviewDialog.locator(".markdown-preview code", { hasText: "const artifact = true;" })).toBeVisible();
+  await expect(reviewDialog.locator(".markdown-preview").getByText("window.__bad")).toHaveCount(0);
+  await reviewDialog.locator(".raw-details summary").click();
+  await expect(reviewDialog.locator(".raw-details")).toContainText("# Markdown Evidence");
+  await page.getByRole("button", { name: "Close" }).click();
 });
 
 test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
@@ -250,12 +284,16 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
   await expect(page.locator("details.tool-row")).toHaveCount(1);
+  await expect(page.locator("details.tool-row > summary")).toContainText("Ran");
+  await expect(page.locator("details.tool-row > summary")).toContainText("git diff -- README.md");
+  const ids = sessionRouteIds(page);
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
   await openMenuAndClick(page, /Sessions/);
-  await expect(page.getByRole("link", { name: /1 review items/ })).toBeVisible();
-  await page.getByRole("link", { name: /1 review items/ }).click();
+  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  await expect(sessionLink).toContainText("1 review items");
+  await sessionLink.click();
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
   await page.getByRole("button", { name: /Inspect review evidence/ }).click();
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });

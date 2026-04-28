@@ -1,4 +1,5 @@
 import { Button, Dialog, Heading, Modal, ModalOverlay } from "react-aria-components";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import type { ReviewArtifact } from "../../types";
 import { payloadText } from "../../utils/payload";
 
@@ -76,17 +77,7 @@ function MarkdownPayload({ payload }: { payload: unknown }) {
   const text = payloadText(payload);
   return (
     <>
-      <div className="markdown-preview">
-        {text.split("\n").map((line, index) => {
-          const key = `${index}-${line}`;
-          if (line.startsWith("### ")) return <h3 key={key}>{line.slice(4)}</h3>;
-          if (line.startsWith("## ")) return <h2 key={key}>{line.slice(3)}</h2>;
-          if (line.startsWith("# ")) return <h2 key={key}>{line.slice(2)}</h2>;
-          if (line.startsWith("- ")) return <li key={key}>{line.slice(2)}</li>;
-          if (!line.trim()) return null;
-          return <p key={key}>{line}</p>;
-        })}
-      </div>
+      <MarkdownContent className="markdown-preview" content={text} />
       <details className="raw-details">
         <summary>Raw</summary>
         <pre className="review-pre">{text}</pre>

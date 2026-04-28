@@ -2,8 +2,10 @@ import { useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { Button } from "react-aria-components";
 import { liveMessage, timelineMessage } from "../../app/timeline";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
 import type { ChatMessage, ConnectionStatus, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
+import { toolCallDisplay } from "../../utils/toolDisplay";
 
 export function SessionPane({
   busy,
@@ -112,14 +114,29 @@ function ToolCallRow({
   item: Extract<TimelineItem, { kind: "tool_call" }>;
   onOpenReviewArtifact: (artifactId: string) => void;
 }) {
+  const display = toolCallDisplay(item);
+
   return (
     <details className={`tool-row ${item.status}`}>
       <summary>
-        <span className="tool-kind">{item.toolKind}</span>
-        <strong>{item.title}</strong>
-        <span>{item.status}</span>
+        <span className="tool-action">{display.actionLabel}</span>
+        <span className="tool-heading">
+          <strong>{display.subject}</strong>
+          <span>{display.summary}</span>
+        </span>
+        <span className={`tool-status ${display.status}`}>{display.status}</span>
       </summary>
-      <p>{item.summary}</p>
+      {display.details.length ? (
+        <dl className="tool-details">
+          {display.details.map((detail) => (
+            <div key={`${detail.label}-${detail.value}`}>
+              <dt>{detail.label}</dt>
+              <dd>{detail.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {display.outputPreview ? <pre className="tool-output">{display.outputPreview}</pre> : null}
       {item.reviewArtifactIds.length ? (
         <div className="tool-links">
           {item.reviewArtifactIds.map((artifactId) => (
@@ -130,8 +147,8 @@ function ToolCallRow({
         </div>
       ) : null}
       <details className="raw-details">
-        <summary>Raw</summary>
-        <pre className="review-pre">{JSON.stringify({ input: item.input, output: item.output }, null, 2)}</pre>
+        <summary>Raw payload</summary>
+        <pre className="review-pre">{JSON.stringify({ input: display.rawInput, output: display.rawOutput }, null, 2)}</pre>
       </details>
     </details>
   );
@@ -232,7 +249,7 @@ function MessageBubble({ live = false, message }: { live?: boolean; message: Cha
   return (
     <article className={`message ${message.role} ${live ? "live" : ""}`}>
       <div className="message-role">{message.role}</div>
-      <div className="message-content">{message.content}</div>
+      <MarkdownContent className="message-content" content={message.content} />
     </article>
   );
 }

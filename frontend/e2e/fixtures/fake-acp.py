@@ -168,6 +168,25 @@ for line in sys.stdin:
                 .get("optionId", "cancelled")
             )
             text = f"Approval result: {option_id}"
+        elif "markdown artifact" in prompt_text.lower():
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-markdown",
+                            "title": "Render Markdown evidence",
+                            "kind": "markdown",
+                            "status": "completed",
+                            "markdown": "# Markdown Evidence\n\n- artifact list item\n\n```ts\nconst artifact = true;\n```\n\n<script>window.__bad = true</script>",
+                        },
+                    },
+                }
+            )
+            text = "Markdown artifact emitted"
         elif "review" in prompt_text.lower():
             send(
                 {
@@ -192,6 +211,8 @@ for line in sys.stdin:
                 }
             )
             text = "Review artifact emitted"
+        elif "markdown response" in prompt_text.lower():
+            text = "# Markdown response\n\n- rendered list item\n\n`inline code`\n\n```ts\nconst value = 1;\n```\n\n<script>bad()</script>"
         else:
             text = "ACP Web UI smoke test OK"
         send(
