@@ -2,6 +2,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { normalizeMarkdownContent } from "./markdownNormalize";
 
 const markdownComponents: Components = {
   a({ children, href }) {
@@ -15,6 +16,7 @@ const markdownComponents: Components = {
 
 export function MarkdownContent({ className, content }: { className?: string; content: string }) {
   const classes = ["markdown-content", className].filter(Boolean).join(" ");
+  const normalizedContent = normalizeMarkdownContent(content);
 
   return (
     <div className={classes}>
@@ -24,7 +26,7 @@ export function MarkdownContent({ className, content }: { className?: string; co
         remarkPlugins={[remarkGfm, remarkBreaks]}
         skipHtml
       >
-        {content}
+        {normalizedContent}
       </ReactMarkdown>
     </div>
   );

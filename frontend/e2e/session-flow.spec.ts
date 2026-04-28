@@ -217,15 +217,16 @@ test("restores a persisted session after backend restart and sends a follow-up p
   await ensureWorkspace(page);
 
   await page.getByRole("button", { name: "New Session" }).click();
-  await page.getByPlaceholder("Ask Codex...").fill("Reply with the smoke phrase.");
-  await page.keyboard.press("Control+Enter");
-  await expect(page.getByText("ACP Web UI smoke test OK").last()).toBeVisible();
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll history.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Scroll history line 80")).toBeVisible();
 
   const ids = sessionRouteIds(page);
   await restartBackend();
   await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
 
   await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restore" })).toBeInViewport();
   await expect(page.getByPlaceholder("Restore session to continue")).toBeDisabled();
   await page.getByRole("button", { name: "Restore" }).click();
 
@@ -306,7 +307,6 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
   await expect(timeline.locator(".message.assistant li", { hasText: "rendered list item" })).toBeVisible();
   await expect(timeline.locator(".message.assistant code", { hasText: "const value = 1;" })).toBeVisible();
   await expect(timeline.getByText("bad()")).toHaveCount(0);
-
   await page.getByPlaceholder("Ask Codex...").fill("Trigger markdown artifact.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -323,6 +323,44 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
   await reviewDialog.locator(".raw-details summary").click();
   await expect(reviewDialog.locator(".raw-details")).toContainText("# Markdown Evidence");
   await page.getByRole("button", { name: "Close" }).click();
+});
+
+test("wraps long assistant pre blocks", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Show wrapping response.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const timeline = page.locator(".timeline");
+  await expect(timeline.locator(".message.assistant pre").last()).toBeVisible();
+  await expect(timeline.locator(".message.assistant blockquote").last()).toBeVisible();
+  await expectAssistantPreFitsViewport(page);
+  await expectAssistantQuoteFitsViewport(page);
+});
+
+test("repairs assistant markdown fences glued to prose", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Show malformed fence response.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const assistant = page.locator(".message.assistant").last();
+  await expect(assistant.locator("pre")).toHaveCount(3);
+  await expect(assistant.locator("pre").nth(0)).toContainText("first block");
+  await expect(assistant.locator("p", { hasText: "Next paragraph" })).toBeVisible();
+  await expect(assistant.locator("pre").nth(1)).toContainText('{"ok":true}');
+  await expect(assistant.locator("p", { hasText: "More text" })).toBeVisible();
+  await expect(assistant.locator("pre").nth(2)).toContainText("GET session detail");
+  await expect(assistant.locator("p", { hasText: "Final paragraph" })).toBeVisible();
+  await expect(assistant.locator("pre", { hasText: "```" })).toHaveCount(0);
 });
 
 test("auto-scrolls session timeline unless the user scrolls away", async ({ page }) => {
@@ -408,6 +446,23 @@ test("approves a pending permission request and keeps always options disabled", 
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });
 
+test("opens home to the workspace sessions list instead of the last session", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+  const ids = sessionRouteIds(page);
+
+  await page.goto("/");
+
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
+  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
+  await expect(page.getByPlaceholder("Ask Codex...")).toHaveCount(0);
+});
+
 test("advances through queued approval requests in one session", async ({ page }) => {
   await page.goto("/");
 
@@ -489,6 +544,39 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
         const layoutOverflow = sessionLayout ? sessionLayout.scrollWidth - sessionLayout.clientWidth : 0;
         const pageOverflow = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
         return Math.max(pageOverflow, layoutOverflow);
+      })
+    )
+    .toBeLessThanOrEqual(1);
+}
+
+async function expectAssistantQuoteFitsViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const quotes = Array.from(document.querySelectorAll<HTMLElement>(".message.assistant blockquote"));
+        const quote = quotes[quotes.length - 1];
+        const quotedCode = quote?.querySelector<HTMLElement>("pre");
+        const pageOverflow = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+        if (!quote) return 999;
+        return Math.max(
+          pageOverflow,
+          quote.scrollWidth - quote.clientWidth,
+          quotedCode ? quotedCode.scrollWidth - quotedCode.clientWidth : 0
+        );
+      })
+    )
+    .toBeLessThanOrEqual(1);
+}
+
+async function expectAssistantPreFitsViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const blocks = Array.from(document.querySelectorAll<HTMLElement>(".message.assistant pre"));
+        const pre = blocks[blocks.length - 1];
+        const pageOverflow = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+        if (!pre) return 999;
+        return Math.max(pageOverflow, pre.scrollWidth - pre.clientWidth);
       })
     )
     .toBeLessThanOrEqual(1);

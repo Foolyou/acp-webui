@@ -340,6 +340,13 @@ for line in sys.stdin:
             text = "Review artifact emitted"
         elif "markdown response" in prompt_text.lower():
             text = "# Markdown response\n\n- rendered list item\n\n`inline code`\n\n```ts\nconst value = 1;\n```\n\n<script>bad()</script>"
+        elif "wrapping response" in prompt_text.lower():
+            quoted_text = "QuotedContentWithoutSpaces" * 14
+            quoted_code = "QuotedCodeWithoutSpaces" * 10
+            long_code = "PlainPreContentWithoutSpaces" * 18
+            text = f"Plain pre wrapping:\n\n```txt\n{long_code}\n```\n\n> {quoted_text}\n>\n> ```txt\n> {quoted_code}\n> ```"
+        elif "malformed fence response" in prompt_text.lower():
+            text = "Fence check:\n\n```text\nfirst block\n```Next paragraph\n\n```json\n{\"ok\":true}\n```More text\n\n```textGET session detail\n  -> done\n```Final paragraph"
         else:
             text = "ACP Web UI smoke test OK"
         send(

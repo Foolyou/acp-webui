@@ -16,15 +16,6 @@ export function IndexRoute() {
 
   useEffect(() => {
     if (!state.initialized) return;
-    const session = state.currentSession;
-    if (session) {
-      void navigate({
-        to: "/workspaces/$workspaceId/sessions/$sessionId",
-        params: { workspaceId: session.workspace.id, sessionId: session.session.id },
-        replace: true
-      });
-      return;
-    }
     if (state.currentWorkspaceId) {
       void navigate({
         to: "/workspaces/$workspaceId/sessions",
@@ -34,7 +25,7 @@ export function IndexRoute() {
       return;
     }
     void navigate({ to: "/workspaces", replace: true });
-  }, [navigate, state.currentSession, state.currentWorkspaceId, state.initialized]);
+  }, [navigate, state.currentWorkspaceId, state.initialized]);
 
   return <LoadingPanel text="Loading workspace" />;
 }

@@ -647,9 +647,33 @@ pre {
 }
 
 .markdown-content blockquote {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
   border-left: 3px solid var(--color-border-strong);
   color: var(--color-text-muted);
   padding-left: 0.7rem;
+}
+
+.message.assistant .markdown-content blockquote,
+.message.assistant .markdown-content blockquote * {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message.assistant .markdown-content pre {
+  overflow-x: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message.assistant .markdown-content pre code {
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
 }
 
 .markdown-content a {
@@ -833,6 +857,23 @@ pre {
   display: grid;
   gap: 0.55rem;
   min-width: 0;
+}
+
+.composer-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.composer-topline .composer-status {
+  flex: 1 1 auto;
+}
+
+.composer-topline .primary,
+.composer-topline .secondary {
+  flex: 0 0 auto;
 }
 
 .composer-actions {

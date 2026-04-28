@@ -80,17 +80,6 @@ export function App() {
     const [appState, workspaces, sessions] = await Promise.all([api.appState(), api.workspaces(), api.sessions()]);
 
     const storedWorkspaceId = localStorage.getItem("currentWorkspaceId");
-    const storedSessionId = localStorage.getItem("currentSessionId");
-    let currentSession: SessionDetail | null = null;
-
-    if (storedSessionId) {
-      try {
-        currentSession = await api.session(storedSessionId);
-      } catch (error) {
-        if (isUnauthorized(error)) throw error;
-        localStorage.removeItem("currentSessionId");
-      }
-    }
 
     setState((current) => ({
       ...current,
@@ -99,8 +88,8 @@ export function App() {
       inbox: appState.inbox,
       sessions,
       workspaces,
-      currentWorkspaceId: currentSession?.workspace.id ?? storedWorkspaceId ?? workspaces[0]?.id ?? null,
-      currentSession,
+      currentWorkspaceId: current.currentSession?.workspace.id ?? current.currentWorkspaceId ?? storedWorkspaceId ?? workspaces[0]?.id ?? null,
+      currentSession: current.currentSession,
       initialized: true,
       error: null
     }));

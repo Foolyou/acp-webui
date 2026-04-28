@@ -37,13 +37,42 @@ export function SessionPane({
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
+  const restoreButtonLabel = continuity.restoring
+    ? "Restoring..."
+    : continuity.state === "restore_failed"
+      ? "Retry restore"
+      : "Restore";
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const programmaticScrollUntilRef = useRef(0);
   const userScrollIntentRef = useRef(false);
   const touchStartYRef = useRef<number | null>(null);
-  const [autoFollow, setAutoFollow] = useState(true);
-  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [autoFollowState, setAutoFollowState] = useState({ sessionId: currentSession.session.id, value: true });
+  const [isAtBottomState, setIsAtBottomState] = useState({ sessionId: currentSession.session.id, value: true });
+  const autoFollow = autoFollowState.sessionId === currentSession.session.id ? autoFollowState.value : true;
+  const isAtBottom = isAtBottomState.sessionId === currentSession.session.id ? isAtBottomState.value : true;
+
+  const setAutoFollow = useCallback(
+    (value: boolean) => {
+      setAutoFollowState((current) =>
+        current.sessionId === currentSession.session.id && current.value === value
+          ? current
+          : { sessionId: currentSession.session.id, value }
+      );
+    },
+    [currentSession.session.id]
+  );
+
+  const setIsAtBottom = useCallback(
+    (value: boolean) => {
+      setIsAtBottomState((current) =>
+        current.sessionId === currentSession.session.id && current.value === value
+          ? current
+          : { sessionId: currentSession.session.id, value }
+      );
+    },
+    [currentSession.session.id]
+  );
 
   const isTimelineEndNearViewport = useCallback(() => {
     const node = timelineEndRef.current;
@@ -63,8 +92,6 @@ export function SessionPane({
   }, []);
 
   useEffect(() => {
-    setAutoFollow(true);
-    setIsAtBottom(true);
     lastScrollYRef.current = window.scrollY;
   }, [currentSession.session.id]);
 
@@ -85,7 +112,7 @@ export function SessionPane({
 
     observer.observe(node);
     return () => observer.disconnect();
-  }, [currentSession.session.id, isTimelineEndNearViewport]);
+  }, [currentSession.session.id, isTimelineEndNearViewport, setAutoFollow, setIsAtBottom]);
 
   useEffect(() => {
     lastScrollYRef.current = window.scrollY;
@@ -146,7 +173,7 @@ export function SessionPane({
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("scroll", onScroll);
     };
-  }, [isTimelineEndNearViewport]);
+  }, [isTimelineEndNearViewport, setAutoFollow]);
 
   useEffect(() => {
     if (!autoFollow) return;
@@ -173,17 +200,6 @@ export function SessionPane({
       <div className="session-toolbar">
         <PageHeader eyebrow={currentSession.workspace.name} title="Session" />
         <div className="section-actions">
-          {continuity.restorable || continuity.restoring ? (
-            <Button
-              className="primary small"
-              isDisabled={busy || !canRestore}
-              onPress={() => {
-                void onRestoreSession(currentSession.session.id);
-              }}
-            >
-              {continuity.restoring ? "Restoring..." : continuity.state === "restore_failed" ? "Retry restore" : "Restore"}
-            </Button>
-          ) : null}
           <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
             Diff
           </Button>
@@ -230,6 +246,9 @@ export function SessionPane({
         disabled={!canSend}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
+        onRestoreSession={() => onRestoreSession(currentSession.session.id)}
+        restoreButtonLabel={continuity.restorable || continuity.restoring ? restoreButtonLabel : null}
+        restoreDisabled={busy || !canRestore}
         restoreRequired={continuity.restorable || continuity.restoring}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
@@ -338,7 +357,10 @@ function PromptComposer({
   codex,
   disabled,
   onSendPrompt,
+  onRestoreSession,
   running,
+  restoreButtonLabel,
+  restoreDisabled,
   continuityReason,
   restoreRequired,
   waitingApproval
@@ -347,7 +369,10 @@ function PromptComposer({
   codex: ConnectionStatus;
   disabled: boolean;
   onSendPrompt: (prompt: string) => Promise<void>;
+  onRestoreSession: () => Promise<void>;
   running: boolean;
+  restoreButtonLabel: string | null;
+  restoreDisabled: boolean;
   continuityReason?: string | null;
   restoreRequired: boolean;
   waitingApproval: boolean;
@@ -387,7 +412,22 @@ function PromptComposer({
 
   return (
     <div className="composer-wrap">
-      {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : null}
+      {status || restoreButtonLabel ? (
+        <div className="composer-topline">
+          {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
+          {restoreButtonLabel ? (
+            <Button
+              className="primary small"
+              isDisabled={restoreDisabled}
+              onPress={() => {
+                void onRestoreSession();
+              }}
+            >
+              {restoreButtonLabel}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <form className="composer" onSubmit={onSubmit}>
         <textarea
           disabled={disabled}
