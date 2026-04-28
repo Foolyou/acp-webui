@@ -36,6 +36,12 @@ async fn main() -> anyhow::Result<()> {
     if expired > 0 {
         tracing::warn!(expired, "expired stale pending permission requests");
     }
+    let repaired = storage
+        .repair_restored_running_sessions_on_startup()
+        .await?;
+    if repaired > 0 {
+        tracing::warn!(repaired, "reset restored sessions stuck in running state");
+    }
 
     let (events_tx, _) = tokio::sync::broadcast::channel(256);
     let codex = acp::CodexRuntime::start(config.clone(), storage.clone(), events_tx.clone()).await;

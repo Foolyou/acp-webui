@@ -1429,7 +1429,7 @@ fn cancelled_permission_response() -> Value {
 }
 
 fn queued_approval_count(pending_approval_count: i64) -> i64 {
-    pending_approval_count.saturating_sub(1)
+    pending_approval_count.saturating_sub(1).max(0)
 }
 
 fn tool_call_id(tool_call: &Value) -> Option<String> {

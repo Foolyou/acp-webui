@@ -102,6 +102,33 @@ impl Storage {
         Ok(pending.len())
     }
 
+    pub async fn repair_restored_running_sessions_on_startup(&self) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                updated_at = ?
+            WHERE continuation_state = ?
+                AND status = ?
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM permission_requests
+                    WHERE permission_requests.session_id = sessions.id
+                        AND permission_requests.status = ?
+                )
+            "#,
+        )
+        .bind(status::IDLE)
+        .bind(now())
+        .bind(continuity_state::RESTORED)
+        .bind(status::RUNNING)
+        .bind(permission_status::PENDING)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     pub async fn create_workspace(
         &self,
         path: impl AsRef<str>,
@@ -247,10 +274,7 @@ impl Storage {
         Ok(session)
     }
 
-    pub async fn session_continuity_row(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<SessionContinuityRow> {
+    pub async fn session_continuity_row(&self, id: &str) -> anyhow::Result<SessionContinuityRow> {
         let row = sqlx::query_as::<_, SessionContinuityRow>(
             r#"
             SELECT continuation_state, restore_failure_message, restore_started_at, restore_completed_at
@@ -294,6 +318,7 @@ impl Storage {
             r#"
             UPDATE sessions
             SET continuation_state = ?,
+                status = ?,
                 restore_failure_message = NULL,
                 restore_completed_at = ?,
                 updated_at = ?
@@ -301,6 +326,7 @@ impl Storage {
             "#,
         )
         .bind(continuity_state::RESTORED)
+        .bind(status::IDLE)
         .bind(&now)
         .bind(&now)
         .bind(id)
@@ -310,11 +336,7 @@ impl Storage {
         Ok(now)
     }
 
-    pub async fn mark_session_restore_failed(
-        &self,
-        id: &str,
-        message: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn mark_session_restore_failed(&self, id: &str, message: &str) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             UPDATE sessions
@@ -1399,7 +1421,7 @@ fn normalize_session_status(status: String, has_pending_permission: bool) -> Str
 }
 
 fn queued_approval_count(pending_approval_count: i64) -> i64 {
-    pending_approval_count.saturating_sub(1)
+    pending_approval_count.saturating_sub(1).max(0)
 }
 
 fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
@@ -1813,6 +1835,78 @@ mod tests {
             .find(|item| item.session.id == session.id)
             .unwrap();
         assert_eq!(inbox_item.session.status, status::WAITING_APPROVAL);
+    }
+
+    #[tokio::test]
+    async fn restore_success_marks_restored_session_idle() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        storage
+            .update_session_status(&session.id, status::RUNNING)
+            .await
+            .unwrap();
+        storage
+            .mark_session_restore_started(&session.id)
+            .await
+            .unwrap();
+        storage
+            .mark_session_restore_succeeded(&session.id)
+            .await
+            .unwrap();
+
+        let restored = storage.get_session(&session.id).await.unwrap();
+        let continuity = storage.session_continuity_row(&session.id).await.unwrap();
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(restored.status, status::IDLE);
+        assert_eq!(detail.session.status, status::IDLE);
+        assert_eq!(detail.queued_approval_count, 0);
+        assert_eq!(continuity.continuation_state, continuity_state::RESTORED);
+        assert!(continuity.restore_completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_repair_marks_restored_running_sessions_idle() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        storage
+            .mark_session_restore_succeeded(&session.id)
+            .await
+            .unwrap();
+        storage
+            .update_session_status(&session.id, status::RUNNING)
+            .await
+            .unwrap();
+
+        let repaired = storage
+            .repair_restored_running_sessions_on_startup()
+            .await
+            .unwrap();
+
+        assert_eq!(repaired, 1);
+        assert_eq!(
+            storage.get_session(&session.id).await.unwrap().status,
+            status::IDLE
+        );
     }
 
     #[tokio::test]
