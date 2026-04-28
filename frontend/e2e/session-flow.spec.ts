@@ -325,6 +325,60 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
   await page.getByRole("button", { name: "Close" }).click();
 });
 
+test("auto-scrolls session timeline unless the user scrolls away", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll history.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Scroll history line 80")).toBeVisible();
+  await expectTimelineEndNearViewport(page);
+
+  const ids = sessionRouteIds(page);
+  await page.reload();
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await expect(page.getByText("Scroll history line 80")).toBeVisible();
+  await expectTimelineEndNearViewport(page);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll stream while following.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Following stream line 40")).toBeVisible();
+  await expectTimelineEndNearViewport(page);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
+
+  await page.mouse.move(200, 420);
+  await page.mouse.wheel(0, -2200);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+  await expectTimelineEndBelowViewport(page);
+  const pausedScrollY = await page.evaluate(() => window.scrollY);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll stream while paused.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".message.assistant", { hasText: "Paused stream line 40" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+  const afterPausedStreamY = await page.evaluate(() => window.scrollY);
+  expect(Math.abs(afterPausedStreamY - pausedScrollY)).toBeLessThan(80);
+
+  await page.getByRole("button", { name: "Scroll to bottom" }).click();
+  await expect(page.getByText("Paused stream line 40")).toBeVisible();
+  await expectTimelineEndNearViewport(page);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
+
+  await page.mouse.wheel(0, -2200);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expectTimelineEndNearViewport(page);
+  await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll stream after manual bottom.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Manual bottom stream line 40")).toBeVisible();
+  await expectTimelineEndNearViewport(page);
+});
+
 test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
   await page.goto("/");
 
@@ -438,6 +492,32 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
       })
     )
     .toBeLessThanOrEqual(1);
+}
+
+async function expectTimelineEndNearViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const end = document.querySelector(".timeline-end");
+        if (!end) return false;
+        const rect = end.getBoundingClientRect();
+        return rect.top <= window.innerHeight && rect.bottom >= 0;
+      })
+    )
+    .toBe(true);
+}
+
+async function expectTimelineEndBelowViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const end = document.querySelector(".timeline-end");
+        if (!end) return false;
+        const rect = end.getBoundingClientRect();
+        return rect.top > window.innerHeight;
+      })
+    )
+    .toBe(true);
 }
 
 function sessionWorkspaceId(page: import("@playwright/test").Page) {

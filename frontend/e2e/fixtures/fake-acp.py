@@ -5,6 +5,7 @@
 
 import json
 import sys
+import time
 
 session_id = "fake-e2e-session"
 
@@ -139,7 +140,45 @@ for line in sys.stdin:
             for part in message.get("params", {}).get("prompt", [])
             if isinstance(part, dict)
         )
-        if "queued approval" in prompt_text.lower():
+        if "scroll stream" in prompt_text.lower():
+            if "manual bottom" in prompt_text.lower():
+                label = "Manual bottom stream"
+            elif "paused" in prompt_text.lower():
+                label = "Paused stream"
+            else:
+                label = "Following stream"
+            for index in range(1, 41):
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": prompt_session_id,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {
+                                    "type": "text",
+                                    "text": f"{label} line {index:02d}: streaming scroll content.\n",
+                                },
+                            },
+                        },
+                    }
+                )
+                time.sleep(0.01)
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"stopReason": "end_turn"},
+                }
+            )
+            continue
+        if "scroll history" in prompt_text.lower():
+            text = "\n".join(
+                f"Scroll history line {index:02d}: restored timeline overflow content."
+                for index in range(1, 81)
+            )
+        elif "queued approval" in prompt_text.lower():
             send(
                 {
                     "jsonrpc": "2.0",

@@ -1,11 +1,14 @@
-import { useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "react-aria-components";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
 import type { ChatMessage, ConnectionStatus, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
+
+const TIMELINE_BOTTOM_MARGIN_PX = 96;
+const PROGRAMMATIC_SCROLL_WINDOW_MS = 350;
 
 export function SessionPane({
   busy,
@@ -34,6 +37,136 @@ export function SessionPane({
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
+  const timelineEndRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollYRef = useRef(0);
+  const programmaticScrollUntilRef = useRef(0);
+  const userScrollIntentRef = useRef(false);
+  const touchStartYRef = useRef<number | null>(null);
+  const [autoFollow, setAutoFollow] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  const isTimelineEndNearViewport = useCallback(() => {
+    const node = timelineEndRef.current;
+    if (!node) return true;
+    const rect = node.getBoundingClientRect();
+    return rect.top <= window.innerHeight + TIMELINE_BOTTOM_MARGIN_PX && rect.bottom >= -TIMELINE_BOTTOM_MARGIN_PX;
+  }, []);
+
+  const scrollToTimelineEnd = useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = timelineEndRef.current;
+    if (!node) return;
+    programmaticScrollUntilRef.current = window.performance.now() + PROGRAMMATIC_SCROLL_WINDOW_MS;
+    node.scrollIntoView({ behavior, block: "end", inline: "nearest" });
+    window.setTimeout(() => {
+      lastScrollYRef.current = window.scrollY;
+    }, PROGRAMMATIC_SCROLL_WINDOW_MS);
+  }, []);
+
+  useEffect(() => {
+    setAutoFollow(true);
+    setIsAtBottom(true);
+    lastScrollYRef.current = window.scrollY;
+  }, [currentSession.session.id]);
+
+  useEffect(() => {
+    const node = timelineEndRef.current;
+    if (!node) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const nearBottom = entry.isIntersecting || isTimelineEndNearViewport();
+        setIsAtBottom(nearBottom);
+        if (nearBottom) {
+          setAutoFollow(true);
+        }
+      },
+      { root: null, rootMargin: `0px 0px ${TIMELINE_BOTTOM_MARGIN_PX}px 0px`, threshold: 0 }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [currentSession.session.id, isTimelineEndNearViewport]);
+
+  useEffect(() => {
+    lastScrollYRef.current = window.scrollY;
+
+    function markUserScrollIntent() {
+      userScrollIntentRef.current = true;
+      window.setTimeout(() => {
+        userScrollIntentRef.current = false;
+      }, PROGRAMMATIC_SCROLL_WINDOW_MS);
+    }
+
+    function onWheel(event: WheelEvent) {
+      if (event.deltaY < 0) {
+        markUserScrollIntent();
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (["ArrowUp", "Home", "PageUp"].includes(event.key)) {
+        markUserScrollIntent();
+      }
+    }
+
+    function onTouchStart(event: TouchEvent) {
+      touchStartYRef.current = event.touches[0]?.clientY ?? null;
+    }
+
+    function onTouchMove(event: TouchEvent) {
+      const touchStartY = touchStartYRef.current;
+      const currentY = event.touches[0]?.clientY;
+      if (touchStartY === null || currentY === undefined) return;
+      if (currentY > touchStartY + 4) {
+        markUserScrollIntent();
+      }
+    }
+
+    function onScroll() {
+      const scrollY = window.scrollY;
+      const previousScrollY = lastScrollYRef.current;
+      lastScrollYRef.current = scrollY;
+      const programmaticScroll =
+        window.performance.now() < programmaticScrollUntilRef.current && !userScrollIntentRef.current;
+      if (programmaticScroll) return;
+      if (scrollY < previousScrollY - 2 && !isTimelineEndNearViewport()) {
+        setAutoFollow(false);
+      }
+    }
+
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [isTimelineEndNearViewport]);
+
+  useEffect(() => {
+    if (!autoFollow) return;
+    const frame = window.requestAnimationFrame(() => scrollToTimelineEnd());
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    autoFollow,
+    currentSession.failureMessage,
+    currentSession.pendingPermission?.id,
+    currentSession.session.id,
+    currentSession.timeline,
+    liveAssistant,
+    running,
+    scrollToTimelineEnd,
+    waitingApproval,
+    continuity.failureMessage,
+    continuity.restoring
+  ]);
+
+  const showScrollShortcut = !autoFollow && !isAtBottom;
 
   return (
     <section className="session-layout">
@@ -75,7 +208,22 @@ export function SessionPane({
         ))}
         {running && !liveAssistant ? <RunningSkeleton waitingApproval={waitingApproval} /> : null}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
+        <div ref={timelineEndRef} aria-hidden="true" className="timeline-end" />
       </div>
+      {showScrollShortcut ? (
+        <div className="scroll-follow-control">
+          <Button
+            className="secondary small scroll-follow-button"
+            type="button"
+            onPress={() => {
+              setAutoFollow(true);
+              scrollToTimelineEnd("smooth");
+            }}
+          >
+            Scroll to bottom
+          </Button>
+        </div>
+      ) : null}
       <PromptComposer
         busy={busy}
         codex={codex}
@@ -219,7 +367,7 @@ function PromptComposer({
     await submitPrompt();
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function onKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (composing) return;
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
