@@ -339,10 +339,14 @@ impl CodexRuntime {
             )
             .await;
         }
-        self.restore_session_map.write().await.remove(&acp_session_id);
+        self.restore_session_map
+            .write()
+            .await
+            .remove(&acp_session_id);
 
         result?;
-        self.register_session(acp_session_id, local_session_id).await;
+        self.register_session(acp_session_id, local_session_id)
+            .await;
         Ok(())
     }
 
@@ -1377,10 +1381,7 @@ async fn send_error_response(
 fn text_from_content(content: Option<&Value>) -> Option<String> {
     let content = content?;
     match content {
-        Value::String(text) => {
-            let trimmed = text.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }
+        Value::String(text) => (!text.trim().is_empty()).then(|| text.to_string()),
         Value::Array(parts) => {
             let text = parts
                 .iter()
@@ -1394,9 +1395,9 @@ fn text_from_content(content: Option<&Value>) -> Option<String> {
                 return content
                     .get("text")
                     .and_then(Value::as_str)
-                    .map(str::trim)
                     .filter(|text| !text.is_empty())
-                    .map(ToString::to_string);
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|text| text.to_string());
             }
 
             for key in ["text", "content", "output", "diff", "markdown"] {
@@ -1500,6 +1501,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn content_text_preserves_boundary_whitespace() {
+        assert_eq!(
+            text_from_content(Some(&json!({"type": "text", "text": " response"}))),
+            Some(" response".to_string())
+        );
+        assert_eq!(
+            text_from_content(Some(&json!({"type": "text", "text": "Loaded "}))),
+            Some("Loaded ".to_string())
+        );
+        assert_eq!(
+            text_from_content(Some(&json!({"type": "text", "text": "   "}))),
+            None
+        );
+    }
+
     fn write_fake_acp(dir: &tempfile::TempDir) -> PathBuf {
         let script = dir.path().join("fake_acp.py");
         std::fs::write(
@@ -1583,17 +1600,18 @@ for line in sys.stdin:
                 }
             })
             json.loads(sys.stdin.readline())
-        send({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": "fake-session",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": "Loaded response"}
+        for text in ["Loaded", " response"]:
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text}
+                    }
                 }
-            }
-        })
+            })
         send({
             "jsonrpc": "2.0",
             "method": "session/update",
@@ -1970,7 +1988,12 @@ for line in sys.stdin:
             .await
             .unwrap();
         storage
-            .create_message(&session.id, role::ASSISTANT, "Loaded response", status::IDLE)
+            .create_message(
+                &session.id,
+                role::ASSISTANT,
+                "Loaded response",
+                status::IDLE,
+            )
             .await
             .unwrap();
         let runtime = CodexRuntime::start(
@@ -1989,9 +2012,7 @@ for line in sys.stdin:
             .await
             .unwrap();
 
-        assert!(runtime
-            .has_registered_session(Some("fake-session"))
-            .await);
+        assert!(runtime.has_registered_session(Some("fake-session")).await);
         assert_eq!(storage.list_messages(&session.id).await.unwrap().len(), 2);
         assert_eq!(storage.list_tool_calls(&session.id).await.unwrap().len(), 1);
         assert_eq!(

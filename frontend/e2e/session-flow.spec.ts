@@ -230,11 +230,14 @@ test("restores a persisted session after backend restart and sends a follow-up p
   await page.getByRole("button", { name: "Restore" }).click();
 
   await expect(page.getByPlaceholder("Ask Codex...")).toBeEnabled();
+  await expect(page.getByText("ACPWebUIsmoketestOK")).toHaveCount(0);
+  await expectPageFitsViewport(page);
   const smokeMessages = page.locator(".message.assistant", { hasText: "ACP Web UI smoke test OK" });
   const restoredMessageCount = await smokeMessages.count();
   await page.getByPlaceholder("Ask Codex...").fill("Follow up after restore.");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(smokeMessages).toHaveCount(restoredMessageCount + 1);
+  await expectPageFitsViewport(page);
 });
 
 test("shows restore failure and view-only fallback states", async ({ page }) => {
@@ -422,6 +425,19 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
 async function openMenuAndClick(page: import("@playwright/test").Page, name: RegExp) {
   await page.getByRole("button", { name: "Menu" }).click();
   await page.getByRole("link", { name }).click();
+}
+
+async function expectPageFitsViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const sessionLayout = document.querySelector(".session-layout");
+        const layoutOverflow = sessionLayout ? sessionLayout.scrollWidth - sessionLayout.clientWidth : 0;
+        const pageOverflow = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+        return Math.max(pageOverflow, layoutOverflow);
+      })
+    )
+    .toBeLessThanOrEqual(1);
 }
 
 function sessionWorkspaceId(page: import("@playwright/test").Page) {

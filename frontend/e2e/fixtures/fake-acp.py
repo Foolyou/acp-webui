@@ -81,6 +81,23 @@ for line in sys.stdin:
                 },
             }
         )
+        for text in ["ACP", " Web", " UI", " smoke", " test", " OK"]:
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": load_session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": text,
+                            },
+                        },
+                    },
+                }
+            )
         send(
             {
                 "jsonrpc": "2.0",
@@ -88,11 +105,22 @@ for line in sys.stdin:
                 "params": {
                     "sessionId": load_session_id,
                     "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {
-                            "type": "text",
-                            "text": "ACP Web UI smoke test OK",
-                        },
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tool-load-long",
+                        "title": "Loaded compact replay payload",
+                        "kind": "execute",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "RecoveredHistoryWithoutSpaces"
+                                    "RecoveredHistoryWithoutSpaces"
+                                    "RecoveredHistoryWithoutSpaces"
+                                    "RecoveredHistoryWithoutSpaces"
+                                ),
+                            }
+                        ],
                     },
                 },
             }
