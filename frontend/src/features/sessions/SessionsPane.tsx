@@ -58,7 +58,12 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
         {!item.continuable ? <strong>View only</strong> : null}
-        {item.pendingPermission ? <strong>Approval: {item.pendingPermission.title}</strong> : null}
+        {item.pendingPermission ? (
+          <strong>
+            Approval: {item.pendingPermission.title}
+            {item.queuedApprovalCount ? ` (${item.queuedApprovalCount} queued)` : ""}
+          </strong>
+        ) : null}
         {item.hasReviewArtifacts ? <strong>{item.reviewArtifactCount} review items</strong> : null}
       </span>
     </Link>

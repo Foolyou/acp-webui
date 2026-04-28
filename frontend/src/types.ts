@@ -121,6 +121,9 @@ export type SessionDetail = {
   reviewArtifacts: ReviewArtifactSummary[];
   timeline: TimelineItem[];
   pendingPermission?: PermissionRequest | null;
+  pendingPermissions?: PermissionRequest[];
+  pendingApprovalCount?: number;
+  queuedApprovalCount?: number;
   failureMessage?: string | null;
   continuable: boolean;
   viewOnlyReason?: string | null;
@@ -130,6 +133,7 @@ export type InboxItem = {
   session: Session;
   workspace: Workspace;
   permission: PermissionRequest;
+  queuedApprovalCount?: number;
 };
 
 export type SessionListPermission = {
@@ -144,6 +148,7 @@ export type SessionListItem = {
   workspace: Workspace;
   lastActivityAt: string;
   pendingPermission?: SessionListPermission | null;
+  queuedApprovalCount?: number;
   reviewArtifactCount: number;
   hasReviewArtifacts: boolean;
   continuable: boolean;
@@ -160,8 +165,21 @@ export type RealtimeEvent =
   | { type: "session_status"; sessionId: string; status: string }
   | { type: "text_delta"; sessionId: string; delta: string }
   | { type: "assistant_message"; sessionId: string; content: string }
-  | { type: "permission_requested"; permission: PermissionRequest }
-  | { type: "permission_resolved"; sessionId: string; permissionId: string }
+  | {
+      type: "permission_requested";
+      permission: PermissionRequest;
+      activePermission?: PermissionRequest | null;
+      pendingApprovalCount?: number;
+      queuedApprovalCount?: number;
+    }
+  | {
+      type: "permission_resolved";
+      sessionId: string;
+      permissionId: string;
+      nextPermission?: PermissionRequest | null;
+      pendingApprovalCount?: number;
+      queuedApprovalCount?: number;
+    }
   | { type: "review_artifact"; artifact: ReviewArtifactSummary }
   | { type: "timeline_item_upsert"; item: TimelineItem }
   | { type: "error"; message: string };

@@ -43,6 +43,9 @@ pub struct SessionDetail {
     pub review_artifacts: Vec<ReviewArtifactSummary>,
     pub timeline: Vec<TimelineItem>,
     pub pending_permission: Option<PermissionRequest>,
+    pub pending_permissions: Vec<PermissionRequest>,
+    pub pending_approval_count: i64,
+    pub queued_approval_count: i64,
     pub failure_message: Option<String>,
     pub continuable: bool,
     pub view_only_reason: Option<String>,
@@ -242,6 +245,7 @@ pub struct InboxItem {
     pub session: Session,
     pub workspace: Workspace,
     pub permission: PermissionRequest,
+    pub queued_approval_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,6 +255,7 @@ pub struct SessionListItem {
     pub workspace: Workspace,
     pub last_activity_at: String,
     pub pending_permission: Option<SessionListPermission>,
+    pub queued_approval_count: i64,
     pub review_artifact_count: i64,
     pub has_review_artifacts: bool,
     pub continuable: bool,

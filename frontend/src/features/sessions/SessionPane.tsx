@@ -26,6 +26,7 @@ export function SessionPane({
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
   const canSend = currentSession.continuable && !running;
+  const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
 
   return (
     <section className="session-layout">
@@ -44,6 +45,7 @@ export function SessionPane({
         {waitingApproval ? (
           <div className="notice approval">
             Waiting for approval: {currentSession.pendingPermission?.title ?? "Permission requested"}
+            {queuedApprovalCount > 0 ? ` (${queuedApprovalCount} queued)` : ""}
           </div>
         ) : null}
         {currentSession.timeline.map((item) => (

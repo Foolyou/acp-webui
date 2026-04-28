@@ -84,10 +84,16 @@ pub enum RealtimeEvent {
     },
     PermissionRequested {
         permission: PermissionRequest,
+        active_permission: Option<PermissionRequest>,
+        pending_approval_count: i64,
+        queued_approval_count: i64,
     },
     PermissionResolved {
         session_id: String,
         permission_id: String,
+        next_permission: Option<PermissionRequest>,
+        pending_approval_count: i64,
+        queued_approval_count: i64,
     },
     ReviewArtifact {
         artifact: ReviewArtifactSummary,
@@ -266,6 +272,15 @@ impl CodexRuntime {
             permission.status == permission_status::PENDING,
             "permission request is not pending"
         );
+        let active_permission = self
+            .storage
+            .pending_permission_for_session(&permission.session_id)
+            .await?
+            .ok_or_else(|| anyhow!("permission request is not pending"))?;
+        anyhow::ensure!(
+            active_permission.id == permission_id,
+            "permission request is queued behind another approval"
+        );
         let option = permission
             .options
             .iter()
@@ -283,45 +298,76 @@ impl CodexRuntime {
         self.storage
             .resolve_permission_request(permission_id, option_id)
             .await?;
+        let pending_permissions = self
+            .storage
+            .pending_permissions_for_session(&permission.session_id)
+            .await?;
+        let pending_approval_count = pending_permissions.len() as i64;
+        let queued_approval_count = queued_approval_count(pending_approval_count);
+        let next_permission = pending_permissions.first().cloned();
+        let next_status = if pending_approval_count > 0 {
+            status::WAITING_APPROVAL
+        } else {
+            status::RUNNING
+        };
         self.storage
-            .update_session_status(&permission.session_id, status::RUNNING)
+            .update_session_status(&permission.session_id, next_status)
             .await?;
         let resolved = self.storage.get_permission_request(permission_id).await?;
         let _ = self.events_tx.send(RealtimeEvent::PermissionResolved {
             session_id: permission.session_id.clone(),
             permission_id: permission_id.to_string(),
+            next_permission,
+            pending_approval_count,
+            queued_approval_count,
         });
         let _ = self.events_tx.send(RealtimeEvent::SessionStatus {
             session_id: permission.session_id,
-            status: status::RUNNING.to_string(),
+            status: next_status.to_string(),
         });
         Ok(resolved)
     }
 
-    pub async fn cancel_pending_permission_for_session(
+    pub async fn cancel_pending_permissions_for_session(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let Some(permission) = self
+    ) -> anyhow::Result<Vec<String>> {
+        let permissions = self
             .storage
-            .pending_permission_for_session(session_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        if let Some(peer) = self.peer.read().await.clone() {
-            peer.respond_to_permission(&permission.id, cancelled_permission_response())
-                .await?;
-        }
-        self.storage
-            .cancel_permission_request(&permission.id)
+            .pending_permissions_for_session(session_id)
             .await?;
-        let _ = self.events_tx.send(RealtimeEvent::PermissionResolved {
-            session_id: session_id.to_string(),
-            permission_id: permission.id.clone(),
-        });
-        Ok(Some(permission.id))
+        if permissions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let peer = self.peer.read().await.clone();
+        let mut cancelled = Vec::with_capacity(permissions.len());
+        for permission in permissions {
+            if let Some(peer) = &peer {
+                if let Err(error) = peer
+                    .respond_to_permission(&permission.id, cancelled_permission_response())
+                    .await
+                {
+                    tracing::warn!(
+                        ?error,
+                        permission_id = permission.id.as_str(),
+                        "failed to send cancelled permission response"
+                    );
+                }
+            }
+            self.storage
+                .cancel_permission_request(&permission.id)
+                .await?;
+            let _ = self.events_tx.send(RealtimeEvent::PermissionResolved {
+                session_id: session_id.to_string(),
+                permission_id: permission.id.clone(),
+                next_permission: None,
+                pending_approval_count: 0,
+                queued_approval_count: 0,
+            });
+            cancelled.push(permission.id);
+        }
+        Ok(cancelled)
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
@@ -982,27 +1028,6 @@ async fn handle_permission_request(
         return;
     };
 
-    match storage
-        .pending_permission_for_session(&local_session_id)
-        .await
-    {
-        Ok(Some(_)) => {
-            tracing::error!(local_session_id, "duplicate pending permission request");
-            send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
-            let _ = events_tx.send(RealtimeEvent::Error {
-                message: "Codex requested another permission while one is already pending."
-                    .to_string(),
-            });
-            return;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::error!(?error, "failed to inspect pending permission state");
-            send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
-            return;
-        }
-    }
-
     let params = &message["params"];
     let tool_call = params.get("toolCall").cloned().unwrap_or(Value::Null);
     let options = params.get("options").cloned().unwrap_or_else(|| json!([]));
@@ -1024,10 +1049,23 @@ async fn handle_permission_request(
                 .await
                 .insert(permission.id.clone(), request_id);
             let _ = events_tx.send(RealtimeEvent::SessionStatus {
-                session_id: local_session_id,
+                session_id: local_session_id.clone(),
                 status: status::WAITING_APPROVAL.to_string(),
             });
-            let _ = events_tx.send(RealtimeEvent::PermissionRequested { permission });
+            let pending_permissions = storage
+                .pending_permissions_for_session(&local_session_id)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::error!(?error, "failed to load permission queue after request");
+                    vec![permission.clone()]
+                });
+            let pending_approval_count = pending_permissions.len() as i64;
+            let _ = events_tx.send(RealtimeEvent::PermissionRequested {
+                permission,
+                active_permission: pending_permissions.first().cloned(),
+                pending_approval_count,
+                queued_approval_count: queued_approval_count(pending_approval_count),
+            });
         }
         Err(error) => {
             tracing::error!(?error, "failed to persist permission request");
@@ -1113,6 +1151,10 @@ fn cancelled_permission_response() -> Value {
             "outcome": "cancelled"
         }
     })
+}
+
+fn queued_approval_count(pending_approval_count: i64) -> i64 {
+    pending_approval_count.saturating_sub(1)
 }
 
 fn tool_call_id(tool_call: &Value) -> Option<String> {
@@ -1270,6 +1312,61 @@ for line in sys.stdin:
                         "content": {
                             "type": "text",
                             "text": "Permission resolved with " + permission_response.get("result", {}).get("outcome", {}).get("optionId", "cancelled")
+                        }
+                    }
+                }
+            })
+        elif mode == "queued-permission":
+            send({
+                "jsonrpc": "2.0",
+                "id": "permission-1",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "fake-session",
+                    "toolCall": {
+                        "toolCallId": "tool-1",
+                        "title": "Run first fake command",
+                        "kind": "execute",
+                        "content": [{"type": "text", "text": "echo first"}]
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+                    ]
+                }
+            })
+            send({
+                "jsonrpc": "2.0",
+                "id": "permission-2",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "fake-session",
+                    "toolCall": {
+                        "toolCallId": "tool-2",
+                        "title": "Run second fake command",
+                        "kind": "execute",
+                        "content": [{"type": "text", "text": "echo second"}]
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+                    ]
+                }
+            })
+            first_response = json.loads(sys.stdin.readline())
+            second_response = json.loads(sys.stdin.readline())
+            first_option = first_response.get("result", {}).get("outcome", {}).get("optionId", "cancelled")
+            second_option = second_response.get("result", {}).get("outcome", {}).get("optionId", "cancelled")
+            send({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "fake-session",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "Queued permissions resolved with " + first_option + "," + second_option
                         }
                     }
                 }
@@ -1689,7 +1786,7 @@ for line in sys.stdin:
         let permission = timeout(Duration::from_secs(1), async move {
             loop {
                 match rx.recv().await.unwrap() {
-                    RealtimeEvent::PermissionRequested { permission } => break permission,
+                    RealtimeEvent::PermissionRequested { permission, .. } => break permission,
                     _ => continue,
                 }
             }
@@ -1714,6 +1811,117 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "Permission resolved with allow-once");
+    }
+
+    #[tokio::test]
+    async fn fake_acp_queues_permission_requests_and_resolves_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "queued-permission"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        let acp_session_id = runtime
+            .new_session(dir.path().to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, acp_session_id.clone())
+            .await
+            .unwrap();
+        runtime
+            .register_session(acp_session_id.clone(), session.id.clone())
+            .await;
+
+        let mut rx = events_tx.subscribe();
+        let prompt_runtime = runtime.clone();
+        let prompt_handle = tokio::spawn(async move {
+            prompt_runtime
+                .prompt(acp_session_id, "Needs queued approval".to_string())
+                .await
+                .unwrap()
+        });
+
+        let events = timeout(Duration::from_secs(1), async move {
+            let mut events = Vec::new();
+            while events.len() < 2 {
+                match rx.recv().await.unwrap() {
+                    RealtimeEvent::PermissionRequested {
+                        permission,
+                        active_permission,
+                        pending_approval_count,
+                        queued_approval_count,
+                    } => events.push((
+                        permission,
+                        active_permission,
+                        pending_approval_count,
+                        queued_approval_count,
+                    )),
+                    _ => continue,
+                }
+            }
+            events
+        })
+        .await
+        .unwrap();
+
+        let first = &events[0].0;
+        let second = &events[1].0;
+        assert_eq!(first.title, "Run first fake command");
+        assert_eq!(second.title, "Run second fake command");
+        assert_eq!(events[0].2, 1);
+        assert_eq!(events[0].3, 0);
+        assert_eq!(events[1].1.as_ref().unwrap().id, first.id);
+        assert_eq!(events[1].2, 2);
+        assert_eq!(events[1].3, 1);
+
+        let error = runtime
+            .resolve_permission(&second.id, "allow-once")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("queued behind another approval"));
+
+        runtime
+            .resolve_permission(&first.id, "allow-once")
+            .await
+            .unwrap();
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.session.status, status::WAITING_APPROVAL);
+        assert_eq!(detail.pending_permission.as_ref().unwrap().id, second.id);
+        assert_eq!(detail.queued_approval_count, 0);
+
+        runtime
+            .resolve_permission(&second.id, "allow-once")
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_session(&session.id).await.unwrap().status,
+            status::RUNNING
+        );
+        assert!(storage
+            .pending_permissions_for_session(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let outcome = timeout(Duration::from_secs(1), prompt_handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            outcome.content,
+            "Queued permissions resolved with allow-once,allow-once"
+        );
     }
 
     async fn test_storage() -> Storage {

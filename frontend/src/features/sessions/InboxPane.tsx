@@ -15,7 +15,7 @@ export function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sess
           {inbox.map((item) => (
             <Button
               className="list-item"
-              key={item.permission.id}
+              key={item.session.id}
               onPress={() => {
                 void onOpen(item.session.id);
                 void navigate({
@@ -28,7 +28,10 @@ export function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sess
               <span>
                 {item.workspace.name} · {item.session.agentName} · {item.session.status}
               </span>
-              <small>{item.permission.kind}</small>
+              <small>
+                {item.permission.kind}
+                {item.queuedApprovalCount ? ` · ${item.queuedApprovalCount} queued` : ""}
+              </small>
             </Button>
           ))}
         </div>

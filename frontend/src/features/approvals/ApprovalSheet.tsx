@@ -14,6 +14,7 @@ export function ApprovalSheet({
   onResolve: (permission: PermissionRequest, optionId: string) => void;
 }) {
   const permission = currentSession?.pendingPermission;
+  const queuedApprovalCount = currentSession?.queuedApprovalCount ?? 0;
   const open = Boolean(permission);
   return (
     <ModalOverlay className="modal-backdrop" isDismissable={false} isOpen={open}>
@@ -34,6 +35,7 @@ export function ApprovalSheet({
                 <div className="approval-context">
                   <span>{currentSession.workspace.name}</span>
                   <span>{currentSession.session.agentName}</span>
+                  {queuedApprovalCount > 0 ? <span>{queuedApprovalCount} queued</span> : null}
                 </div>
                 <pre className="tool-summary">{toolSummary(permission.toolCall)}</pre>
               </div>

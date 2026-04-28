@@ -215,6 +215,28 @@ test("approves a pending permission request and keeps always options disabled", 
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });
 
+test("advances through queued approval requests in one session", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Trigger queued approval flow.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("heading", { name: "Run first queued command" })).toBeVisible();
+  await expect(page.getByText("1 queued").first()).toBeVisible();
+  await page.getByRole("button", { name: "Allow once" }).click();
+
+  await expect(page.getByRole("heading", { name: "Run second queued command" })).toBeVisible();
+  await page.getByRole("button", { name: "Allow once" }).click();
+
+  await expect(page.getByText("Queued approvals: allow-once, allow-once")).toBeVisible();
+  await openMenuAndClick(page, /Inbox/);
+  await expect(page.getByText("No approvals waiting.")).toBeVisible();
+});
+
 test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.goto("/");
 

@@ -580,7 +580,7 @@ async fn cancel_session(
 
     state
         .codex
-        .cancel_pending_permission_for_session(&session_id)
+        .cancel_pending_permissions_for_session(&session_id)
         .await
         .map_err(|error| AppError::Conflict(error.to_string()))?;
     state

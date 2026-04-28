@@ -80,13 +80,16 @@ impl Storage {
 
     pub async fn expire_pending_permission_requests_on_startup(&self) -> anyhow::Result<usize> {
         let pending = self.list_pending_permission_request_rows().await?;
+        let mut failed_sessions = HashSet::new();
         for request in &pending {
             self.expire_permission_request(&request.id, APPROVAL_EXPIRED_MESSAGE)
                 .await?;
-            self.update_session_status(&request.session_id, status::FAILED)
-                .await?;
-            self.add_system_message(&request.session_id, APPROVAL_EXPIRED_MESSAGE)
-                .await?;
+            if failed_sessions.insert(request.session_id.clone()) {
+                self.update_session_status(&request.session_id, status::FAILED)
+                    .await?;
+                self.add_system_message(&request.session_id, APPROVAL_EXPIRED_MESSAGE)
+                    .await?;
+            }
         }
         Ok(pending.len())
     }
@@ -258,7 +261,8 @@ impl Storage {
                 p.id AS permission_id,
                 p.title AS permission_title,
                 p.kind AS permission_kind,
-                p.created_at AS permission_created_at
+                p.created_at AS permission_created_at,
+                COALESCE(pending_counts.pending_approval_count, 0) AS pending_approval_count
             FROM sessions s
             INNER JOIN workspaces w ON w.id = s.workspace_id
             LEFT JOIN (
@@ -279,13 +283,20 @@ impl Storage {
                     SELECT pr.id
                     FROM permission_requests pr
                     WHERE pr.session_id = s.id AND pr.status = ?
-                    ORDER BY pr.created_at DESC
+                    ORDER BY pr.created_at ASC, pr.id ASC
                     LIMIT 1
                 )
+            LEFT JOIN (
+                SELECT session_id, COUNT(*) AS pending_approval_count
+                FROM permission_requests
+                WHERE status = ?
+                GROUP BY session_id
+            ) pending_counts ON pending_counts.session_id = s.id
             WHERE (? IS NULL OR s.workspace_id = ?)
             ORDER BY s.updated_at DESC
             "#,
         )
+        .bind(permission_status::PENDING)
         .bind(permission_status::PENDING)
         .bind(workspace_id)
         .bind(workspace_id)
@@ -391,11 +402,13 @@ impl Storage {
             .list_permission_request_rows_for_session(&session.id)
             .await?;
         let timeline = build_timeline(&messages, &tool_calls, &permission_rows, &review_artifacts)?;
-        let pending_permission = self.pending_permission_for_session(&session.id).await?;
+        let pending_permissions = self.pending_permissions_for_session(&session.id).await?;
+        let pending_permission = pending_permissions.first().cloned();
+        let pending_approval_count = pending_permissions.len() as i64;
         let failure_message = self
             .latest_permission_failure_for_session(&session.id)
             .await?;
-        session.status = normalize_session_status(session.status, pending_permission.is_some());
+        session.status = normalize_session_status(session.status, pending_approval_count > 0);
 
         Ok(SessionDetail {
             session,
@@ -404,6 +417,9 @@ impl Storage {
             review_artifacts,
             timeline,
             pending_permission,
+            pending_permissions,
+            pending_approval_count,
+            queued_approval_count: queued_approval_count(pending_approval_count),
             failure_message,
             continuable,
             view_only_reason,
@@ -897,7 +913,7 @@ impl Storage {
                 resolved_at
             FROM permission_requests
             WHERE session_id = ? AND status = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC, id ASC
             LIMIT 1
             "#,
         )
@@ -907,6 +923,50 @@ impl Storage {
         .await?;
 
         row.map(row_to_permission_request).transpose()
+    }
+
+    pub async fn pending_permissions_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<PermissionRequest>> {
+        let rows = self
+            .list_pending_permission_request_rows_for_session(session_id)
+            .await?;
+        rows.into_iter().map(row_to_permission_request).collect()
+    }
+
+    pub async fn list_pending_permission_request_rows_for_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<PermissionRequestRow>> {
+        let rows = sqlx::query_as::<_, PermissionRequestRow>(
+            r#"
+            SELECT
+                id,
+                session_id,
+                acp_session_id,
+                acp_request_id,
+                tool_call_id,
+                title,
+                kind,
+                status,
+                selected_option_id,
+                tool_call_json,
+                options_json,
+                failure_message,
+                created_at,
+                resolved_at
+            FROM permission_requests
+            WHERE session_id = ? AND status = ?
+            ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .bind(session_id)
+        .bind(permission_status::PENDING)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
     }
 
     pub async fn list_pending_permission_request_rows(
@@ -931,7 +991,7 @@ impl Storage {
                 resolved_at
             FROM permission_requests
             WHERE status = ?
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             "#,
         )
         .bind(permission_status::PENDING)
@@ -964,7 +1024,7 @@ impl Storage {
                 resolved_at
             FROM permission_requests
             WHERE session_id = ?
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             "#,
         )
         .bind(session_id)
@@ -976,16 +1036,25 @@ impl Storage {
 
     pub async fn list_inbox_items(&self) -> anyhow::Result<Vec<InboxItem>> {
         let rows = self.list_pending_permission_request_rows().await?;
-        let mut items = Vec::with_capacity(rows.len());
-        for row in rows {
+        let mut items = Vec::new();
+        let mut seen_sessions = HashSet::new();
+        for row in &rows {
+            if !seen_sessions.insert(row.session_id.clone()) {
+                continue;
+            }
             let mut session = self.get_session(&row.session_id).await?;
             let workspace = self.get_workspace(&session.workspace_id).await?;
-            let permission = row_to_permission_request(row)?;
+            let permission = row_to_permission_request(row.clone())?;
+            let pending_approval_count = rows
+                .iter()
+                .filter(|candidate| candidate.session_id == row.session_id)
+                .count() as i64;
             session.status = normalize_session_status(session.status, true);
             items.push(InboxItem {
                 session,
                 workspace,
                 permission,
+                queued_approval_count: queued_approval_count(pending_approval_count),
             });
         }
         Ok(items)
@@ -1082,6 +1151,7 @@ struct SessionListItemRow {
     permission_title: Option<String>,
     permission_kind: Option<String>,
     permission_created_at: Option<String>,
+    pending_approval_count: i64,
 }
 
 fn now() -> String {
@@ -1166,6 +1236,10 @@ fn normalize_session_status(status: String, has_pending_permission: bool) -> Str
     }
 }
 
+fn queued_approval_count(pending_approval_count: i64) -> i64 {
+    pending_approval_count.saturating_sub(1)
+}
+
 fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
     let pending_permission = match (
         row.permission_id,
@@ -1201,6 +1275,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
         },
         last_activity_at: row.session_updated_at,
         pending_permission,
+        queued_approval_count: queued_approval_count(row.pending_approval_count),
         review_artifact_count,
         has_review_artifacts: review_artifact_count > 0,
         continuable: true,
@@ -1347,6 +1422,35 @@ fn sqlite_file_path(database_url: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::models::review_artifact_kind;
+
+    async fn create_test_permission(
+        storage: &Storage,
+        session_id: &str,
+        acp_session_id: &str,
+        acp_request_id: &str,
+        title: &str,
+    ) -> PermissionRequest {
+        storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session_id.to_string(),
+                acp_session_id: acp_session_id.to_string(),
+                acp_request_id: acp_request_id.to_string(),
+                tool_call_id: Some(format!("tool-{acp_request_id}")),
+                title: title.to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({
+                    "toolCallId": format!("tool-{acp_request_id}"),
+                    "title": title,
+                    "kind": "execute"
+                }),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+                ]),
+            })
+            .await
+            .unwrap()
+    }
 
     #[tokio::test]
     async fn stores_workspace_session_and_messages() {
@@ -1545,6 +1649,68 @@ mod tests {
             .find(|item| item.session.id == session.id)
             .unwrap();
         assert_eq!(inbox_item.session.status, status::WAITING_APPROVAL);
+    }
+
+    #[tokio::test]
+    async fn queues_multiple_pending_permissions_per_session() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+
+        let first = create_test_permission(
+            &storage,
+            &session.id,
+            "acp-session-1",
+            "permission-1",
+            "First approval",
+        )
+        .await;
+        let second = create_test_permission(
+            &storage,
+            &session.id,
+            "acp-session-1",
+            "permission-2",
+            "Second approval",
+        )
+        .await;
+
+        let pending = storage
+            .pending_permissions_for_session(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].id, first.id);
+        assert_eq!(pending[1].id, second.id);
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.pending_permission.as_ref().unwrap().id, first.id);
+        assert_eq!(detail.pending_permissions.len(), 2);
+        assert_eq!(detail.pending_approval_count, 2);
+        assert_eq!(detail.queued_approval_count, 1);
+        assert_eq!(detail.session.status, status::WAITING_APPROVAL);
+
+        let inbox = storage.list_inbox_items().await.unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].permission.id, first.id);
+        assert_eq!(inbox[0].queued_approval_count, 1);
+
+        let list_item = storage
+            .list_session_items()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.session.id == session.id)
+            .unwrap();
+        assert_eq!(list_item.pending_permission.as_ref().unwrap().id, first.id);
+        assert_eq!(list_item.queued_approval_count, 1);
     }
 
     #[tokio::test]

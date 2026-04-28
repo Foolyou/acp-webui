@@ -52,20 +52,10 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
       };
 
     case "permission_requested":
-      return applyPermissionRequested(state, event.permission);
+      return applyPermissionRequested(state, event);
 
     case "permission_resolved":
-      return {
-        ...state,
-        inbox: state.inbox.filter((item) => item.permission.id !== event.permissionId),
-        currentSession:
-          state.currentSession?.session.id === event.sessionId
-            ? {
-                ...state.currentSession,
-                pendingPermission: null
-              }
-            : state.currentSession
-      };
+      return applyPermissionResolved(state, event);
 
     case "review_artifact":
       return applyReviewArtifact(state, event.artifact);
@@ -88,24 +78,42 @@ function normalizeSessionStatus(status: string, hasPendingPermission: boolean) {
   return status;
 }
 
-function applyPermissionRequested(state: AppSnapshot, permission: PermissionRequest): AppSnapshot {
+function applyPermissionRequested(
+  state: AppSnapshot,
+  event: Extract<RealtimeEvent, { type: "permission_requested" }>
+): AppSnapshot {
+  const permission = event.permission;
+  const activePermission = event.activePermission ?? permission;
   const currentSession =
     state.currentSession?.session.id === permission.sessionId
-      ? {
-          ...state.currentSession,
-          pendingPermission: permission,
-          session: { ...state.currentSession.session, status: "waiting_approval" }
-        }
+      ? withApprovalQueue(
+          state.currentSession,
+          mergePermissionQueue(
+            mergePermissionQueue(approvalQueue(state.currentSession), activePermission),
+            permission
+          ),
+          activePermission,
+          event.pendingApprovalCount,
+          event.queuedApprovalCount,
+          "waiting_approval"
+        )
       : state.currentSession;
 
   const existing = state.inbox.find((item) => item.session.id === permission.sessionId);
+  const queuedApprovalCount =
+    event.queuedApprovalCount ?? Math.max((event.pendingApprovalCount ?? 1) - 1, 0);
   if (existing) {
     return {
       ...state,
       currentSession,
       inbox: state.inbox.map((item) =>
         item.session.id === permission.sessionId
-          ? { ...item, permission, session: { ...item.session, status: "waiting_approval" } }
+          ? {
+              ...item,
+              permission: activePermission,
+              queuedApprovalCount,
+              session: { ...item.session, status: "waiting_approval" }
+            }
           : item
       )
     };
@@ -119,7 +127,8 @@ function applyPermissionRequested(state: AppSnapshot, permission: PermissionRequ
         {
           session: currentSession.session,
           workspace: currentSession.workspace,
-          permission
+          permission: activePermission,
+          queuedApprovalCount
         },
         ...state.inbox
       ]
@@ -127,6 +136,99 @@ function applyPermissionRequested(state: AppSnapshot, permission: PermissionRequ
   }
 
   return { ...state, currentSession };
+}
+
+function applyPermissionResolved(
+  state: AppSnapshot,
+  event: Extract<RealtimeEvent, { type: "permission_resolved" }>
+): AppSnapshot {
+  const currentSession =
+    state.currentSession?.session.id === event.sessionId
+      ? withApprovalQueue(
+          state.currentSession,
+          event.nextPermission
+            ? mergePermissionQueue(
+                approvalQueue(state.currentSession).filter((item) => item.id !== event.permissionId),
+                event.nextPermission
+              )
+            : approvalQueue(state.currentSession).filter((item) => item.id !== event.permissionId),
+          event.nextPermission ?? null,
+          event.pendingApprovalCount,
+          event.queuedApprovalCount,
+          event.nextPermission ? "waiting_approval" : "running"
+        )
+      : state.currentSession;
+
+  return {
+    ...state,
+    currentSession,
+    inbox: state.inbox.flatMap((item) => {
+      if (item.session.id !== event.sessionId) {
+        return [item];
+      }
+      if (!event.nextPermission) {
+        return [];
+      }
+      return [
+        {
+          ...item,
+          permission: event.nextPermission,
+          queuedApprovalCount: event.queuedApprovalCount ?? 0,
+          session: { ...item.session, status: "waiting_approval" }
+        }
+      ];
+    })
+  };
+}
+
+function approvalQueue(session: SessionDetail): PermissionRequest[] {
+  const queue = session.pendingPermissions?.length
+    ? session.pendingPermissions
+    : session.pendingPermission
+      ? [session.pendingPermission]
+      : [];
+  return sortPermissionQueue(queue);
+}
+
+function mergePermissionQueue(queue: PermissionRequest[], permission: PermissionRequest | null): PermissionRequest[] {
+  if (!permission) {
+    return sortPermissionQueue(queue);
+  }
+  const existing = queue.some((item) => item.id === permission.id);
+  const next = existing ? queue.map((item) => (item.id === permission.id ? permission : item)) : [...queue, permission];
+  return sortPermissionQueue(next);
+}
+
+function sortPermissionQueue(queue: PermissionRequest[]): PermissionRequest[] {
+  return [...queue].sort((left, right) => {
+    const byDate = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+    return byDate || left.id.localeCompare(right.id);
+  });
+}
+
+function withApprovalQueue(
+  session: SessionDetail,
+  queue: PermissionRequest[],
+  activePermission: PermissionRequest | null,
+  pendingApprovalCount?: number,
+  queuedApprovalCount?: number,
+  nextStatus?: string
+): SessionDetail {
+  const normalizedQueue = sortPermissionQueue(queue);
+  const count = pendingApprovalCount ?? normalizedQueue.length;
+  const active = count > 0 ? activePermission ?? normalizedQueue[0] ?? null : null;
+  const nextQueue = count > 0 ? normalizedQueue : [];
+  return {
+    ...session,
+    pendingPermission: active,
+    pendingPermissions: nextQueue,
+    pendingApprovalCount: count,
+    queuedApprovalCount: queuedApprovalCount ?? Math.max(count - 1, 0),
+    session: {
+      ...session.session,
+      status: nextStatus ?? (active ? "waiting_approval" : session.session.status)
+    }
+  };
 }
 
 function applyReviewArtifact(state: AppSnapshot, artifact: ReviewArtifactSummary): AppSnapshot {

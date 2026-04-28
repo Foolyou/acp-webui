@@ -5,6 +5,7 @@ import {
   applySessionListRealtime,
   clearSessionListPermission,
   sessionDetailToListItem,
+  setSessionListPermission,
   updateSessionListStatus
 } from "./app/sessionList";
 import { messageToTimelineItem } from "./app/timeline";
@@ -30,6 +31,35 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
     busy: false,
     creatingSessionWorkspaceId: null,
     initialized: true
+  };
+}
+
+function pendingPermissionQueue(detail: SessionDetail): PermissionRequest[] {
+  const queue = detail.pendingPermissions?.length
+    ? detail.pendingPermissions
+    : detail.pendingPermission
+      ? [detail.pendingPermission]
+      : [];
+  return [...queue].sort((left, right) => {
+    const byDate = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+    return byDate || left.id.localeCompare(right.id);
+  });
+}
+
+function detailAfterResolvedPermission(detail: SessionDetail, permissionId: string): SessionDetail {
+  const pendingPermissions = pendingPermissionQueue(detail).filter((permission) => permission.id !== permissionId);
+  const pendingPermission = pendingPermissions[0] ?? null;
+  const pendingApprovalCount = pendingPermissions.length;
+  return {
+    ...detail,
+    pendingPermission,
+    pendingPermissions,
+    pendingApprovalCount,
+    queuedApprovalCount: Math.max(pendingApprovalCount - 1, 0),
+    session: {
+      ...detail.session,
+      status: pendingPermission ? "waiting_approval" : "running"
+    }
   };
 }
 
@@ -308,16 +338,43 @@ export function App() {
         await api.resolvePermission(permission.id, optionId);
         setState((current) =>
           current.currentSession
-            ? {
-                ...current,
-                currentSession: {
-                  ...current.currentSession,
-                  pendingPermission: null,
-                  session: { ...current.currentSession.session, status: "running" }
-                },
-                sessions: clearSessionListPermission(updateSessionListStatus(current.sessions, permission.sessionId, "running"), permission.sessionId),
-                inbox: current.inbox.filter((item) => item.permission.id !== permission.id)
-              }
+            ? (() => {
+                const nextDetail = detailAfterResolvedPermission(current.currentSession, permission.id);
+                const nextPermission = nextDetail.pendingPermission;
+                return {
+                  ...current,
+                  currentSession: nextDetail,
+                  sessions: nextPermission
+                    ? setSessionListPermission(
+                        current.sessions,
+                        permission.sessionId,
+                        {
+                          id: nextPermission.id,
+                          title: nextPermission.title,
+                          kind: nextPermission.kind,
+                          createdAt: nextPermission.createdAt
+                        },
+                        nextDetail.queuedApprovalCount ?? 0,
+                        nextDetail
+                      )
+                    : clearSessionListPermission(
+                        updateSessionListStatus(current.sessions, permission.sessionId, "running"),
+                        permission.sessionId
+                      ),
+                  inbox: nextPermission
+                    ? current.inbox.map((item) =>
+                        item.session.id === permission.sessionId
+                          ? {
+                              ...item,
+                              permission: nextPermission,
+                              queuedApprovalCount: nextDetail.queuedApprovalCount ?? 0,
+                              session: { ...item.session, status: "waiting_approval" }
+                            }
+                          : item
+                      )
+                    : current.inbox.filter((item) => item.session.id !== permission.sessionId)
+                };
+              })()
             : current
         );
       });

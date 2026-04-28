@@ -51,7 +51,81 @@ for line in sys.stdin:
             for part in message.get("params", {}).get("prompt", [])
             if isinstance(part, dict)
         )
-        if "approval" in prompt_text.lower():
+        if "queued approval" in prompt_text.lower():
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "permission-e2e-1",
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "toolCall": {
+                            "toolCallId": "tool-e2e-1",
+                            "title": "Run first queued command",
+                            "kind": "execute",
+                            "content": [
+                                {"type": "text", "text": "echo first queued"}
+                            ],
+                        },
+                        "options": [
+                            {
+                                "optionId": "allow-once",
+                                "name": "Allow once",
+                                "kind": "allow_once",
+                            },
+                            {
+                                "optionId": "reject-once",
+                                "name": "Reject",
+                                "kind": "reject_once",
+                            },
+                        ],
+                    },
+                }
+            )
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "permission-e2e-2",
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "toolCall": {
+                            "toolCallId": "tool-e2e-2",
+                            "title": "Run second queued command",
+                            "kind": "execute",
+                            "content": [
+                                {"type": "text", "text": "echo second queued"}
+                            ],
+                        },
+                        "options": [
+                            {
+                                "optionId": "allow-once",
+                                "name": "Allow once",
+                                "kind": "allow_once",
+                            },
+                            {
+                                "optionId": "reject-once",
+                                "name": "Reject",
+                                "kind": "reject_once",
+                            },
+                        ],
+                    },
+                }
+            )
+            first_response = json.loads(sys.stdin.readline())
+            second_response = json.loads(sys.stdin.readline())
+            first_option_id = (
+                first_response.get("result", {})
+                .get("outcome", {})
+                .get("optionId", "cancelled")
+            )
+            second_option_id = (
+                second_response.get("result", {})
+                .get("outcome", {})
+                .get("optionId", "cancelled")
+            )
+            text = f"Queued approvals: {first_option_id}, {second_option_id}"
+        elif "approval" in prompt_text.lower():
             send(
                 {
                     "jsonrpc": "2.0",

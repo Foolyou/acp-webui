@@ -18,6 +18,7 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
           createdAt: detail.pendingPermission.createdAt
         }
       : null,
+    queuedApprovalCount: detail.queuedApprovalCount ?? 0,
     reviewArtifactCount: detail.reviewArtifacts.length,
     hasReviewArtifacts: detail.reviewArtifacts.length > 0,
     continuable: detail.continuable,
@@ -34,19 +35,33 @@ export function applySessionListRealtime(
     case "session_status":
       return updateSessionListStatus(sessions, event.sessionId, event.status);
     case "permission_requested":
-      return updateSessionListPermission(
+      return setSessionListPermission(
         sessions,
         event.permission.sessionId,
         {
-          id: event.permission.id,
-          title: event.permission.title,
-          kind: event.permission.kind,
-          createdAt: event.permission.createdAt
+          id: (event.activePermission ?? event.permission).id,
+          title: (event.activePermission ?? event.permission).title,
+          kind: (event.activePermission ?? event.permission).kind,
+          createdAt: (event.activePermission ?? event.permission).createdAt
         },
+        event.queuedApprovalCount ?? Math.max((event.pendingApprovalCount ?? 1) - 1, 0),
         currentSession
       );
     case "permission_resolved":
-      return clearSessionListPermission(sessions, event.sessionId);
+      return event.nextPermission
+        ? setSessionListPermission(
+            sessions,
+            event.sessionId,
+            {
+              id: event.nextPermission.id,
+              title: event.nextPermission.title,
+              kind: event.nextPermission.kind,
+              createdAt: event.nextPermission.createdAt
+            },
+            event.queuedApprovalCount ?? 0,
+            currentSession
+          )
+        : clearSessionListPermission(sessions, event.sessionId);
     case "review_artifact":
       return updateSessionListReviewAvailability(sessions, event.artifact.sessionId);
     default:
@@ -76,16 +91,18 @@ export function clearSessionListPermission(sessions: SessionListItem[], sessionI
     item.session.id === sessionId
       ? {
           ...item,
-          pendingPermission: null
+          pendingPermission: null,
+          queuedApprovalCount: 0
         }
       : item
   );
 }
 
-function updateSessionListPermission(
+export function setSessionListPermission(
   sessions: SessionListItem[],
   sessionId: string,
   pendingPermission: SessionListPermission,
+  queuedApprovalCount: number,
   currentSession: SessionDetail | null
 ) {
   const existing = sessions.some((item) => item.session.id === sessionId);
@@ -94,6 +111,7 @@ function updateSessionListPermission(
       ? {
           ...item,
           pendingPermission,
+          queuedApprovalCount,
           session: { ...item.session, status: "waiting_approval" }
         }
       : item
@@ -107,6 +125,7 @@ function updateSessionListPermission(
     {
       ...sessionDetailToListItem(currentSession),
       pendingPermission,
+      queuedApprovalCount,
       session: { ...currentSession.session, status: "waiting_approval" }
     },
     ...updated
