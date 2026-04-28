@@ -37,6 +37,7 @@ export type AppActions = {
   openDiffFallback: () => Promise<void>;
   openReviewArtifact: (artifactId: string) => Promise<void>;
   resolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
+  restoreSession: (sessionId: string) => Promise<void>;
   sendPrompt: (prompt: string) => Promise<void>;
   setActiveReview: (artifact: ReviewArtifact | null) => void;
   setCurrentWorkspace: (workspaceId: string | null) => void;

@@ -117,6 +117,7 @@ export function SessionDetailRoute() {
       liveAssistant={state.liveAssistant}
       onOpenDiffFallback={actions.openDiffFallback}
       onOpenReviewArtifact={actions.openReviewArtifact}
+      onRestoreSession={actions.restoreSession}
       onSendPrompt={actions.sendPrompt}
     />
   );

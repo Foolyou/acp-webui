@@ -24,10 +24,10 @@ use crate::{
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
-        review_artifact_kind, role, status, CreateWorkspaceRequest, DiffFallbackResponse,
-        InboxItem, Message, PermissionRequest, PromptRequest, ResolvePermissionRequest,
-        ReviewArtifact, ReviewArtifactSummary, SessionDetail, SessionListItem, TimelineItem,
-        Workspace,
+        continuity_state, review_artifact_kind, role, status, CreateWorkspaceRequest,
+        DiffFallbackResponse, InboxItem, Message, PermissionRequest, PromptRequest,
+        ResolvePermissionRequest, ReviewArtifact, ReviewArtifactSummary, Session,
+        SessionContinuity, SessionDetail, SessionListItem, TimelineItem, Workspace,
     },
     storage::Storage,
 };
@@ -84,6 +84,7 @@ pub fn api_router(state: AppState) -> Router {
         )
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
+        .route("/api/sessions/{session_id}/restore", post(restore_session))
         .route(
             "/api/sessions/{session_id}/review-artifacts",
             get(list_review_artifacts),
@@ -318,7 +319,7 @@ async fn create_session(
         .register_session(acp_session_id, session.id.clone())
         .await;
 
-    let detail = state.storage.session_detail(&session.id).await?;
+    let detail = state.session_detail(&session.id).await?;
     Ok(Json(detail))
 }
 
@@ -326,16 +327,82 @@ async fn get_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> AppResult<Json<SessionDetail>> {
-    let detail = state
+    let detail = state.session_detail(&session_id).await?;
+    Ok(Json(detail))
+}
+
+async fn restore_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> AppResult<Json<SessionDetail>> {
+    let session = state
         .storage
-        .session_detail_with_continuity(
-            &session_id,
-            state.session_is_continuable_by_id(&session_id).await?,
-            state.view_only_reason_for_session_id(&session_id).await?,
-        )
+        .get_session(&session_id)
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
-    Ok(Json(detail))
+    let workspace = state.storage.get_workspace(&session.workspace_id).await?;
+    let continuity = state.session_continuity(&session).await?;
+
+    if continuity.continuable {
+        return Ok(Json(
+            state
+                .storage
+                .session_detail_with_session_continuity(&session_id, continuity)
+                .await?,
+        ));
+    }
+
+    if !continuity.restorable || !state.codex.can_load_session().await {
+        return Err(AppError::Conflict(
+            continuity
+                .reason
+                .unwrap_or_else(|| view_only_reason().to_string()),
+        ));
+    }
+
+    let Some(external_session_id) = session
+        .external_session_id
+        .clone()
+        .or_else(|| session.acp_session_id.clone())
+    else {
+        return Err(AppError::Conflict(
+            "Session is missing an agent session id.".to_string(),
+        ));
+    };
+
+    state.storage.mark_session_restore_started(&session_id).await?;
+    let _ = state.events_tx.send(RealtimeEvent::SessionRestoreStarted {
+        session_id: session_id.clone(),
+    });
+
+    match state
+        .codex
+        .load_session(external_session_id, session_id.clone(), workspace.path)
+        .await
+    {
+        Ok(()) => {
+            state
+                .storage
+                .mark_session_restore_succeeded(&session_id)
+                .await?;
+            let _ = state.events_tx.send(RealtimeEvent::SessionRestoreSucceeded {
+                session_id: session_id.clone(),
+            });
+            Ok(Json(state.session_detail(&session_id).await?))
+        }
+        Err(error) => {
+            let message = format!("Failed to restore session: {error}");
+            state
+                .storage
+                .mark_session_restore_failed(&session_id, &message)
+                .await?;
+            let _ = state.events_tx.send(RealtimeEvent::SessionRestoreFailed {
+                session_id: session_id.clone(),
+                message: message.clone(),
+            });
+            Err(AppError::Conflict(message))
+        }
+    }
 }
 
 async fn list_review_artifacts(
@@ -451,12 +518,21 @@ async fn submit_prompt(
         ));
     }
 
-    if !state
-        .codex
-        .has_registered_session(session.acp_session_id.as_deref())
-        .await
-    {
-        return Err(AppError::Conflict(view_only_reason().to_string()));
+    let continuity = state.session_continuity(&session).await?;
+    if !continuity.continuable {
+        let reason = match continuity.state.as_str() {
+            continuity_state::LOADABLE | continuity_state::RESTORE_FAILED => {
+                "Restore this session before sending another prompt.".to_string()
+            }
+            continuity_state::RESTORING => {
+                "This session is currently restoring. Wait for restore to finish before sending a prompt."
+                    .to_string()
+            }
+            _ => continuity
+                .reason
+                .unwrap_or_else(|| view_only_reason().to_string()),
+        };
+        return Err(AppError::Conflict(reason));
     }
 
     let Some(acp_session_id) = session.acp_session_id.clone() else {
@@ -492,23 +568,54 @@ async fn submit_prompt(
 }
 
 impl AppState {
-    async fn session_is_continuable_by_id(&self, session_id: &str) -> AppResult<bool> {
+    async fn session_detail(&self, session_id: &str) -> AppResult<SessionDetail> {
         let session = self
             .storage
             .get_session(session_id)
             .await
             .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
-        Ok(self
-            .codex
-            .has_registered_session(session.acp_session_id.as_deref())
-            .await)
+        let continuity = self.session_continuity(&session).await?;
+        self.storage
+            .session_detail_with_session_continuity(session_id, continuity)
+            .await
+            .map_err(|_| AppError::NotFound("Session not found".to_string()))
     }
 
-    async fn view_only_reason_for_session_id(&self, session_id: &str) -> AppResult<Option<String>> {
-        if self.session_is_continuable_by_id(session_id).await? {
-            Ok(None)
-        } else {
-            Ok(Some(view_only_reason().to_string()))
+    async fn session_continuity(&self, session: &Session) -> AppResult<SessionContinuity> {
+        let row = self.storage.session_continuity_row(&session.id).await?;
+        if self
+            .codex
+            .has_registered_session(session.acp_session_id.as_deref())
+            .await
+        {
+            return Ok(if row.continuation_state == continuity_state::RESTORED {
+                SessionContinuity::restored(row.restore_completed_at)
+            } else {
+                SessionContinuity::live()
+            });
+        }
+
+        let external_session_id = session
+            .external_session_id
+            .as_deref()
+            .or(session.acp_session_id.as_deref());
+        let runtime_continuity = self
+            .codex
+            .runtime_session_continuity(session.acp_session_id.as_deref(), external_session_id)
+            .await;
+        let can_load = runtime_continuity.state == continuity_state::LOADABLE;
+
+        match row.continuation_state.as_str() {
+            continuity_state::RESTORING => {
+                Ok(SessionContinuity::restoring(row.restore_started_at))
+            }
+            continuity_state::RESTORE_FAILED => Ok(SessionContinuity::restore_failed(
+                row.restore_failure_message
+                    .unwrap_or_else(|| "Failed to restore session.".to_string()),
+                row.restore_started_at,
+                external_session_id.is_some() && can_load,
+            )),
+            _ => Ok(runtime_continuity),
         }
     }
 }
@@ -519,16 +626,16 @@ async fn apply_session_list_continuity(
 ) -> Vec<SessionListItem> {
     let mut updated = Vec::with_capacity(items.len());
     for mut item in items {
-        let continuable = state
-            .codex
-            .has_registered_session(item.session.acp_session_id.as_deref())
-            .await;
-        item.continuable = continuable;
-        item.view_only_reason = if continuable {
-            None
-        } else {
-            Some(view_only_reason().to_string())
+        let continuity = match state.session_continuity(&item.session).await {
+            Ok(continuity) => continuity,
+            Err(error) => {
+                tracing::error!(?error, "failed to project session continuity");
+                SessionContinuity::view_only(view_only_reason())
+            }
         };
+        item.continuable = continuity.continuable;
+        item.view_only_reason = continuity.reason.clone().filter(|_| !continuity.continuable);
+        item.continuity = continuity;
         updated.push(item);
     }
     updated
@@ -594,7 +701,7 @@ async fn cancel_session(
         status: status::FAILED.to_string(),
     });
 
-    Ok(Json(state.storage.session_detail(&session_id).await?))
+    Ok(Json(state.session_detail(&session_id).await?))
 }
 
 async fn run_prompt_turn(
@@ -764,10 +871,53 @@ mod tests {
     use super::*;
     use std::{net::SocketAddr, process::Command as StdCommand};
 
-    use crate::{config::Config, models::NewReviewArtifact, storage::NewPermissionRequest};
+    use crate::{
+        config::Config,
+        models::{AgentSessionCapabilities, NewReviewArtifact},
+        storage::NewPermissionRequest,
+    };
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
         test_state_with_auth(Some("test-token".to_string()), true, vec![]).await
+    }
+
+    async fn test_state_with_capabilities(
+        session_capabilities: AgentSessionCapabilities,
+    ) -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let database_url = format!("sqlite://{}", dir.path().join("test.db").display());
+        let storage = Storage::connect(&database_url).await.unwrap();
+        storage.migrate().await.unwrap();
+        let (events_tx, _) = broadcast::channel(16);
+        let config = Config {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 7635,
+            work_dir: dir.path().to_path_buf(),
+            database_url,
+            codex_acp_command: "codex-acp".to_string(),
+            codex_acp_args: vec![],
+            frontend_dist: Some(dir.path().join("dist")),
+            pairing_token: Some("test-token".to_string()),
+            disable_auth: true,
+            trusted_clients: vec![],
+        };
+        let auth = AuthService::from_config(&config).unwrap();
+        let codex = CodexRuntime::ready_for_tests(
+            config,
+            storage.clone(),
+            events_tx.clone(),
+            session_capabilities,
+        );
+
+        (
+            AppState {
+                storage,
+                codex,
+                events_tx,
+                auth,
+            },
+            dir,
+        )
     }
 
     async fn auth_test_state() -> (AppState, tempfile::TempDir) {
@@ -1800,6 +1950,149 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json["error"].as_str().unwrap().contains("runtime context"));
+    }
+
+    #[tokio::test]
+    async fn session_detail_projects_loadable_continuity_when_agent_can_load() {
+        let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
+            load_session: true,
+            resume_session: false,
+            list_sessions: true,
+            close_session: false,
+        })
+        .await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{}", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["continuity"]["state"], "loadable");
+        assert_eq!(json["continuity"]["restorable"], true);
+        assert_eq!(json["continuable"], false);
+    }
+
+    #[tokio::test]
+    async fn prompt_is_rejected_before_restore_and_accepted_after_runtime_registration() {
+        let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
+            load_session: true,
+            resume_session: false,
+            list_sessions: true,
+            close_session: false,
+        })
+        .await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+        let body = serde_json::json!({"prompt": "continue"});
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let response_body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&response_body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("Restore"));
+
+        state
+            .codex
+            .register_session("acp-session".to_string(), session.id.clone())
+            .await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn restore_endpoint_records_failure_state() {
+        let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
+            load_session: true,
+            resume_session: false,
+            list_sessions: true,
+            close_session: false,
+        })
+        .await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/restore", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let detail = state.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.continuity.state, "restore_failed");
+        assert!(detail
+            .continuity
+            .failure_message
+            .as_deref()
+            .unwrap()
+            .contains("not available"));
     }
 
     #[tokio::test]

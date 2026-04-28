@@ -31,7 +31,14 @@ for line in sys.stdin:
                         "name": "fake-codex-acp",
                         "title": "Fake Codex",
                         "version": "0.0.0-e2e",
-                    }
+                    },
+                    "agentCapabilities": {
+                        "loadSession": True,
+                        "sessionCapabilities": {
+                            "list": {},
+                            "resume": False,
+                        },
+                    },
                 },
             }
         )
@@ -42,6 +49,59 @@ for line in sys.stdin:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {"sessionId": session_id},
+            }
+        )
+    elif method == "session/load":
+        load_session_id = message.get("params", {}).get("sessionId")
+        if load_session_id != "fake-e2e-session":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32004,
+                        "message": "session not found",
+                    },
+                }
+            )
+            continue
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": load_session_id,
+                    "update": {
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "Reply with the smoke phrase.",
+                        },
+                    },
+                },
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": load_session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": "ACP Web UI smoke test OK",
+                        },
+                    },
+                },
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"sessionId": load_session_id},
             }
         )
     elif method == "session/prompt":

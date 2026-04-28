@@ -10,6 +10,7 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Local workspaces
 - Session creation
 - Sessions list for reopening persisted sessions
+- ACP-first session continuation through verified `session/load` support when the connected agent advertises it
 - Text prompts and text replies
 - Permission approval requests with allow-once and reject-once resolution
 - Inbox view for sessions waiting on approval
@@ -20,7 +21,9 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - SQLite persistence
 - WebSocket live updates
 
-Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, multi-agent selection.
+Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, multi-agent selection, private agent transcript parsing, or durable restoration of in-flight approval responders after backend restart.
+
+Persisted sessions remain reviewable after browser refresh or backend restart. Prompt submission is enabled only when the backend has live ACP runtime context or the user successfully restores an eligible session through a verified agent capability. ACP Web UI currently implements `session/load`; `session/resume` is detected as a separate agent capability but is not enabled as a continuation path in this version.
 
 `allow_always` and `reject_always` ACP options are shown in the browser when an agent provides them, but they are disabled until a deliberate local policy model exists.
 
@@ -176,7 +179,9 @@ npm run e2e
 ```
 
 The E2E test starts `target/debug/acp-webui` on `127.0.0.1:7638`, creates a workspace and session, sends a prompt through the browser, receives a fake assistant text reply, refreshes the page, and verifies the persisted timeline is restored.
+Set `ACP_WEBUI_E2E_BINARY` to point the suite at an alternate debug binary when `target/debug/acp-webui` is already running or locked by another process.
 It also exercises a fake permission request, verifies the mobile approval sheet, confirms always options are disabled, and approves the request with an allow-once option.
+The suite covers backend restart followed by ACP `session/load` restoration, restore failure messaging, and view-only fallback states.
 The suite also exercises a fake ACP tool call review artifact, opens its session-scoped drill-down, and verifies that Review is not exposed as a first-level navigation item.
 
 ## Useful Endpoints
@@ -190,6 +195,7 @@ The suite also exercises a fake ACP tool call review artifact, opens its session
 - `POST /api/workspaces`
 - `POST /api/workspaces/:workspace_id/sessions`
 - `GET /api/sessions/:session_id`
+- `POST /api/sessions/:session_id/restore`
 - `GET /api/sessions/:session_id/review-artifacts`
 - `GET /api/sessions/:session_id/review-artifacts/:artifact_id`
 - `GET /api/sessions/:session_id/review-diff`

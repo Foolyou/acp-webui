@@ -2,6 +2,14 @@ export type ConnectionStatus = {
   state: "starting" | "ready" | "failed" | string;
   message?: string | null;
   agentInfo?: unknown;
+  sessionCapabilities?: AgentSessionCapabilities;
+};
+
+export type AgentSessionCapabilities = {
+  loadSession: boolean;
+  resumeSession: boolean;
+  listSessions: boolean;
+  closeSession: boolean;
 };
 
 export type Workspace = {
@@ -16,6 +24,7 @@ export type Session = {
   workspaceId: string;
   agentName: string;
   acpSessionId?: string | null;
+  externalSessionId?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -114,6 +123,17 @@ export type TimelineItem =
       source: string;
     };
 
+export type SessionContinuity = {
+  state: "live" | "loadable" | "resumable" | "restoring" | "restored" | "restore_failed" | "view_only" | string;
+  continuable: boolean;
+  restorable: boolean;
+  restoring: boolean;
+  reason?: string | null;
+  failureMessage?: string | null;
+  restoreStartedAt?: string | null;
+  restoreCompletedAt?: string | null;
+};
+
 export type SessionDetail = {
   session: Session;
   workspace: Workspace;
@@ -125,6 +145,7 @@ export type SessionDetail = {
   pendingApprovalCount?: number;
   queuedApprovalCount?: number;
   failureMessage?: string | null;
+  continuity: SessionContinuity;
   continuable: boolean;
   viewOnlyReason?: string | null;
 };
@@ -151,6 +172,7 @@ export type SessionListItem = {
   queuedApprovalCount?: number;
   reviewArtifactCount: number;
   hasReviewArtifacts: boolean;
+  continuity: SessionContinuity;
   continuable: boolean;
   viewOnlyReason?: string | null;
 };
@@ -182,6 +204,9 @@ export type RealtimeEvent =
     }
   | { type: "review_artifact"; artifact: ReviewArtifactSummary }
   | { type: "timeline_item_upsert"; item: TimelineItem }
+  | { type: "session_restore_started"; sessionId: string }
+  | { type: "session_restore_succeeded"; sessionId: string }
+  | { type: "session_restore_failed"; sessionId: string; message: string }
   | { type: "error"; message: string };
 
 export type SocketState = "connecting" | "connected" | "disconnected";

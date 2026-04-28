@@ -18,9 +18,141 @@ pub struct Session {
     pub workspace_id: String,
     pub agent_name: String,
     pub acp_session_id: Option<String>,
+    pub external_session_id: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionCapabilities {
+    pub load_session: bool,
+    pub resume_session: bool,
+    pub list_sessions: bool,
+    pub close_session: bool,
+}
+
+impl AgentSessionCapabilities {
+    pub fn none() -> Self {
+        Self {
+            load_session: false,
+            resume_session: false,
+            list_sessions: false,
+            close_session: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContinuity {
+    pub state: String,
+    pub continuable: bool,
+    pub restorable: bool,
+    pub restoring: bool,
+    pub reason: Option<String>,
+    pub failure_message: Option<String>,
+    pub restore_started_at: Option<String>,
+    pub restore_completed_at: Option<String>,
+}
+
+impl SessionContinuity {
+    pub fn live() -> Self {
+        Self {
+            state: continuity_state::LIVE.to_string(),
+            continuable: true,
+            restorable: false,
+            restoring: false,
+            reason: None,
+            failure_message: None,
+            restore_started_at: None,
+            restore_completed_at: None,
+        }
+    }
+
+    pub fn loadable(reason: impl Into<String>) -> Self {
+        Self {
+            state: continuity_state::LOADABLE.to_string(),
+            continuable: false,
+            restorable: true,
+            restoring: false,
+            reason: Some(reason.into()),
+            failure_message: None,
+            restore_started_at: None,
+            restore_completed_at: None,
+        }
+    }
+
+    pub fn resumable(reason: impl Into<String>) -> Self {
+        Self {
+            state: continuity_state::RESUMABLE.to_string(),
+            continuable: false,
+            restorable: false,
+            restoring: false,
+            reason: Some(reason.into()),
+            failure_message: None,
+            restore_started_at: None,
+            restore_completed_at: None,
+        }
+    }
+
+    pub fn restoring(started_at: Option<String>) -> Self {
+        Self {
+            state: continuity_state::RESTORING.to_string(),
+            continuable: false,
+            restorable: false,
+            restoring: true,
+            reason: Some("Restoring this agent session...".to_string()),
+            failure_message: None,
+            restore_started_at: started_at,
+            restore_completed_at: None,
+        }
+    }
+
+    pub fn restored(completed_at: Option<String>) -> Self {
+        Self {
+            state: continuity_state::RESTORED.to_string(),
+            continuable: true,
+            restorable: false,
+            restoring: false,
+            reason: None,
+            failure_message: None,
+            restore_started_at: None,
+            restore_completed_at: completed_at,
+        }
+    }
+
+    pub fn restore_failed(
+        message: impl Into<String>,
+        started_at: Option<String>,
+        restorable: bool,
+    ) -> Self {
+        let message = message.into();
+        Self {
+            state: continuity_state::RESTORE_FAILED.to_string(),
+            continuable: false,
+            restorable,
+            restoring: false,
+            reason: Some(message.clone()),
+            failure_message: Some(message),
+            restore_started_at: started_at,
+            restore_completed_at: None,
+        }
+    }
+
+    pub fn view_only(reason: impl Into<String>) -> Self {
+        Self {
+            state: continuity_state::VIEW_ONLY.to_string(),
+            continuable: false,
+            restorable: false,
+            restoring: false,
+            reason: Some(reason.into()),
+            failure_message: None,
+            restore_started_at: None,
+            restore_completed_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -47,6 +179,7 @@ pub struct SessionDetail {
     pub pending_approval_count: i64,
     pub queued_approval_count: i64,
     pub failure_message: Option<String>,
+    pub continuity: SessionContinuity,
     pub continuable: bool,
     pub view_only_reason: Option<String>,
 }
@@ -258,6 +391,7 @@ pub struct SessionListItem {
     pub queued_approval_count: i64,
     pub review_artifact_count: i64,
     pub has_review_artifacts: bool,
+    pub continuity: SessionContinuity,
     pub continuable: bool,
     pub view_only_reason: Option<String>,
 }
@@ -289,6 +423,16 @@ pub mod status {
     pub const RUNNING: &str = "running";
     pub const WAITING_APPROVAL: &str = "waiting_approval";
     pub const FAILED: &str = "failed";
+}
+
+pub mod continuity_state {
+    pub const LIVE: &str = "live";
+    pub const LOADABLE: &str = "loadable";
+    pub const RESUMABLE: &str = "resumable";
+    pub const RESTORING: &str = "restoring";
+    pub const RESTORED: &str = "restored";
+    pub const RESTORE_FAILED: &str = "restore_failed";
+    pub const VIEW_ONLY: &str = "view_only";
 }
 
 pub mod role {

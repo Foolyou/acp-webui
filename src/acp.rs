@@ -20,8 +20,9 @@ use crate::{
     config::Config,
     models::{
         permission_option_kind, permission_status, review_artifact_kind, role, status,
-        tool_call_status, NewReviewArtifact, PermissionRequest, ReviewArtifact,
-        ReviewArtifactSummary, TimelineItem, ToolCallRow, UpsertToolCall,
+        tool_call_status, AgentSessionCapabilities, NewReviewArtifact, PermissionRequest,
+        ReviewArtifact, ReviewArtifactSummary, SessionContinuity, TimelineItem, ToolCallRow,
+        UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -32,6 +33,7 @@ pub struct ConnectionStatus {
     pub state: String,
     pub message: Option<String>,
     pub agent_info: Option<Value>,
+    pub session_capabilities: AgentSessionCapabilities,
 }
 
 impl ConnectionStatus {
@@ -40,14 +42,16 @@ impl ConnectionStatus {
             state: "starting".to_string(),
             message: Some("Starting codex-acp".to_string()),
             agent_info: None,
+            session_capabilities: AgentSessionCapabilities::none(),
         }
     }
 
-    fn ready(agent_info: Option<Value>) -> Self {
+    fn ready(agent_info: Option<Value>, session_capabilities: AgentSessionCapabilities) -> Self {
         Self {
             state: "ready".to_string(),
             message: None,
             agent_info,
+            session_capabilities,
         }
     }
 
@@ -56,6 +60,7 @@ impl ConnectionStatus {
             state: "failed".to_string(),
             message: Some(message.into()),
             agent_info: None,
+            session_capabilities: AgentSessionCapabilities::none(),
         }
     }
 }
@@ -104,6 +109,16 @@ pub enum RealtimeEvent {
     Error {
         message: String,
     },
+    SessionRestoreStarted {
+        session_id: String,
+    },
+    SessionRestoreSucceeded {
+        session_id: String,
+    },
+    SessionRestoreFailed {
+        session_id: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +133,7 @@ pub struct CodexRuntime {
     status: Arc<RwLock<ConnectionStatus>>,
     peer: RwLock<Option<Arc<JsonRpcPeer>>>,
     session_map: Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
     events_tx: broadcast::Sender<RealtimeEvent>,
 }
@@ -134,6 +150,7 @@ impl CodexRuntime {
             status: Arc::new(RwLock::new(ConnectionStatus::starting())),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
+            restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
         });
@@ -163,6 +180,29 @@ impl CodexRuntime {
             ))),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
+            restore_session_map: Arc::new(RwLock::new(HashMap::new())),
+            assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
+            events_tx,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn ready_for_tests(
+        config: Config,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+        session_capabilities: AgentSessionCapabilities,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config,
+            storage,
+            status: Arc::new(RwLock::new(ConnectionStatus::ready(
+                Some(json!({"name": "test-codex"})),
+                session_capabilities,
+            ))),
+            peer: RwLock::new(None),
+            session_map: Arc::new(RwLock::new(HashMap::new())),
+            restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
         })
@@ -225,6 +265,85 @@ impl CodexRuntime {
             return false;
         };
         self.session_map.read().await.contains_key(acp_session_id)
+    }
+
+    pub async fn session_capabilities(&self) -> AgentSessionCapabilities {
+        self.status.read().await.session_capabilities.clone()
+    }
+
+    pub async fn can_load_session(&self) -> bool {
+        self.session_capabilities().await.load_session
+    }
+
+    pub async fn runtime_session_continuity(
+        &self,
+        acp_session_id: Option<&str>,
+        external_session_id: Option<&str>,
+    ) -> SessionContinuity {
+        if self.has_registered_session(acp_session_id).await {
+            return SessionContinuity::live();
+        }
+
+        let has_external_session_id = external_session_id.or(acp_session_id).is_some();
+        let capabilities = self.session_capabilities().await;
+        if has_external_session_id && capabilities.load_session {
+            SessionContinuity::loadable("Restore this session before sending another prompt.")
+        } else if has_external_session_id && capabilities.resume_session {
+            SessionContinuity::resumable(
+                "This agent advertises session/resume, but this version only enables ACP session/load restores.",
+            )
+        } else if has_external_session_id {
+            SessionContinuity::view_only(
+                "This session history is available for review, but the live Codex runtime context is not available. Start a new session to continue working.",
+            )
+        } else {
+            SessionContinuity::view_only("Session is missing an agent session id.")
+        }
+    }
+
+    pub async fn load_session(
+        &self,
+        acp_session_id: String,
+        local_session_id: String,
+        cwd: String,
+    ) -> anyhow::Result<()> {
+        let peer = self.ensure_ready().await?;
+        if !self.session_capabilities().await.load_session {
+            return Err(anyhow!("Codex ACP does not advertise session/load support"));
+        }
+
+        self.restore_session_map
+            .write()
+            .await
+            .insert(acp_session_id.clone(), local_session_id.clone());
+        let result = peer
+            .request(
+                "session/load",
+                json!({
+                    "sessionId": acp_session_id,
+                    "cwd": cwd,
+                    "mcpServers": []
+                }),
+            )
+            .await;
+
+        if result.is_ok() {
+            flush_assistant_buffer_for_session(
+                &acp_session_id,
+                &local_session_id,
+                &self.events_tx,
+                &self.storage,
+                &self.assistant_buffers,
+                true,
+                false,
+            )
+            .await;
+        }
+        self.restore_session_map.write().await.remove(&acp_session_id);
+
+        result?;
+        self.register_session(acp_session_id, local_session_id).await;
+        Ok(())
     }
 
     pub async fn prompt(
@@ -391,6 +510,7 @@ impl CodexRuntime {
             self.events_tx.clone(),
             self.storage.clone(),
             self.session_map.clone(),
+            self.restore_session_map.clone(),
             self.assistant_buffers.clone(),
         )
         .await?;
@@ -411,7 +531,8 @@ impl CodexRuntime {
             .await?;
 
         let agent_info = result.get("agentInfo").cloned();
-        *self.status.write().await = ConnectionStatus::ready(agent_info);
+        let session_capabilities = session_capabilities_from_initialize(&result);
+        *self.status.write().await = ConnectionStatus::ready(agent_info, session_capabilities);
         *self.peer.write().await = Some(peer);
         self.emit_status().await;
 
@@ -441,6 +562,31 @@ impl std::fmt::Display for JsonRpcError {
 
 impl std::error::Error for JsonRpcError {}
 
+fn session_capabilities_from_initialize(result: &Value) -> AgentSessionCapabilities {
+    let agent_capabilities = result.get("agentCapabilities").unwrap_or(&Value::Null);
+    let session_capabilities = agent_capabilities
+        .get("sessionCapabilities")
+        .unwrap_or(&Value::Null);
+
+    AgentSessionCapabilities {
+        load_session: agent_capabilities
+            .get("loadSession")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        resume_session: capability_field_enabled(session_capabilities.get("resume")),
+        list_sessions: capability_field_enabled(session_capabilities.get("list")),
+        close_session: capability_field_enabled(session_capabilities.get("close")),
+    }
+}
+
+fn capability_field_enabled(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonRpcPeer {
     next_id: AtomicI64,
@@ -456,6 +602,7 @@ impl JsonRpcPeer {
         events_tx: broadcast::Sender<RealtimeEvent>,
         storage: Storage,
         session_map: Arc<RwLock<HashMap<String, String>>>,
+        restore_session_map: Arc<RwLock<HashMap<String, String>>>,
         assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
     ) -> anyhow::Result<Arc<Self>> {
         let stdin = child
@@ -513,6 +660,7 @@ impl JsonRpcPeer {
                                     &events_tx,
                                     &storage,
                                     &session_map,
+                                    &restore_session_map,
                                     &assistant_buffers,
                                     &reader_permission_responders,
                                 )
@@ -628,6 +776,7 @@ async fn handle_incoming_message(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
     permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
@@ -645,8 +794,15 @@ async fn handle_incoming_message(
 
     match method {
         "session/update" => {
-            handle_session_update(message, events_tx, storage, session_map, assistant_buffers)
-                .await;
+            handle_session_update(
+                message,
+                events_tx,
+                storage,
+                session_map,
+                restore_session_map,
+                assistant_buffers,
+            )
+            .await;
         }
         "session/request_permission" => {
             handle_permission_request(
@@ -655,6 +811,7 @@ async fn handle_incoming_message(
                 events_tx,
                 storage,
                 session_map,
+                restore_session_map,
                 permission_responders,
             )
             .await;
@@ -707,6 +864,7 @@ async fn handle_session_update(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
 ) {
     let params = &message["params"];
@@ -740,26 +898,71 @@ async fn handle_session_update(
                         session_id: local_session_id,
                         delta: text,
                     });
+                } else if restore_session_map
+                    .read()
+                    .await
+                    .contains_key(acp_session_id)
+                {
+                    tracing::debug!(acp_session_id, "buffered replayed assistant message chunk");
+                } else {
+                    tracing::debug!(
+                        acp_session_id,
+                        "assistant message chunk for unknown ACP session"
+                    );
                 }
             }
         }
         "user_message_chunk" => {
-            tracing::debug!(?update, "ignored replayed user message chunk");
+            if let Some(local_session_id) = restore_session_map
+                .read()
+                .await
+                .get(acp_session_id)
+                .cloned()
+            {
+                if let Some(text) = text_from_content(update.get("content")) {
+                    persist_replayed_message(
+                        storage,
+                        events_tx,
+                        &local_session_id,
+                        role::USER,
+                        &text,
+                    )
+                    .await;
+                } else {
+                    tracing::debug!(?update, "replayed user message did not include text");
+                }
+            } else {
+                tracing::debug!(?update, "ignored user message chunk outside restore");
+            }
         }
         "tool_call" | "tool_call_update" => {
-            let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned()
+            let live_session_id = session_map.read().await.get(acp_session_id).cloned();
+            let restore_session_id = restore_session_map
+                .read()
+                .await
+                .get(acp_session_id)
+                .cloned();
+            let Some(local_session_id) = live_session_id.or_else(|| restore_session_id.clone())
             else {
-                tracing::debug!(acp_session_id, "review update for unknown ACP session");
+                tracing::debug!(acp_session_id, "tool update for unknown ACP session");
                 return;
             };
-            flush_assistant_buffer(
+            flush_assistant_buffer_for_session(
                 acp_session_id,
+                &local_session_id,
                 events_tx,
                 storage,
-                session_map,
                 assistant_buffers,
+                restore_session_id.is_some(),
+                restore_session_id.is_none(),
             )
             .await;
+            if restore_session_id.is_some() && tool_call_id(update).is_none() {
+                tracing::debug!(
+                    ?update,
+                    "replayed tool update did not include stable tool call id"
+                );
+            }
             let tool_input = tool_call_from_update(&local_session_id, update);
             match storage.upsert_tool_call(tool_input).await {
                 Ok(tool_call) => {
@@ -851,12 +1054,50 @@ fn tool_call_timeline_item(row: &ToolCallRow) -> Option<TimelineItem> {
     })
 }
 
-async fn flush_assistant_buffer(
+async fn persist_replayed_message(
+    storage: &Storage,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    local_session_id: &str,
+    message_role: &str,
+    content: &str,
+) {
+    match storage
+        .create_message_if_missing(local_session_id, message_role, content, status::IDLE)
+        .await
+    {
+        Ok(Some(message)) => {
+            let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+                item: TimelineItem::Message {
+                    id: message.id.clone(),
+                    session_id: message.session_id.clone(),
+                    timestamp: message.created_at.clone(),
+                    status: message.status.clone(),
+                    role: message.role.clone(),
+                    content: message.content.clone(),
+                },
+            });
+        }
+        Ok(None) => {
+            tracing::debug!(
+                local_session_id,
+                message_role,
+                "ignored duplicate replayed message"
+            );
+        }
+        Err(error) => {
+            tracing::error!(?error, "failed to persist replayed message");
+        }
+    }
+}
+
+async fn flush_assistant_buffer_for_session(
     acp_session_id: &str,
+    local_session_id: &str,
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
-    session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+    dedupe: bool,
+    emit_assistant_message: bool,
 ) {
     let content = {
         let mut buffers = assistant_buffers.lock().await;
@@ -869,35 +1110,54 @@ async fn flush_assistant_buffer(
         std::mem::take(buffer)
     };
 
-    let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned() else {
-        tracing::debug!(acp_session_id, "assistant buffer for unknown ACP session");
-        return;
+    let message = if dedupe {
+        match storage
+            .create_message_if_missing(local_session_id, role::ASSISTANT, &content, status::IDLE)
+            .await
+        {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::error!(?error, "failed to persist replayed assistant message");
+                return;
+            }
+        }
+    } else {
+        match storage
+            .create_message(local_session_id, role::ASSISTANT, &content, status::IDLE)
+            .await
+        {
+            Ok(message) => Some(message),
+            Err(error) => {
+                tracing::error!(?error, "failed to persist assistant message segment");
+                return;
+            }
+        }
     };
 
-    match storage
-        .create_message(&local_session_id, role::ASSISTANT, &content, status::IDLE)
-        .await
-    {
-        Ok(message) => {
-            let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
-                item: TimelineItem::Message {
-                    id: message.id.clone(),
-                    session_id: message.session_id.clone(),
-                    timestamp: message.created_at.clone(),
-                    status: message.status.clone(),
-                    role: message.role.clone(),
-                    content: message.content.clone(),
-                },
-            });
-        }
-        Err(error) => {
-            tracing::error!(?error, "failed to persist assistant message segment");
-        }
+    if let Some(message) = &message {
+        let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+            item: TimelineItem::Message {
+                id: message.id.clone(),
+                session_id: message.session_id.clone(),
+                timestamp: message.created_at.clone(),
+                status: message.status.clone(),
+                role: message.role.clone(),
+                content: message.content.clone(),
+            },
+        });
+    } else {
+        tracing::debug!(
+            acp_session_id,
+            local_session_id,
+            "ignored duplicate replayed assistant message"
+        );
     }
-    let _ = events_tx.send(RealtimeEvent::AssistantMessage {
-        session_id: local_session_id,
-        content,
-    });
+    if emit_assistant_message {
+        let _ = events_tx.send(RealtimeEvent::AssistantMessage {
+            session_id: local_session_id.to_string(),
+            content,
+        });
+    }
 }
 
 fn review_artifact_from_update(session_id: &str, update: &Value) -> Option<NewReviewArtifact> {
@@ -1013,6 +1273,7 @@ async fn handle_permission_request(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
     permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
     let request_id = message.get("id").cloned().unwrap_or(Value::Null);
@@ -1021,6 +1282,19 @@ async fn handle_permission_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+
+    if restore_session_map
+        .read()
+        .await
+        .contains_key(&acp_session_id)
+    {
+        tracing::warn!(
+            ?message,
+            "ignored replayed permission request during session restore"
+        );
+        send_permission_result(request_id, cancelled_permission_response(), writer_tx).await;
+        return;
+    }
 
     let Some(local_session_id) = session_map.read().await.get(&acp_session_id).cloned() else {
         tracing::warn!(?message, "permission request for unknown ACP session");
@@ -1254,6 +1528,13 @@ for line in sys.stdin:
                 "agentInfo": {
                     "name": "fake-codex",
                     "version": "0.0.0"
+                },
+                "agentCapabilities": {
+                    "loadSession": True,
+                    "sessionCapabilities": {
+                        "list": {},
+                        "resume": False
+                    }
                 }
             }
         })
@@ -1264,6 +1545,74 @@ for line in sys.stdin:
             "result": {
                 "sessionId": "fake-session"
             }
+        })
+    elif method == "session/load":
+        if mode == "load-fail":
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32004, "message": "session not found"}
+            })
+            continue
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "Loaded prompt"}
+                }
+            }
+        })
+        if mode == "load-permission":
+            send({
+                "jsonrpc": "2.0",
+                "id": "permission-load",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "fake-session",
+                    "toolCall": {
+                        "toolCallId": "tool-load-permission",
+                        "title": "Old permission",
+                        "kind": "execute"
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                    ]
+                }
+            })
+            json.loads(sys.stdin.readline())
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Loaded response"}
+                }
+            }
+        })
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "fake-session",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tool-load",
+                    "title": "Loaded tool",
+                    "kind": "execute",
+                    "status": "completed",
+                    "content": [{"type": "text", "text": "loaded artifact"}]
+                }
+            }
+        })
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"sessionId": "fake-session"}
         })
     elif method == "session/prompt":
         if mode == "text":
@@ -1490,6 +1839,41 @@ for line in sys.stdin:
         assert!(json.get("session_id").is_none());
     }
 
+    #[test]
+    fn initialize_capability_parser_accepts_legacy_and_nested_shapes() {
+        let capabilities = session_capabilities_from_initialize(&json!({
+            "agentCapabilities": {
+                "loadSession": true,
+                "sessionCapabilities": {
+                    "resume": {},
+                    "list": true,
+                    "close": false
+                }
+            }
+        }));
+
+        assert!(capabilities.load_session);
+        assert!(capabilities.resume_session);
+        assert!(capabilities.list_sessions);
+        assert!(!capabilities.close_session);
+    }
+
+    #[test]
+    fn initialize_capability_parser_defaults_to_no_session_continuation() {
+        let capabilities = session_capabilities_from_initialize(&json!({
+            "agentCapabilities": {
+                "sessionCapabilities": {
+                    "resume": false
+                }
+            }
+        }));
+
+        assert!(!capabilities.load_session);
+        assert!(!capabilities.resume_session);
+        assert!(!capabilities.list_sessions);
+        assert!(!capabilities.close_session);
+    }
+
     #[tokio::test]
     async fn fake_acp_text_prompt_returns_text_and_broadcasts_delta() {
         let dir = tempfile::tempdir().unwrap();
@@ -1565,6 +1949,123 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "");
+    }
+
+    #[tokio::test]
+    async fn fake_acp_load_session_replays_without_duplicate_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "fake-session".to_string())
+            .await
+            .unwrap();
+        storage
+            .create_message(&session.id, role::USER, "Loaded prompt", status::IDLE)
+            .await
+            .unwrap();
+        storage
+            .create_message(&session.id, role::ASSISTANT, "Loaded response", status::IDLE)
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "load"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        runtime
+            .load_session(
+                "fake-session".to_string(),
+                session.id.clone(),
+                dir.path().to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(runtime
+            .has_registered_session(Some("fake-session"))
+            .await);
+        assert_eq!(storage.list_messages(&session.id).await.unwrap().len(), 2);
+        assert_eq!(storage.list_tool_calls(&session.id).await.unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .list_review_artifact_summaries(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_acp_load_failure_does_not_register_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "load-fail"),
+            storage,
+            events_tx.clone(),
+        )
+        .await;
+
+        let error = runtime
+            .load_session(
+                "fake-session".to_string(),
+                "local-session".to_string(),
+                dir.path().to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("session not found"));
+        assert!(!runtime.has_registered_session(Some("fake-session")).await);
+    }
+
+    #[tokio::test]
+    async fn fake_acp_load_ignores_replayed_permission_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "fake-session".to_string())
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "load-permission"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        runtime
+            .load_session(
+                "fake-session".to_string(),
+                session.id.clone(),
+                dir.path().to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(storage
+            .pending_permissions_for_session(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ export function SessionPane({
   liveAssistant,
   onOpenDiffFallback,
   onOpenReviewArtifact,
+  onRestoreSession,
   onSendPrompt
 }: {
   busy: boolean;
@@ -22,19 +23,34 @@ export function SessionPane({
   liveAssistant: string;
   onOpenDiffFallback: () => void;
   onOpenReviewArtifact: (artifactId: string) => void;
+  onRestoreSession: (sessionId: string) => Promise<void>;
   onSendPrompt: (prompt: string) => Promise<void>;
 }) {
   const waitingApproval =
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
-  const canSend = currentSession.continuable && !running;
+  const continuity = currentSession.continuity;
+  const canSend = continuity.continuable && !running;
+  const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
+  const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
 
   return (
     <section className="session-layout">
       <div className="session-toolbar">
         <PageHeader eyebrow={currentSession.workspace.name} title="Session" />
         <div className="section-actions">
+          {continuity.restorable || continuity.restoring ? (
+            <Button
+              className="primary small"
+              isDisabled={busy || !canRestore}
+              onPress={() => {
+                void onRestoreSession(currentSession.session.id);
+              }}
+            >
+              {continuity.restoring ? "Restoring..." : continuity.state === "restore_failed" ? "Retry restore" : "Restore"}
+            </Button>
+          ) : null}
           <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
             Diff
           </Button>
@@ -43,7 +59,11 @@ export function SessionPane({
       </div>
       <div className="timeline" id="timeline">
         {currentSession.failureMessage ? <div className="notice error">{currentSession.failureMessage}</div> : null}
-        {!currentSession.continuable ? <div className="notice warning">{currentSession.viewOnlyReason}</div> : null}
+        {continuity.failureMessage ? <div className="notice error">{continuity.failureMessage}</div> : null}
+        {continuity.restoring ? <div className="notice">Restoring session context...</div> : null}
+        {!continuity.continuable && !continuity.failureMessage && !continuity.restoring ? (
+          <div className="notice warning">{continuityReason}</div>
+        ) : null}
         {waitingApproval ? (
           <div className="notice approval">
             Waiting for approval: {currentSession.pendingPermission?.title ?? "Permission requested"}
@@ -61,7 +81,8 @@ export function SessionPane({
         codex={codex}
         disabled={!canSend}
         running={running}
-        viewOnlyReason={currentSession.viewOnlyReason}
+        continuityReason={continuity.continuable ? null : continuityReason}
+        restoreRequired={continuity.restorable || continuity.restoring}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
       />
@@ -170,7 +191,8 @@ function PromptComposer({
   disabled,
   onSendPrompt,
   running,
-  viewOnlyReason,
+  continuityReason,
+  restoreRequired,
   waitingApproval
 }: {
   busy: boolean;
@@ -178,7 +200,8 @@ function PromptComposer({
   disabled: boolean;
   onSendPrompt: (prompt: string) => Promise<void>;
   running: boolean;
-  viewOnlyReason?: string | null;
+  continuityReason?: string | null;
+  restoreRequired: boolean;
   waitingApproval: boolean;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -204,8 +227,8 @@ function PromptComposer({
     }
   }
 
-  const status = viewOnlyReason
-    ? viewOnlyReason
+  const status = continuityReason
+    ? continuityReason
     : waitingApproval
       ? "Waiting for approval"
       : running
@@ -216,7 +239,7 @@ function PromptComposer({
 
   return (
     <div className="composer-wrap">
-      {status ? <div className={`composer-status ${viewOnlyReason ? "warning" : ""}`}>{status}</div> : null}
+      {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : null}
       <form className="composer" onSubmit={onSubmit}>
         <textarea
           disabled={disabled}
@@ -225,8 +248,10 @@ function PromptComposer({
           onCompositionStart={() => setComposing(true)}
           onKeyDown={onKeyDown}
           placeholder={
-            viewOnlyReason
-              ? "Start a new session to continue"
+            continuityReason
+              ? restoreRequired
+                ? "Restore session to continue"
+                : "Start a new session to continue"
               : waitingApproval
                 ? "Resolve approval before sending another prompt"
                 : "Ask Codex..."

@@ -332,6 +332,27 @@ export function App() {
     [runBusy, state.currentSession?.session.id]
   );
 
+  const restoreSession = useCallback(
+    async (sessionId: string) => {
+      await runBusy(async () => {
+        const detail = await api.restoreSession(sessionId);
+        localStorage.setItem("currentWorkspaceId", detail.workspace.id);
+        localStorage.setItem("currentSessionId", detail.session.id);
+        setState((current) => ({
+          ...current,
+          currentSession: detail,
+          currentWorkspaceId: detail.workspace.id,
+          sessions: [
+            sessionDetailToListItem(detail),
+            ...current.sessions.filter((item) => item.session.id !== detail.session.id)
+          ],
+          liveAssistant: ""
+        }));
+      });
+    },
+    [runBusy]
+  );
+
   const resolvePermission = useCallback(
     async (permission: PermissionRequest, optionId: string) => {
       await runBusy(async () => {
@@ -444,6 +465,7 @@ export function App() {
         openDiffFallback,
         openReviewArtifact,
         resolvePermission,
+        restoreSession,
         sendPrompt,
         setActiveReview: (artifact) => setState((current) => ({ ...current, activeReview: artifact })),
         setCurrentWorkspace
@@ -460,6 +482,7 @@ export function App() {
       openDiffFallback,
       openReviewArtifact,
       resolvePermission,
+      restoreSession,
       selectedWorkspace,
       sendPrompt,
       setCurrentWorkspace,

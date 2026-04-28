@@ -4,6 +4,7 @@ import type {
   PermissionRequest,
   RealtimeEvent,
   ReviewArtifactSummary,
+  SessionContinuity,
   SessionDetail,
   TimelineItem
 } from "./types";
@@ -63,12 +64,79 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
     case "timeline_item_upsert":
       return applyTimelineItemUpsert(state, event.item);
 
+    case "session_restore_started":
+      return applySessionRestoreEvent(state, event.sessionId, restoringContinuity());
+
+    case "session_restore_succeeded":
+      return applySessionRestoreEvent(state, event.sessionId, restoredContinuity());
+
+    case "session_restore_failed":
+      return applySessionRestoreEvent(state, event.sessionId, restoreFailedContinuity(event.message));
+
     case "error":
       return { ...state, error: event.message };
 
     case "connection_status":
       return state;
   }
+}
+
+function applySessionRestoreEvent(
+  state: AppSnapshot,
+  sessionId: string,
+  continuity: SessionContinuity
+): AppSnapshot {
+  if (state.currentSession?.session.id !== sessionId) {
+    return state;
+  }
+  return {
+    ...state,
+    currentSession: {
+      ...state.currentSession,
+      continuity,
+      continuable: continuity.continuable,
+      viewOnlyReason: continuity.continuable ? null : (continuity.reason ?? null)
+    }
+  };
+}
+
+function restoringContinuity(): SessionContinuity {
+  return {
+    state: "restoring",
+    continuable: false,
+    restorable: false,
+    restoring: true,
+    reason: "Restoring this agent session...",
+    failureMessage: null,
+    restoreStartedAt: new Date().toISOString(),
+    restoreCompletedAt: null
+  };
+}
+
+function restoredContinuity(): SessionContinuity {
+  return {
+    state: "restored",
+    continuable: true,
+    restorable: false,
+    restoring: false,
+    reason: null,
+    failureMessage: null,
+    restoreStartedAt: null,
+    restoreCompletedAt: new Date().toISOString()
+  };
+}
+
+function restoreFailedContinuity(message: string): SessionContinuity {
+  return {
+    state: "restore_failed",
+    continuable: false,
+    restorable: true,
+    restoring: false,
+    reason: message,
+    failureMessage: message,
+    restoreStartedAt: null,
+    restoreCompletedAt: null
+  };
 }
 
 function normalizeSessionStatus(status: string, hasPendingPermission: boolean) {

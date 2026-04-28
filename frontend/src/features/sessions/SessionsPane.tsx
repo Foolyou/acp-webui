@@ -57,7 +57,7 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       </span>
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
-        {!item.continuable ? <strong>View only</strong> : null}
+        <ContinuityBadge item={item} />
         {item.pendingPermission ? (
           <strong>
             Approval: {item.pendingPermission.title}
@@ -68,4 +68,23 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       </span>
     </Link>
   );
+}
+
+function ContinuityBadge({ item }: { item: SessionListItem }) {
+  switch (item.continuity.state) {
+    case "loadable":
+      return <strong>Restorable</strong>;
+    case "restoring":
+      return <strong>Restoring</strong>;
+    case "restored":
+      return <strong>Restored</strong>;
+    case "restore_failed":
+      return <strong>Restore failed</strong>;
+    case "resumable":
+      return <strong>Resume unavailable</strong>;
+    case "view_only":
+      return <strong>View only</strong>;
+    default:
+      return item.continuable ? null : <strong>View only</strong>;
+  }
 }

@@ -11,10 +11,10 @@ use uuid::Uuid;
 use serde_json::Value;
 
 use crate::models::{
-    permission_status, role, status, tool_call_status, InboxItem, Message, NewReviewArtifact,
-    PermissionOption, PermissionRequest, PermissionRequestRow, ReviewArtifact, ReviewArtifactRow,
-    ReviewArtifactSummary, Session, SessionDetail, SessionListItem, SessionListPermission,
-    TimelineItem, ToolCallRow, UpsertToolCall, Workspace,
+    continuity_state, permission_status, role, status, tool_call_status, InboxItem, Message,
+    NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow, ReviewArtifact,
+    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionContinuity, SessionDetail,
+    SessionListItem, SessionListPermission, TimelineItem, ToolCallRow, UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -41,6 +41,14 @@ pub struct Storage {
 pub struct UpsertReviewArtifactResult {
     pub artifact: ReviewArtifact,
     pub created: bool,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionContinuityRow {
+    pub continuation_state: String,
+    pub restore_failure_message: Option<String>,
+    pub restore_started_at: Option<String>,
+    pub restore_completed_at: Option<String>,
 }
 
 impl Storage {
@@ -193,16 +201,20 @@ impl Storage {
                 workspace_id,
                 agent_name,
                 acp_session_id,
+                external_session_id,
+                continuation_state,
                 status,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, 'codex', ?, ?, ?, ?)
+            VALUES (?, ?, 'codex', ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(workspace_id)
-        .bind(acp_session_id)
+        .bind(&acp_session_id)
+        .bind(&acp_session_id)
+        .bind(continuity_state::LIVE)
         .bind(status::IDLE)
         .bind(&now)
         .bind(&now)
@@ -215,7 +227,15 @@ impl Storage {
     pub async fn get_session(&self, id: &str) -> anyhow::Result<Session> {
         let session = sqlx::query_as::<_, Session>(
             r#"
-            SELECT id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at
+            SELECT
+                id,
+                workspace_id,
+                agent_name,
+                acp_session_id,
+                external_session_id,
+                status,
+                created_at,
+                updated_at
             FROM sessions
             WHERE id = ?
             "#,
@@ -225,6 +245,94 @@ impl Storage {
         .await?;
 
         Ok(session)
+    }
+
+    pub async fn session_continuity_row(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<SessionContinuityRow> {
+        let row = sqlx::query_as::<_, SessionContinuityRow>(
+            r#"
+            SELECT continuation_state, restore_failure_message, restore_started_at, restore_completed_at
+            FROM sessions
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn mark_session_restore_started(&self, id: &str) -> anyhow::Result<String> {
+        let now = now();
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET continuation_state = ?,
+                restore_failure_message = NULL,
+                restore_started_at = ?,
+                restore_completed_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(continuity_state::RESTORING)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(now)
+    }
+
+    pub async fn mark_session_restore_succeeded(&self, id: &str) -> anyhow::Result<String> {
+        let now = now();
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET continuation_state = ?,
+                restore_failure_message = NULL,
+                restore_completed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(continuity_state::RESTORED)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(now)
+    }
+
+    pub async fn mark_session_restore_failed(
+        &self,
+        id: &str,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET continuation_state = ?,
+                restore_failure_message = ?,
+                restore_completed_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(continuity_state::RESTORE_FAILED)
+        .bind(message)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     pub async fn list_session_items(&self) -> anyhow::Result<Vec<SessionListItem>> {
@@ -250,6 +358,7 @@ impl Storage {
                 s.workspace_id,
                 s.agent_name,
                 s.acp_session_id,
+                s.external_session_id,
                 s.status,
                 s.created_at AS session_created_at,
                 s.updated_at AS session_updated_at,
@@ -351,6 +460,35 @@ impl Storage {
         self.get_message(&id).await
     }
 
+    pub async fn create_message_if_missing(
+        &self,
+        session_id: &str,
+        message_role: &str,
+        content: &str,
+        message_status: &str,
+    ) -> anyhow::Result<Option<Message>> {
+        let existing = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM messages
+            WHERE session_id = ? AND role = ? AND content = ?
+            "#,
+        )
+        .bind(session_id)
+        .bind(message_role)
+        .bind(content)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if existing > 0 {
+            return Ok(None);
+        }
+
+        self.create_message(session_id, message_role, content, message_status)
+            .await
+            .map(Some)
+    }
+
     pub async fn get_message(&self, id: &str) -> anyhow::Result<Message> {
         let message = sqlx::query_as::<_, Message>(
             r#"
@@ -382,16 +520,36 @@ impl Storage {
         Ok(messages)
     }
 
+    #[cfg(test)]
     pub async fn session_detail(&self, session_id: &str) -> anyhow::Result<SessionDetail> {
         self.session_detail_with_continuity(session_id, true, None)
             .await
     }
 
+    #[cfg(test)]
     pub async fn session_detail_with_continuity(
         &self,
         session_id: &str,
         continuable: bool,
         view_only_reason: Option<String>,
+    ) -> anyhow::Result<SessionDetail> {
+        let continuity = if continuable {
+            SessionContinuity::live()
+        } else {
+            SessionContinuity::view_only(
+                view_only_reason
+                    .clone()
+                    .unwrap_or_else(|| "This session is view-only.".to_string()),
+            )
+        };
+        self.session_detail_with_session_continuity(session_id, continuity)
+            .await
+    }
+
+    pub async fn session_detail_with_session_continuity(
+        &self,
+        session_id: &str,
+        continuity: SessionContinuity,
     ) -> anyhow::Result<SessionDetail> {
         let mut session = self.get_session(session_id).await?;
         let workspace = self.get_workspace(&session.workspace_id).await?;
@@ -409,6 +567,8 @@ impl Storage {
             .latest_permission_failure_for_session(&session.id)
             .await?;
         session.status = normalize_session_status(session.status, pending_approval_count > 0);
+        let continuable = continuity.continuable;
+        let view_only_reason = continuity.reason.clone().filter(|_| !continuable);
 
         Ok(SessionDetail {
             session,
@@ -421,6 +581,7 @@ impl Storage {
             pending_approval_count,
             queued_approval_count: queued_approval_count(pending_approval_count),
             failure_message,
+            continuity,
             continuable,
             view_only_reason,
         })
@@ -1139,6 +1300,7 @@ struct SessionListItemRow {
     workspace_id: String,
     agent_name: String,
     acp_session_id: Option<String>,
+    external_session_id: Option<String>,
     status: String,
     session_created_at: String,
     session_updated_at: String,
@@ -1263,6 +1425,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             workspace_id: row.workspace_id,
             agent_name: row.agent_name,
             acp_session_id: row.acp_session_id,
+            external_session_id: row.external_session_id,
             status: normalize_session_status(row.status, pending_permission.is_some()),
             created_at: row.session_created_at,
             updated_at: row.session_updated_at.clone(),
@@ -1278,6 +1441,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
         queued_approval_count: queued_approval_count(row.pending_approval_count),
         review_artifact_count,
         has_review_artifacts: review_artifact_count > 0,
+        continuity: SessionContinuity::live(),
         continuable: true,
         view_only_reason: None,
     }

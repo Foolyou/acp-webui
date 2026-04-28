@@ -63,6 +63,10 @@ export const api = {
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),
+  restoreSession: (sessionId: string) =>
+    request<SessionDetail>(`/api/sessions/${sessionId}/restore`, {
+      method: "POST"
+    }),
   prompt: (sessionId: string, prompt: string) =>
     request<{ message: ChatMessage }>(`/api/sessions/${sessionId}/prompt`, {
       method: "POST",

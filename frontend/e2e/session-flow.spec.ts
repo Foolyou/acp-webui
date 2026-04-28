@@ -10,6 +10,7 @@ const dataDir = path.join(repoRoot, ".data", "e2e");
 const databasePath = path.join(dataDir, "playwright.db");
 const backendUrl = "http://127.0.0.1:7638";
 const fakeAcpScript = path.join(repoRoot, "frontend", "e2e", "fixtures", "fake-acp.py");
+const backendBinary = process.env.ACP_WEBUI_E2E_BINARY ?? path.join(repoRoot, "target", "debug", "acp-webui");
 
 let backend: ChildProcessWithoutNullStreams | undefined;
 
@@ -17,8 +18,16 @@ test.beforeAll(async () => {
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync(dataDir, { recursive: true });
 
+  await startBackend();
+});
+
+test.afterAll(async () => {
+  await stopBackend();
+});
+
+async function startBackend() {
   backend = spawn(
-    path.join(repoRoot, "target", "debug", "acp-webui"),
+    backendBinary,
     [
       "--bind-host",
       "127.0.0.1",
@@ -44,9 +53,9 @@ test.beforeAll(async () => {
   backend.stderr.on("data", (chunk) => process.stderr.write(`[backend] ${chunk}`));
 
   await waitForBackend();
-});
+}
 
-test.afterAll(async () => {
+async function stopBackend() {
   if (!backend) {
     return;
   }
@@ -55,7 +64,13 @@ test.afterAll(async () => {
     backend?.once("exit", () => resolve());
     setTimeout(resolve, 1000);
   });
-});
+  backend = undefined;
+}
+
+async function restartBackend() {
+  await stopBackend();
+  await startBackend();
+}
 
 test("pairs an anonymous browser before loading app state", async ({ page }) => {
   let paired = false;
@@ -169,6 +184,16 @@ test("creates a workspace and session, sends a prompt, and restores after refres
       status: 200,
       body: JSON.stringify({
         ...detail,
+        continuity: {
+          state: "view_only",
+          continuable: false,
+          restorable: false,
+          restoring: false,
+          reason: "This session history is available for review, but the live Codex runtime context is not available.",
+          failureMessage: null,
+          restoreStartedAt: null,
+          restoreCompletedAt: null
+        },
         continuable: false,
         viewOnlyReason: "This session history is available for review, but the live Codex runtime context is not available."
       })
@@ -183,6 +208,83 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await navigation.getByRole("button", { name: "Close" }).click();
   await expect(page.locator(".notice.warning", { hasText: "This session history is available for review" })).toBeVisible();
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
+});
+
+test("restores a persisted session after backend restart and sends a follow-up prompt", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await page.getByPlaceholder("Ask Codex...").fill("Reply with the smoke phrase.");
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByText("ACP Web UI smoke test OK").last()).toBeVisible();
+
+  const ids = sessionRouteIds(page);
+  await restartBackend();
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+
+  await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
+  await expect(page.getByPlaceholder("Restore session to continue")).toBeDisabled();
+  await page.getByRole("button", { name: "Restore" }).click();
+
+  await expect(page.getByPlaceholder("Ask Codex...")).toBeEnabled();
+  const smokeMessages = page.locator(".message.assistant", { hasText: "ACP Web UI smoke test OK" });
+  const restoredMessageCount = await smokeMessages.count();
+  await page.getByPlaceholder("Ask Codex...").fill("Follow up after restore.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(smokeMessages).toHaveCount(restoredMessageCount + 1);
+});
+
+test("shows restore failure and view-only fallback states", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+  const ids = sessionRouteIds(page);
+  const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
+  const detail = await detailResponse.json();
+  const loadableDetail = {
+    ...detail,
+    continuity: {
+      state: "loadable",
+      continuable: false,
+      restorable: true,
+      restoring: false,
+      reason: "Restore this session before sending another prompt.",
+      failureMessage: null,
+      restoreStartedAt: null,
+      restoreCompletedAt: null
+    },
+    continuable: false,
+    viewOnlyReason: "Restore this session before sending another prompt."
+  };
+
+  await page.route(`**/api/sessions/${ids.sessionId}`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify(loadableDetail)
+    });
+  });
+  await page.route(`**/api/sessions/${ids.sessionId}/restore`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 409,
+      body: JSON.stringify({ error: "restore unavailable" })
+    });
+  });
+
+  await page.reload();
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
+  await expect(page.getByPlaceholder("Restore session to continue")).toBeDisabled();
+  await page.getByRole("button", { name: "Restore" }).click();
+  await expect(page.locator(".notice.error", { hasText: "restore unavailable" })).toBeVisible();
 });
 
 test("renders markdown messages and markdown review artifacts", async ({ page }) => {
