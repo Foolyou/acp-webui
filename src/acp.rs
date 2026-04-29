@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -19,10 +20,9 @@ use tokio::{
 use crate::{
     config::{AgentConfig, Config, CODEX_AGENT_ID},
     models::{
-        permission_option_kind, permission_status, review_artifact_kind, role, status,
-        tool_call_status, AgentSessionCapabilities, NewReviewArtifact, PermissionRequest,
-        ReviewArtifact, ReviewArtifactSummary, SessionContinuity, TimelineItem, ToolCallRow,
-        UpsertToolCall,
+        permission_status, review_artifact_kind, role, status, tool_call_status,
+        AgentSessionCapabilities, NewReviewArtifact, PermissionRequest, ReviewArtifact,
+        ReviewArtifactSummary, SessionContinuity, TimelineItem, ToolCallRow, UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -504,16 +504,11 @@ impl AgentRuntime {
             active_permission.id == permission_id,
             "permission request is queued behind another approval"
         );
-        let option = permission
+        let _option = permission
             .options
             .iter()
             .find(|candidate| candidate.option_id == option_id)
             .ok_or_else(|| anyhow!("permission option was not found"))?;
-        anyhow::ensure!(
-            option.kind == permission_option_kind::ALLOW_ONCE
-                || option.kind == permission_option_kind::REJECT_ONCE,
-            "this permission option is not available in this version"
-        );
 
         let peer = self.ensure_ready().await?;
         peer.respond_to_permission(permission_id, selected_permission_response(option_id))
@@ -624,7 +619,11 @@ impl AgentRuntime {
                 "initialize",
                 json!({
                     "protocolVersion": 1,
-                    "clientCapabilities": {},
+                    "clientCapabilities": {
+                        "fs": {
+                            "readTextFile": true
+                        }
+                    },
                     "clientInfo": {
                         "name": "acp-webui",
                         "title": "ACP Web UI",
@@ -1114,6 +1113,9 @@ async fn handle_incoming_message(
                 permission_responders,
             )
             .await;
+        }
+        "fs/read_text_file" => {
+            handle_read_text_file(message, writer_tx, storage, session_map).await;
         }
         _ => {
             if message.get("id").is_some() {
@@ -1647,6 +1649,149 @@ async fn handle_permission_request(
     }
 }
 
+async fn handle_read_text_file(
+    message: Value,
+    writer_tx: &mpsc::Sender<Value>,
+    storage: &Storage,
+    session_map: &Arc<RwLock<HashMap<String, String>>>,
+) {
+    let request_id = message.get("id").cloned().unwrap_or(Value::Null);
+    match read_text_file_for_session(&message["params"], storage, session_map).await {
+        Ok(content) => {
+            send_success_response(request_id, json!({ "content": content }), writer_tx).await;
+        }
+        Err(error) => {
+            send_error_response(request_id, error.code, error.message, writer_tx).await;
+        }
+    }
+}
+
+struct AcpClientRequestError {
+    code: i64,
+    message: String,
+}
+
+impl AcpClientRequestError {
+    fn invalid_params(message: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: message.into(),
+        }
+    }
+
+    fn resource_not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: -32004,
+            message: message.into(),
+        }
+    }
+}
+
+async fn read_text_file_for_session(
+    params: &Value,
+    storage: &Storage,
+    session_map: &Arc<RwLock<HashMap<String, String>>>,
+) -> Result<String, AcpClientRequestError> {
+    let acp_session_id = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|session_id| !session_id.trim().is_empty())
+        .ok_or_else(|| AcpClientRequestError::invalid_params("sessionId is required"))?;
+    let requested_path = params
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| AcpClientRequestError::invalid_params("path is required"))?;
+    let line = optional_u32_param(params, "line")?;
+    let limit = optional_u32_param(params, "limit")?;
+
+    let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned() else {
+        return Err(AcpClientRequestError::resource_not_found(
+            "ACP session is not registered",
+        ));
+    };
+
+    let session = storage
+        .get_session(&local_session_id)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Session not found"))?;
+    let workspace = storage
+        .get_workspace(&session.workspace_id)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Workspace not found"))?;
+    let workspace_root = tokio::fs::canonicalize(&workspace.path)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Workspace not found"))?;
+    let requested_path = normalize_requested_path(&workspace_root, requested_path);
+    let canonical_target = tokio::fs::canonicalize(&requested_path)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("File not found"))?;
+
+    if !path_is_inside(&canonical_target, &workspace_root) {
+        return Err(AcpClientRequestError::resource_not_found(
+            "File is outside the session workspace",
+        ));
+    }
+
+    let content = tokio::fs::read_to_string(&canonical_target)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("File is not readable text"))?;
+    Ok(apply_line_bounds(&content, line, limit))
+}
+
+fn normalize_requested_path(workspace_root: &Path, requested_path: &str) -> PathBuf {
+    let path = PathBuf::from(requested_path);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+fn path_is_inside(target: &Path, root: &Path) -> bool {
+    target == root || target.starts_with(root)
+}
+
+fn optional_u32_param(params: &Value, key: &str) -> Result<Option<u32>, AcpClientRequestError> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| AcpClientRequestError::invalid_params(format!("{key} must be a uint32")))?;
+    Ok(Some(value))
+}
+
+fn apply_line_bounds(content: &str, line: Option<u32>, limit: Option<u32>) -> String {
+    if line.is_none() && limit.is_none() {
+        return content.to_string();
+    }
+
+    let start = line.unwrap_or(1).saturating_sub(1) as usize;
+    let limit = limit
+        .and_then(|limit| usize::try_from(limit).ok())
+        .unwrap_or(usize::MAX);
+
+    content
+        .split_inclusive('\n')
+        .skip(start)
+        .take(limit)
+        .collect()
+}
+
+async fn send_success_response(id: Value, result: Value, writer_tx: &mpsc::Sender<Value>) {
+    let response = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result
+    });
+    let _ = writer_tx.send(response).await;
+}
+
 async fn send_permission_result(id: Value, result: Value, writer_tx: &mpsc::Sender<Value>) {
     let response = json!({
         "jsonrpc": "2.0",
@@ -1755,7 +1900,10 @@ fn tool_call_kind(tool_call: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use tokio::time::timeout;
 
@@ -1802,6 +1950,48 @@ mod tests {
         }
     }
 
+    async fn dispatch_client_request(
+        storage: &Storage,
+        session_map: Arc<RwLock<HashMap<String, String>>>,
+        message: Value,
+    ) -> Value {
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+        let (events_tx, _) = broadcast::channel(4);
+        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<PendingResult>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let restore_session_map = Arc::new(RwLock::new(HashMap::new()));
+        let assistant_buffers = Arc::new(Mutex::new(HashMap::new()));
+        let permission_responders = Arc::new(Mutex::new(HashMap::new()));
+
+        handle_incoming_message(
+            message,
+            &pending,
+            &writer_tx,
+            &events_tx,
+            storage,
+            &session_map,
+            &restore_session_map,
+            &assistant_buffers,
+            &permission_responders,
+        )
+        .await;
+
+        timeout(Duration::from_secs(1), writer_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
     #[test]
     fn content_text_preserves_boundary_whitespace() {
         assert_eq!(
@@ -1839,6 +2029,18 @@ for line in sys.stdin:
     request_id = message.get("id")
 
     if method == "initialize":
+        if mode == "check-read-capability":
+            fs_capabilities = message.get("params", {}).get("clientCapabilities", {}).get("fs", {})
+            if fs_capabilities.get("readTextFile") is not True or "writeTextFile" in fs_capabilities:
+                send({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "missing readTextFile-only client capability"
+                    }
+                })
+                continue
         send({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -1965,7 +2167,8 @@ for line in sys.stdin:
                     "options": [
                         {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
                         {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
-                        {"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"}
+                        {"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"},
+                        {"optionId": "reject-always", "name": "Reject always", "kind": "reject_always"}
                     ]
                 }
             })
@@ -2212,6 +2415,224 @@ for line in sys.stdin:
         assert!(!capabilities.resume_session);
         assert!(!capabilities.list_sessions);
         assert!(!capabilities.close_session);
+    }
+
+    #[tokio::test]
+    async fn fake_acp_initialize_advertises_read_text_file_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(16);
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "check-read-capability"),
+            test_storage().await,
+            events_tx,
+        )
+        .await;
+
+        assert_eq!(runtime.status().await.state, "ready");
+    }
+
+    #[tokio::test]
+    async fn read_text_file_inside_workspace_does_not_request_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("notes.txt");
+        std::fs::write(&file_path, "alpha\nbeta\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id.clone(),
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "read-1",
+                "method": "fs/read_text_file",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": file_path
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["content"], "alpha\nbeta\n");
+        assert!(response.get("error").is_none());
+        assert!(storage
+            .pending_permissions_for_session(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            storage.get_session(&session.id).await.unwrap().status,
+            status::IDLE
+        );
+    }
+
+    #[tokio::test]
+    async fn read_text_file_honors_line_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id,
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "read-1",
+                "method": "fs/read_text_file",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": "notes.txt",
+                    "line": 2,
+                    "limit": 2
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["content"], "two\nthree\n");
+    }
+
+    #[tokio::test]
+    async fn read_text_file_rejects_outside_workspace() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("secret.txt");
+        std::fs::write(&outside_file, "secret\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id.clone(),
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "read-1",
+                "method": "fs/read_text_file",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": outside_file
+                }
+            }),
+        )
+        .await;
+
+        assert!(response.get("error").is_some());
+        assert!(storage
+            .pending_permissions_for_session(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_text_file_rejects_unknown_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("notes.txt");
+        std::fs::write(&file_path, "alpha\n").unwrap();
+        let storage = test_storage().await;
+        let session_map = Arc::new(RwLock::new(HashMap::new()));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "read-1",
+                "method": "fs/read_text_file",
+                "params": {
+                    "sessionId": "missing-session",
+                    "path": file_path
+                }
+            }),
+        )
+        .await;
+
+        assert!(response.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn read_text_file_rejects_symlink_escape() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("secret.txt");
+        let link_path = workspace_dir.path().join("link.txt");
+        std::fs::write(&outside_file, "secret\n").unwrap();
+        if let Err(error) = create_file_symlink(&outside_file, &link_path) {
+            tracing::warn!(?error, "skipping symlink escape test setup");
+            return;
+        }
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id,
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "read-1",
+                "method": "fs/read_text_file",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": link_path
+                }
+            }),
+        )
+        .await;
+
+        assert!(response.get("error").is_some());
     }
 
     #[tokio::test]
@@ -2639,7 +3060,7 @@ for line in sys.stdin:
         .unwrap();
 
         assert_eq!(permission.session_id, session.id);
-        assert_eq!(permission.options.len(), 3);
+        assert_eq!(permission.options.len(), 4);
         assert_eq!(
             storage.get_session(&session.id).await.unwrap().status,
             status::WAITING_APPROVAL
@@ -2655,6 +3076,72 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "Permission resolved with allow-once");
+    }
+
+    #[tokio::test]
+    async fn fake_acp_permission_request_accepts_always_options() {
+        for option_id in ["allow-always", "reject-always"] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = write_fake_acp(&dir);
+            let (events_tx, _) = broadcast::channel(32);
+            let storage = test_storage().await;
+            let workspace = storage
+                .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+                .await
+                .unwrap();
+            let runtime = CodexRuntime::start(
+                config_for_fake(script, "permission"),
+                storage.clone(),
+                events_tx.clone(),
+            )
+            .await;
+
+            let acp_session_id = runtime
+                .new_session(dir.path().to_string_lossy().to_string())
+                .await
+                .unwrap();
+            let session = storage
+                .create_session(&workspace.id, acp_session_id.clone())
+                .await
+                .unwrap();
+            runtime
+                .register_session(acp_session_id.clone(), session.id.clone())
+                .await;
+
+            let mut rx = events_tx.subscribe();
+            let prompt_runtime = runtime.clone();
+            let prompt_handle = tokio::spawn(async move {
+                prompt_runtime
+                    .prompt(acp_session_id, "Needs approval".to_string())
+                    .await
+                    .unwrap()
+            });
+
+            let permission = timeout(Duration::from_secs(1), async move {
+                loop {
+                    match rx.recv().await.unwrap() {
+                        RealtimeEvent::PermissionRequested { permission, .. } => break permission,
+                        _ => continue,
+                    }
+                }
+            })
+            .await
+            .unwrap();
+
+            runtime
+                .resolve_permission(&permission.id, option_id)
+                .await
+                .unwrap();
+            let outcome = timeout(Duration::from_secs(1), prompt_handle)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(
+                outcome.content,
+                format!("Permission resolved with {option_id}")
+            );
+        }
     }
 
     #[tokio::test]

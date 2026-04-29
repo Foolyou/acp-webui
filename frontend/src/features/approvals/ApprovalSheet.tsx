@@ -66,11 +66,9 @@ function PermissionOptionButton({
   onResolve: () => void;
   option: PermissionOption;
 }) {
-  const isAlways = option.kind === "allow_always" || option.kind === "reject_always";
   return (
-    <Button className={`approval-option ${option.kind}`} isDisabled={busy || isAlways} onPress={onResolve}>
+    <Button className={`approval-option ${option.kind}`} isDisabled={busy} onPress={onResolve}>
       <span>{option.name}</span>
-      {isAlways ? <small>Not available yet</small> : null}
     </Button>
   );
 }

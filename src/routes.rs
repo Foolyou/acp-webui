@@ -593,7 +593,10 @@ async fn submit_prompt(
 }
 
 impl AppState {
-    async fn runtime_for_existing_session(&self, session: &Session) -> AppResult<Arc<CodexRuntime>> {
+    async fn runtime_for_existing_session(
+        &self,
+        session: &Session,
+    ) -> AppResult<Arc<CodexRuntime>> {
         self.agents
             .runtime(&session.agent_id)
             .await
@@ -2638,7 +2641,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn resolve_rejects_disabled_always_option() {
+    async fn resolve_requires_live_permission_responder() {
         let (state, _db_dir) = test_state().await;
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace = state
@@ -2662,14 +2665,14 @@ for line in sys.stdin:
                 kind: "execute".to_string(),
                 tool_call_json: serde_json::json!({"toolCallId": "tool-1"}),
                 options_json: serde_json::json!([
-                    {"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"}
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
                 ]),
             })
             .await
             .unwrap();
         let app = api_router(state.clone());
 
-        let body = serde_json::json!({"optionId": "allow-always"});
+        let body = serde_json::json!({"optionId": "allow-once"});
         let response = app
             .oneshot(
                 Request::builder()

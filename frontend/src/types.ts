@@ -47,10 +47,17 @@ export type ChatMessage = {
   createdAt: string;
 };
 
+export type PermissionOptionKind =
+  | "allow_once"
+  | "reject_once"
+  | "allow_always"
+  | "reject_always"
+  | (string & {});
+
 export type PermissionOption = {
   optionId: string;
   name: string;
-  kind: string;
+  kind: PermissionOptionKind;
 };
 
 export type PermissionRequest = {

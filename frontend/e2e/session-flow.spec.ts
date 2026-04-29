@@ -730,7 +730,7 @@ test("auto-scrolls session timeline unless the user scrolls away", async ({ page
   await expectTimelineEndNearViewport(page);
 });
 
-test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
+test("approves a pending permission request and allows always options", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
@@ -741,7 +741,7 @@ test("approves a pending permission request and keeps always options disabled", 
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Allow always/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Allow always/ })).toBeEnabled();
   await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
 
   const workspaceId = sessionWorkspaceId(page);
@@ -753,8 +753,8 @@ test("approves a pending permission request and keeps always options disabled", 
   await expect(page.getByRole("link", { name: /Approval: Run approval smoke command/ })).toBeVisible();
   await page.getByRole("link", { name: /Approval: Run approval smoke command/ }).click();
 
-  await page.getByRole("button", { name: "Allow once" }).click();
-  await expect(page.getByText("Approval result: allow-once")).toBeVisible();
+  await page.getByRole("button", { name: "Allow always" }).click();
+  await expect(page.getByText("Approval result: allow-always")).toBeVisible();
   await openMenuAndClick(page, /Inbox/);
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });

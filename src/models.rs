@@ -455,11 +455,6 @@ pub mod permission_status {
     pub const EXPIRED: &str = "expired";
 }
 
-pub mod permission_option_kind {
-    pub const ALLOW_ONCE: &str = "allow_once";
-    pub const REJECT_ONCE: &str = "reject_once";
-}
-
 pub mod review_artifact_kind {
     pub const DIFF: &str = "diff";
     pub const MARKDOWN: &str = "markdown";

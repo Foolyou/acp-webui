@@ -41,7 +41,7 @@ The system SHALL notify connected browsers when a session is waiting for one or 
 - **AND** the browser SHALL restore the approval UI for the active request
 
 ### Requirement: User can resolve supported permission options
-The system SHALL allow the user to select supported ACP permission options for a pending request.
+The system SHALL allow the user to select ACP permission options for a pending request when the option was provided by the agent.
 
 #### Scenario: User selects an allow-once option
 - **WHEN** the user selects a pending option whose kind is `allow_once`
@@ -57,24 +57,24 @@ The system SHALL allow the user to select supported ACP permission options for a
 - **AND** it SHALL update the session status to `running` only if no other approvals remain pending
 - **AND** connected browsers SHALL receive a `permission_resolved` event
 
+#### Scenario: User selects an allow-always option
+- **WHEN** the user selects a pending option whose kind is `allow_always`
+- **THEN** the backend SHALL mark the permission request as selected with that option id
+- **AND** it SHALL respond to ACP with a selected permission outcome containing the same option id
+- **AND** it SHALL update the session status to `running` only if no other approvals remain pending
+- **AND** connected browsers SHALL receive a `permission_resolved` event
+
+#### Scenario: User selects a reject-always option
+- **WHEN** the user selects a pending option whose kind is `reject_always`
+- **THEN** the backend SHALL mark the permission request as selected with that option id
+- **AND** it SHALL respond to ACP with a selected permission outcome containing the same option id
+- **AND** it SHALL update the session status to `running` only if no other approvals remain pending
+- **AND** connected browsers SHALL receive a `permission_resolved` event
+
 #### Scenario: User resolves a non-pending request
 - **WHEN** the browser tries to resolve a permission request that is already selected, cancelled, or expired
 - **THEN** the backend SHALL reject the resolution request
 - **AND** it SHALL NOT send another permission response to ACP
-
-### Requirement: Always options are visible but disabled
-The system SHALL expose `allow_always` and `reject_always` options to the browser while preventing their use in this version.
-
-#### Scenario: Permission request includes an always option
-- **WHEN** a pending permission request includes an option whose kind is `allow_always` or `reject_always`
-- **THEN** the browser SHALL display the option as disabled
-- **AND** the browser SHALL indicate that the option is not available in this version
-
-#### Scenario: Disabled always option is submitted
-- **WHEN** a client submits an option whose kind is `allow_always` or `reject_always`
-- **THEN** the backend SHALL reject the resolution request
-- **AND** it SHALL leave the permission request pending
-- **AND** it SHALL NOT send a selected permission outcome to ACP
 
 ### Requirement: Pending approvals expire on backend restart
 The system SHALL expire permission requests that were pending before backend startup.
