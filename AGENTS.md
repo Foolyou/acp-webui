@@ -23,6 +23,12 @@
 - Commit product design updates separately from application code.
 - Commit repository workflow or agent guidance updates separately.
 
+## OpenSpec Commit Discipline
+
+- Hard rule: after proposing a change, applying a change, or archiving a change, immediately create a git commit for the related modifications before moving on to other work.
+- Keep those commits scoped to the OpenSpec operation and its directly related implementation or spec updates.
+- Do not leave completed OpenSpec propose, apply, or archive work uncommitted.
+
 ## Hardcoded Paths
 
 - Hard rule: never commit user-specific hardcoded paths, usernames, home directories, workspace names, local IP addresses, secrets, or machine-specific absolute paths anywhere in code, tests, scripts, specs, docs, or repository guidance.
