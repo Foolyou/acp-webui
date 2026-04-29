@@ -173,12 +173,12 @@ To build and run the embedded release binary bound only to your local Tailscale 
 .\scripts\run-tailscale.ps1
 ```
 
-The script detects the local `100.64.0.0/10` Tailscale IPv4 address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>` instead of `0.0.0.0`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
+The script detects the local `100.64.0.0/10` Tailscale IPv4 address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>` and fixed port `7635` instead of `0.0.0.0`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
 
 Useful variants:
 
 ```powershell
-.\scripts\run-tailscale.ps1 -SkipBuild -Port 7640
+.\scripts\run-tailscale.ps1 -SkipBuild
 .\scripts\run-tailscale.ps1 -TrustedClients 100.64.12.34/32
 .\scripts\run-tailscale.ps1 -StopExisting
 ```

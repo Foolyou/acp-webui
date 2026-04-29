@@ -8,12 +8,12 @@ release binary with embedded frontend assets, then starts acp-webui in the
 foreground with --bind-host set to that Tailscale address.
 
 It refuses non-Tailscale IPv4 addresses so the server does not accidentally
-listen on a LAN interface or 0.0.0.0.
+listen on a LAN interface or 0.0.0.0. It always binds port 7635.
 #>
 [CmdletBinding()]
 param(
     [string]$TailscaleIp,
-    [int]$Port = 7635,
+    [int]$ReleaseTimeoutSeconds = 30,
     [switch]$SkipBuild,
     [switch]$InstallFrontendDeps,
     [switch]$StopExisting,
@@ -35,6 +35,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $FrontendDir = Join-Path $RepoRoot "frontend"
 $WindowsBinary = Join-Path $RepoRoot "target\release\acp-webui.exe"
 $UnixBinary = Join-Path $RepoRoot "target\release\acp-webui"
+$Port = 7635
 
 function Test-TailscaleIPv4 {
     param(
@@ -130,6 +131,170 @@ function Get-RunningBinaryProcesses {
     })
 }
 
+function Get-PortListenConnections {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+        [Parameter(Mandatory = $true)]
+        [string]$BindHost
+    )
+
+    try {
+        return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Where-Object {
+            $_.LocalAddress -eq $BindHost -or
+                $_.LocalAddress -eq "0.0.0.0" -or
+                $_.LocalAddress -eq "::"
+        })
+    } catch {
+        Write-Verbose "Get-NetTCPConnection failed: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Format-PortListenConnections {
+    param(
+        [object[]]$Connections
+    )
+
+    if ($Connections.Count -eq 0) {
+        return "none"
+    }
+
+    return ($Connections | ForEach-Object {
+        "$($_.LocalAddress):$($_.LocalPort) pid=$($_.OwningProcess)"
+    } | Sort-Object -Unique) -join ", "
+}
+
+function Get-DescendantProcessIds {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    try {
+        $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    } catch {
+        Write-Verbose "Failed to enumerate processes: $($_.Exception.Message)"
+        return @()
+    }
+
+    $ChildrenByParent = @{}
+    foreach ($Process in $Processes) {
+        $ParentId = [int]$Process.ParentProcessId
+        if (-not $ChildrenByParent.ContainsKey($ParentId)) {
+            $ChildrenByParent[$ParentId] = @()
+        }
+        $ChildrenByParent[$ParentId] += [int]$Process.ProcessId
+    }
+
+    $Descendants = New-Object System.Collections.Generic.List[int]
+    $Stack = New-Object System.Collections.Generic.Stack[int]
+    $Stack.Push($ProcessId)
+
+    while ($Stack.Count -gt 0) {
+        $Current = $Stack.Pop()
+        if (-not $ChildrenByParent.ContainsKey($Current)) {
+            continue
+        }
+
+        foreach ($ChildId in $ChildrenByParent[$Current]) {
+            if ($Descendants.Contains($ChildId)) {
+                continue
+            }
+
+            $Descendants.Add($ChildId)
+            $Stack.Push($ChildId)
+        }
+    }
+
+    return @($Descendants)
+}
+
+function Stop-ProcessTreeById {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    if ($ProcessId -le 0) {
+        return
+    }
+
+    $DescendantIds = @(Get-DescendantProcessIds $ProcessId)
+    $Process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -ne $Process) {
+        Write-Host "Stopping process $ProcessId ($($Process.ProcessName))..."
+    } else {
+        Write-Warning "Port listener reports PID $ProcessId, but the process is not visible; attempting taskkill fallback..."
+    }
+
+    $Targets = @()
+    $Targets += $DescendantIds
+    $Targets += $ProcessId
+    $Targets = @($Targets | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+
+    $Taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+    foreach ($TargetId in $Targets) {
+        $Target = Get-Process -Id $TargetId -ErrorAction SilentlyContinue
+        if ($null -ne $Target -and $TargetId -ne $ProcessId) {
+            Write-Host "Stopping child process $TargetId ($($Target.ProcessName))..."
+        }
+
+        if ($null -ne $Taskkill) {
+            $PreviousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $Output = & $Taskkill.Source /PID $TargetId /F /T 2>&1
+                $TaskkillExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $PreviousErrorActionPreference
+            }
+
+            foreach ($Line in $Output) {
+                Write-Verbose $Line
+            }
+
+            if ($TaskkillExitCode -eq 0) {
+                continue
+            }
+        }
+
+        if ($null -ne $Target) {
+            Stop-Process -Id $TargetId -Force -ErrorAction SilentlyContinue
+            try {
+                $Target.WaitForExit(10000) | Out-Null
+            } catch {
+                Write-Verbose "WaitForExit failed for PID ${TargetId}: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Wait-ForPortRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+        [Parameter(Mandatory = $true)]
+        [string]$BindHost,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds
+    )
+
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $Connections = @(Get-PortListenConnections -Port $Port -BindHost $BindHost)
+        if ($Connections.Count -eq 0) {
+            return
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $Deadline)
+
+    $Connections = @(Get-PortListenConnections -Port $Port -BindHost $BindHost)
+    $Summary = Format-PortListenConnections $Connections
+    throw "Port $BindHost`:$Port is still listening after $TimeoutSeconds seconds ($Summary). Close the remaining listener or retry after Windows releases the socket."
+}
+
 function Format-ArgumentForDisplay {
     param(
         [string]$Value
@@ -157,22 +322,38 @@ function Format-CommandForDisplay {
 
 $BindHost = Get-TailscaleIPv4 $TailscaleIp
 
+$Running = @()
 if (Test-Path $WindowsBinary) {
-    $Running = Get-RunningBinaryProcesses $WindowsBinary
+    $Running = @(Get-RunningBinaryProcesses $WindowsBinary)
+}
+
+$PortListeners = @(Get-PortListenConnections -Port $Port -BindHost $BindHost)
+
+if ($StopExisting) {
+    $ProcessIds = @()
+    $ProcessIds += $PortListeners | ForEach-Object { $_.OwningProcess }
+    $ProcessIds += $Running | ForEach-Object { $_.Id }
+    $ProcessIds = @($ProcessIds | Where-Object { $_ -gt 0 } | Sort-Object -Unique)
+
+    foreach ($ProcessId in $ProcessIds) {
+        Stop-ProcessTreeById $ProcessId
+    }
+
+    Wait-ForPortRelease -Port $Port -BindHost $BindHost -TimeoutSeconds $ReleaseTimeoutSeconds
+} else {
+    if ($PortListeners.Count -gt 0) {
+        $Summary = Format-PortListenConnections $PortListeners
+        throw "Port $BindHost`:$Port is already in use ($Summary). Stop it or pass -StopExisting."
+    }
+
     if ($Running.Count -gt 0) {
-        if ($StopExisting) {
-            foreach ($Process in $Running) {
-                Write-Host "Stopping existing acp-webui release process $($Process.Id)..."
-                Stop-Process -Id $Process.Id -Force
-                $Process.WaitForExit()
-            }
-        } elseif (-not $SkipBuild) {
+        if (-not $SkipBuild) {
             $Ids = ($Running | ForEach-Object { $_.Id }) -join ", "
             throw "acp-webui release binary is already running (PID: $Ids) and may lock the rebuild. Stop it, pass -StopExisting, or use -SkipBuild."
-        } else {
-            $Ids = ($Running | ForEach-Object { $_.Id }) -join ", "
-            Write-Warning "Existing acp-webui release process is running (PID: $Ids). The selected port may already be in use."
         }
+
+        $Ids = ($Running | ForEach-Object { $_.Id }) -join ", "
+        Write-Warning "Existing acp-webui release process is running (PID: $Ids)."
     }
 }
 
