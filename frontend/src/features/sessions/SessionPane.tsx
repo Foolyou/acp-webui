@@ -101,10 +101,9 @@ export function SessionPane({
   }, []);
 
   const scrollToTimelineEnd = useCallback((behavior: ScrollBehavior = "auto") => {
-    const node = timelineEndRef.current;
-    if (!node) return;
+    const scrollingElement = document.scrollingElement ?? document.documentElement;
     programmaticScrollUntilRef.current = window.performance.now() + PROGRAMMATIC_SCROLL_WINDOW_MS;
-    node.scrollIntoView({ behavior, block: "end", inline: "nearest" });
+    window.scrollTo({ top: scrollingElement.scrollHeight, behavior });
     window.setTimeout(() => {
       lastScrollYRef.current = window.scrollY;
     }, PROGRAMMATIC_SCROLL_WINDOW_MS);

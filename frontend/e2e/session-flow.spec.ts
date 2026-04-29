@@ -793,6 +793,7 @@ test("auto-scrolls session timeline unless the user scrolls away", async ({ page
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Following stream line 40")).toBeVisible();
   await expectTimelineEndNearViewport(page);
+  await expectLastAssistantMessageBottomInViewport(page);
   await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
 
   await page.mouse.move(200, 420);
@@ -1129,6 +1130,17 @@ async function expectTimelineEndBelowViewport(page: import("@playwright/test").P
         if (!end) return false;
         const rect = end.getBoundingClientRect();
         return rect.top > window.innerHeight;
+      })
+    )
+    .toBe(true);
+}
+
+async function expectLastAssistantMessageBottomInViewport(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.locator(".message.assistant").last().evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.bottom <= window.innerHeight;
       })
     )
     .toBe(true);
