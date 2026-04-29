@@ -116,6 +116,21 @@ function detailAfterResolvedPermission(detail: SessionDetail, permissionId: stri
   };
 }
 
+function mergeChatMessage(messages: SessionDetail["messages"], message: SessionDetail["messages"][number]) {
+  const next = messages.some((item) => item.id === message.id)
+    ? messages.map((item) => (item.id === message.id ? message : item))
+    : [...messages, message];
+  return next.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+function mergeTimelineItem(timeline: SessionDetail["timeline"], item: SessionDetail["timeline"][number]) {
+  const key = `${item.kind}-${item.id}`;
+  const next = timeline.some((candidate) => `${candidate.kind}-${candidate.id}` === key)
+    ? timeline.map((candidate) => (`${candidate.kind}-${candidate.id}` === key ? item : candidate))
+    : [...timeline, item];
+  return next.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+}
+
 export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
@@ -374,17 +389,15 @@ export function App() {
   const sendPrompt = useCallback(
     async (prompt: string) => {
       const sessionId = state.currentSession?.session.id;
+      const previousStatus = state.currentSession?.session.status ?? "idle";
       if (!sessionId) return;
       await runBusy(async () => {
-        const response = await api.prompt(sessionId, prompt);
         setState((current) =>
-          current.currentSession
+          current.currentSession?.session.id === sessionId
             ? {
                 ...current,
                 currentSession: {
                   ...current.currentSession,
-                  messages: [...current.currentSession.messages, response.message],
-                  timeline: [...current.currentSession.timeline, messageToTimelineItem(response.message)],
                   session: { ...current.currentSession.session, status: "running" }
                 },
                 sessions: updateSessionListStatus(current.sessions, sessionId, "running"),
@@ -392,9 +405,40 @@ export function App() {
               }
             : current
         );
+        let response: Awaited<ReturnType<typeof api.prompt>>;
+        try {
+          response = await api.prompt(sessionId, prompt);
+        } catch (error) {
+          setState((current) =>
+            current.currentSession?.session.id === sessionId && current.currentSession.session.status === "running"
+              ? {
+                  ...current,
+                  currentSession: {
+                    ...current.currentSession,
+                    session: { ...current.currentSession.session, status: previousStatus }
+                  },
+                  sessions: updateSessionListStatus(current.sessions, sessionId, previousStatus)
+                }
+              : current
+          );
+          throw error;
+        }
+        setState((current) =>
+          current.currentSession?.session.id === sessionId
+            ? {
+                ...current,
+                currentSession: {
+                  ...current.currentSession,
+                  messages: mergeChatMessage(current.currentSession.messages, response.message),
+                  timeline: mergeTimelineItem(current.currentSession.timeline, messageToTimelineItem(response.message))
+                },
+                liveAssistant: ""
+              }
+            : current
+        );
       });
     },
-    [runBusy, state.currentSession?.session.id]
+    [runBusy, state.currentSession?.session.id, state.currentSession?.session.status]
   );
 
   const setSessionConfigOption = useCallback(

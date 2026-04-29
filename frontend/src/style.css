@@ -303,6 +303,13 @@ pre {
   border-radius: var(--radius-md);
 }
 
+.agent-option-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.18rem 0.32rem;
+}
+
 .agent-create-controls.small .agent-option,
 .agent-create-controls.small .agent-option-group {
   min-width: 6.4rem;
@@ -657,6 +664,10 @@ pre {
   min-width: 0;
   max-width: 100%;
   padding-bottom: 0.25rem;
+}
+
+.timeline.auto-following {
+  overflow-anchor: none;
 }
 
 .timeline-end {

@@ -225,6 +225,29 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
 });
 
+test("re-enables prompt composer after a completed turn", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+  await startSession(page);
+
+  const prompt = page.getByPlaceholder("Ask Codex...");
+  await prompt.fill("Reply with the smoke phrase.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
+  await expect(page.locator(".session-toolbar")).toContainText("idle");
+  await expect(prompt).toBeEnabled();
+
+  await prompt.fill("markdown response");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("heading", { name: "Markdown response" })).toBeVisible();
+  await expect(page.locator(".session-toolbar")).toContainText("idle");
+  await expect(prompt).toBeEnabled();
+  await expectPageFitsViewport(page);
+});
+
 test("creates a Claude session when Claude is selected", async ({ page }) => {
   await page.goto("/");
 
@@ -814,8 +837,10 @@ test("auto-scrolls session timeline unless the user scrolls away", async ({ page
   await expectTimelineEndNearViewport(page);
   await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
 
+  await page.mouse.move(200, 420);
   await page.mouse.wheel(0, -2200);
   await expect(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+  await expectTimelineEndBelowViewport(page);
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   await expectTimelineEndNearViewport(page);
   await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
@@ -1044,7 +1069,7 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
 
 function agentCreateGroup(page: import("@playwright/test").Page, agentName: string) {
   return page
-    .locator(".section-actions .agent-create-controls")
+    .locator(".agent-create-controls")
     .locator(".agent-option-group", { hasText: agentName })
     .first();
 }
@@ -1113,10 +1138,14 @@ async function expectTimelineEndNearViewport(page: import("@playwright/test").Pa
   await expect
     .poll(async () =>
       page.evaluate(() => {
+        const scrollingElement = document.scrollingElement ?? document.documentElement;
         const end = document.querySelector(".timeline-end");
+        const composer = document.querySelector(".composer-wrap");
         if (!end) return false;
         const rect = end.getBoundingClientRect();
-        return rect.top <= window.innerHeight && rect.bottom >= 0;
+        const composerTop = composer?.getBoundingClientRect().top ?? window.innerHeight;
+        const bottomDistance = scrollingElement.scrollHeight - scrollingElement.clientHeight - scrollingElement.scrollTop;
+        return bottomDistance <= 8 && rect.bottom <= composerTop + 24 && rect.bottom >= 0;
       })
     )
     .toBe(true);
@@ -1139,8 +1168,9 @@ async function expectLastAssistantMessageBottomInViewport(page: import("@playwri
   await expect
     .poll(async () =>
       page.locator(".message.assistant").last().evaluate((node) => {
+        const composerTop = document.querySelector(".composer-wrap")?.getBoundingClientRect().top ?? window.innerHeight;
         const rect = node.getBoundingClientRect();
-        return rect.bottom <= window.innerHeight;
+        return rect.bottom <= composerTop + 4;
       })
     )
     .toBe(true);

@@ -29,7 +29,7 @@ export function SessionsPane({
         <PageHeader eyebrow="Sessions" title={workspace?.name ?? "Sessions"} />
         <div className="section-actions">
           <span className="muted">{loading ? "Loading" : sessions.length}</span>
-          <AgentCreateControls agents={agents} onCreate={onCreate} size="small" />
+          {sessions.length > 0 ? <AgentCreateControls agents={agents} onCreate={onCreate} size="small" /> : null}
         </div>
       </div>
       {sessions.length === 0 ? (

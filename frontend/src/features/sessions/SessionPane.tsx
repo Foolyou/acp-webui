@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { Button } from "react-aria-components";
 import { currentModelLabel, modelConfigOption, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
@@ -16,8 +16,8 @@ import {
   permissionModeLabel
 } from "../../utils/permissionMode";
 
-const TIMELINE_BOTTOM_MARGIN_PX = 96;
-const PROGRAMMATIC_SCROLL_WINDOW_MS = 350;
+const SCROLL_BOTTOM_PROXIMITY_PX = 24;
+const PROGRAMMATIC_SCROLL_WINDOW_MS = 800;
 
 export function SessionPane({
   agentStatus,
@@ -61,7 +61,7 @@ export function SessionPane({
   const modelOption = modelConfigOption(currentSession.configOptions);
   const modelValues = selectValues(modelOption);
   const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentConnection);
-  const timelineEndRef = useRef<HTMLDivElement | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const programmaticScrollUntilRef = useRef(0);
   const userScrollIntentRef = useRef(false);
@@ -93,50 +93,103 @@ export function SessionPane({
     [currentSession.session.id]
   );
 
-  const isTimelineEndNearViewport = useCallback(() => {
-    const node = timelineEndRef.current;
-    if (!node) return true;
-    const rect = node.getBoundingClientRect();
-    return rect.top <= window.innerHeight + TIMELINE_BOTTOM_MARGIN_PX && rect.bottom >= -TIMELINE_BOTTOM_MARGIN_PX;
+  const bottomDistance = useCallback(() => {
+    const scrollingElement = document.scrollingElement ?? document.documentElement;
+    return Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight - scrollingElement.scrollTop);
   }, []);
 
-  const scrollToTimelineEnd = useCallback((behavior: ScrollBehavior = "auto") => {
-    const scrollingElement = document.scrollingElement ?? document.documentElement;
-    programmaticScrollUntilRef.current = window.performance.now() + PROGRAMMATIC_SCROLL_WINDOW_MS;
-    window.scrollTo({ top: scrollingElement.scrollHeight, behavior });
-    window.setTimeout(() => {
-      lastScrollYRef.current = window.scrollY;
-    }, PROGRAMMATIC_SCROLL_WINDOW_MS);
-  }, []);
+  const isScrolledToBottom = useCallback(() => bottomDistance() <= SCROLL_BOTTOM_PROXIMITY_PX, [bottomDistance]);
+
+  const syncBottomState = useCallback(() => {
+    const atBottom = isScrolledToBottom();
+    setIsAtBottom(atBottom);
+    if (atBottom) {
+      setAutoFollow(true);
+    }
+    return atBottom;
+  }, [isScrolledToBottom, setAutoFollow, setIsAtBottom]);
+
+  const scrollToTimelineEnd = useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      const scrollingElement = document.scrollingElement ?? document.documentElement;
+      const targetTop = Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight);
+      programmaticScrollUntilRef.current = window.performance.now() + PROGRAMMATIC_SCROLL_WINDOW_MS;
+      window.scrollTo({ top: targetTop, behavior });
+
+      if (behavior === "auto") {
+        window.requestAnimationFrame(() => {
+          const nextTargetTop = Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight);
+          window.scrollTo({ top: nextTargetTop, behavior: "auto" });
+          lastScrollYRef.current = window.scrollY;
+          syncBottomState();
+        });
+        return;
+      }
+
+      window.setTimeout(() => {
+        lastScrollYRef.current = window.scrollY;
+        syncBottomState();
+      }, PROGRAMMATIC_SCROLL_WINDOW_MS);
+    },
+    [syncBottomState]
+  );
+
+  useLayoutEffect(() => {
+    if (!autoFollow) return;
+    scrollToTimelineEnd();
+  }, [
+    autoFollow,
+    currentSession.failureMessage,
+    currentSession.pendingPermission?.id,
+    currentSession.session.id,
+    currentSession.timeline,
+    liveAssistant,
+    running,
+    scrollToTimelineEnd,
+    waitingApproval,
+    continuity.failureMessage,
+    continuity.restoring
+  ]);
+
+  useEffect(() => {
+    const node = timelineRef.current;
+    if (!node || !autoFollow || typeof ResizeObserver === "undefined") return;
+
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        scrollToTimelineEnd();
+      });
+    });
+
+    observer.observe(node);
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer.disconnect();
+    };
+  }, [autoFollow, currentSession.session.id, scrollToTimelineEnd]);
 
   useEffect(() => {
     lastScrollYRef.current = window.scrollY;
   }, [currentSession.session.id]);
 
   useEffect(() => {
-    const node = timelineEndRef.current;
-    if (!node) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        const nearBottom = entry.isIntersecting || isTimelineEndNearViewport();
-        setIsAtBottom(nearBottom);
-        if (nearBottom) {
-          setAutoFollow(true);
-        }
-      },
-      { root: null, rootMargin: `0px 0px ${TIMELINE_BOTTOM_MARGIN_PX}px 0px`, threshold: 0 }
-    );
-
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [currentSession.session.id, isTimelineEndNearViewport, setAutoFollow, setIsAtBottom]);
-
-  useEffect(() => {
     lastScrollYRef.current = window.scrollY;
 
     function markUserScrollIntent() {
       userScrollIntentRef.current = true;
+      const scrollingElement = document.scrollingElement ?? document.documentElement;
+      if (scrollingElement.scrollTop > 0) {
+        programmaticScrollUntilRef.current = 0;
+        setAutoFollow(false);
+        setIsAtBottom(false);
+      }
       window.setTimeout(() => {
         userScrollIntentRef.current = false;
       }, PROGRAMMATIC_SCROLL_WINDOW_MS);
@@ -167,14 +220,30 @@ export function SessionPane({
       }
     }
 
+    function onResize() {
+      if (autoFollow) {
+        scrollToTimelineEnd();
+        return;
+      }
+      syncBottomState();
+    }
+
     function onScroll() {
       const scrollY = window.scrollY;
       const previousScrollY = lastScrollYRef.current;
-      lastScrollYRef.current = scrollY;
+      lastScrollYRef.current = window.scrollY;
+      const atBottom = isScrolledToBottom();
+      setIsAtBottom(atBottom);
+      if (atBottom) {
+        setAutoFollow(true);
+        return;
+      }
+
       const programmaticScroll =
         window.performance.now() < programmaticScrollUntilRef.current && !userScrollIntentRef.current;
       if (programmaticScroll) return;
-      if (scrollY < previousScrollY - 2 && !isTimelineEndNearViewport()) {
+
+      if (scrollY < previousScrollY - 2 || userScrollIntentRef.current) {
         setAutoFollow(false);
       }
     }
@@ -183,33 +252,17 @@ export function SessionPane({
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("touchstart", onTouchStart, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("resize", onResize);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onScroll);
     };
-  }, [isTimelineEndNearViewport, setAutoFollow]);
-
-  useEffect(() => {
-    if (!autoFollow) return;
-    const frame = window.requestAnimationFrame(() => scrollToTimelineEnd());
-    return () => window.cancelAnimationFrame(frame);
-  }, [
-    autoFollow,
-    currentSession.failureMessage,
-    currentSession.pendingPermission?.id,
-    currentSession.session.id,
-    currentSession.timeline,
-    liveAssistant,
-    running,
-    scrollToTimelineEnd,
-    waitingApproval,
-    continuity.failureMessage,
-    continuity.restoring
-  ]);
+  }, [autoFollow, isScrolledToBottom, scrollToTimelineEnd, setAutoFollow, setIsAtBottom, syncBottomState]);
 
   const showScrollShortcut = !autoFollow && !isAtBottom;
 
@@ -231,7 +284,7 @@ export function SessionPane({
           <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
         </div>
       </div>
-      <div className="timeline" id="timeline">
+      <div className={`timeline ${autoFollow ? "auto-following" : ""}`} id="timeline" ref={timelineRef}>
         {isYoloSession(currentSession.session) ? (
           <div className="notice warning">YOLO mode: approvals and sandboxing are bypassed.</div>
         ) : null}
@@ -252,7 +305,7 @@ export function SessionPane({
         ))}
         {running && !liveAssistant ? <RunningSkeleton agentName={agentName} waitingApproval={waitingApproval} /> : null}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
-        <div ref={timelineEndRef} aria-hidden="true" className="timeline-end" />
+        <div aria-hidden="true" className="timeline-end" />
       </div>
       {showScrollShortcut ? (
         <div className="scroll-follow-control">
@@ -261,7 +314,7 @@ export function SessionPane({
             type="button"
             onPress={() => {
               setAutoFollow(true);
-              scrollToTimelineEnd("smooth");
+              scrollToTimelineEnd();
             }}
           >
             Scroll to bottom
