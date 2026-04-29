@@ -285,7 +285,8 @@ pre {
   justify-content: flex-end;
 }
 
-.agent-option {
+.agent-option,
+.agent-option-group {
   display: grid;
   gap: 0.08rem;
   min-width: 7.5rem;
@@ -296,7 +297,14 @@ pre {
   text-align: left;
 }
 
-.agent-create-controls.small .agent-option {
+.agent-option-group {
+  gap: 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.agent-create-controls.small .agent-option,
+.agent-create-controls.small .agent-option-group {
   min-width: 6.4rem;
   padding: 0.42rem 0.62rem;
 }
@@ -315,13 +323,51 @@ pre {
 }
 
 .agent-option strong,
-.agent-option span {
+.agent-option span,
+.agent-option-summary strong,
+.agent-option-summary span,
+.permission-mode-option strong,
+.permission-mode-option span {
   overflow-wrap: anywhere;
 }
 
-.agent-option span {
+.agent-option span,
+.agent-option-summary span,
+.permission-mode-option span {
   color: var(--color-text-muted);
   font-size: 0.74rem;
+}
+
+.permission-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.permission-mode-option {
+  display: grid;
+  min-width: 6.4rem;
+  min-height: 48px;
+  gap: 0.06rem;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.44rem 0.56rem;
+  text-align: left;
+}
+
+.permission-mode-option.permission-mode-yolo,
+.permission-mode-badge.permission-mode-yolo,
+.permission-mode-warning {
+  border-color: rgba(155, 53, 45, 0.45);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.permission-mode-option.permission-mode-full-auto,
+.permission-mode-badge.permission-mode-full-auto {
+  border-color: rgba(154, 118, 30, 0.32);
+  background: var(--color-warning-soft);
 }
 
 .model-selector {
@@ -586,14 +632,21 @@ pre {
 
 .session-badges strong,
 .badge,
+.permission-mode-badge,
 .approval-context span,
 .review-nav span {
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
   background: var(--color-surface-subtle);
   color: var(--color-text);
   padding: 0.23rem 0.48rem;
   font-size: 0.74rem;
   font-weight: 750;
+}
+
+.permission-mode-badge {
+  border: 1px solid var(--color-border);
 }
 
 .timeline {

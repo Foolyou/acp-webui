@@ -243,6 +243,28 @@ test("creates a Claude session when Claude is selected", async ({ page }) => {
   await expect(sessionLink).toContainText("Claude");
 });
 
+test("creates YOLO sessions with persistent mode indicators", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await expect(agentCreateButton(page, "Codex", "YOLO")).toContainText("No approvals / no sandbox");
+  await startSession(page, "Codex", "YOLO");
+  await expect(page.locator(".session-toolbar")).toContainText("YOLO");
+  await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
+
+  const ids = sessionRouteIds(page);
+  await page.reload();
+  await expect(page.locator(".session-toolbar")).toContainText("YOLO");
+  await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
+
+  await openMenuAndClick(page, /Sessions/);
+  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  await expect(sessionLink).toContainText("YOLO");
+  await expect(sessionLink).toContainText("No approvals / no sandbox");
+});
+
 test("displays, switches, persists, and disables advertised model selector", async ({ page }) => {
   await page.goto("/");
 
@@ -315,6 +337,7 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
     workspaceId: workspace.id,
     agentId: "codex",
     agentName: "Codex",
+    permissionMode: "manual",
     acpSessionId: "mock-acp-session",
     externalSessionId: "mock-acp-session",
     status: "idle",
@@ -350,12 +373,42 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
       body: JSON.stringify({
         codex: { state: "ready", message: null },
         agents: [
-          { id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } },
+          {
+            id: "codex",
+            title: "Codex",
+            enabled: true,
+            status: { state: "ready", message: null },
+            permissionModes: [
+              {
+                id: "manual",
+                label: "Manual",
+                description: "Ask before approval-managed actions",
+                riskLevel: "low",
+                status: { state: "ready", message: null }
+              },
+              {
+                id: "yolo",
+                label: "YOLO",
+                description: "No approvals / no sandbox",
+                riskLevel: "high",
+                status: { state: "idle", message: "Start session" }
+              }
+            ]
+          },
           {
             id: "claude",
             title: "Claude",
             enabled: true,
-            status: { state: "failed", message: "Claude needs local authentication" }
+            status: { state: "failed", message: "Claude needs local authentication" },
+            permissionModes: [
+              {
+                id: "manual",
+                label: "Manual",
+                description: "Ask before approval-managed actions",
+                riskLevel: "low",
+                status: { state: "failed", message: "Claude needs local authentication" }
+              }
+            ]
           }
         ],
         inbox: []
@@ -400,7 +453,7 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
 
   await page.goto(`/workspaces/${workspace.id}/sessions`);
   await expect(agentCreateButton(page, "Claude")).toBeEnabled();
-  await expect(agentCreateButton(page, "Claude")).toContainText("Claude needs local authentication");
+  await expect(agentCreateGroup(page, "Claude")).toContainText("Claude needs local authentication");
   await expect(agentCreateButton(page, "Codex")).toBeEnabled();
   await agentCreateButton(page, "Codex").click();
   await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
@@ -420,6 +473,7 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
     workspaceId: workspace.id,
     agentId: "codex",
     agentName: "Codex",
+    permissionMode: "manual",
     acpSessionId: "long-timeline-acp-session",
     externalSessionId: "long-timeline-acp-session",
     status: "idle",
@@ -987,14 +1041,19 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
   await expect(agentCreateButton(page, "Codex")).toBeVisible();
 }
 
-function agentCreateButton(page: import("@playwright/test").Page, agentName: string) {
+function agentCreateGroup(page: import("@playwright/test").Page, agentName: string) {
   return page
     .locator(".section-actions .agent-create-controls")
-    .getByRole("button", { name: new RegExp(agentName) });
+    .locator(".agent-option-group", { hasText: agentName })
+    .first();
 }
 
-async function startSession(page: import("@playwright/test").Page, agentName = "Codex") {
-  await agentCreateButton(page, agentName).click();
+function agentCreateButton(page: import("@playwright/test").Page, agentName: string, modeName = "Manual") {
+  return agentCreateGroup(page, agentName).getByRole("button", { name: new RegExp(modeName) });
+}
+
+async function startSession(page: import("@playwright/test").Page, agentName = "Codex", modeName = "Manual") {
+  await agentCreateButton(page, agentName, modeName).click();
   await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
 }
 

@@ -8,6 +8,8 @@ use std::{
 use anyhow::Context;
 use clap::Parser;
 
+use crate::models::{permission_mode, AgentPermissionMode};
+
 const DEFAULT_WORK_DIR_NAME: &str = ".acp-webui";
 const DEFAULT_DATABASE_FILE: &str = "acp-webui.db";
 pub const CODEX_AGENT_ID: &str = "codex";
@@ -40,6 +42,24 @@ pub struct AgentConfig {
     pub command: String,
     pub args: Vec<String>,
     pub enabled: bool,
+    pub permission_modes: Vec<AgentPermissionMode>,
+}
+
+impl AgentConfig {
+    pub fn supports_permission_mode(&self, mode: &str) -> bool {
+        self.permission_modes.iter().any(|item| item.id == mode)
+    }
+
+    pub fn runtime_config_for_permission_mode(&self, mode: &str) -> anyhow::Result<Self> {
+        if !self.supports_permission_mode(mode) {
+            anyhow::bail!("{} does not support permission mode `{mode}`", self.title);
+        }
+        let mut config = self.clone();
+        if self.id == CODEX_AGENT_ID {
+            config.args = codex_acp_args_for_permission_mode(&self.args, mode)?;
+        }
+        Ok(config)
+    }
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -184,6 +204,7 @@ impl Config {
                 command: self.codex_acp_command.clone(),
                 args: self.codex_acp_args.clone(),
                 enabled: true,
+                permission_modes: codex_permission_modes(),
             },
             AgentConfig {
                 id: CLAUDE_AGENT_ID.to_string(),
@@ -191,9 +212,65 @@ impl Config {
                 command: self.claude_acp_command.clone(),
                 args: self.claude_acp_args.clone(),
                 enabled: self.claude_acp_enabled,
+                permission_modes: vec![manual_permission_mode()],
             },
         ]
     }
+}
+
+pub fn codex_acp_args_for_permission_mode(
+    base_args: &[String],
+    mode: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut args = base_args.to_vec();
+    match mode {
+        permission_mode::MANUAL => {}
+        permission_mode::FULL_AUTO => {
+            args.extend([
+                "-c".to_string(),
+                "approval_policy=\"on-request\"".to_string(),
+                "-c".to_string(),
+                "sandbox_mode=\"workspace-write\"".to_string(),
+            ]);
+        }
+        permission_mode::YOLO => {
+            args.extend([
+                "-c".to_string(),
+                "approval_policy=\"never\"".to_string(),
+                "-c".to_string(),
+                "sandbox_mode=\"danger-full-access\"".to_string(),
+            ]);
+        }
+        _ => anyhow::bail!("Unknown Codex permission mode `{mode}`"),
+    }
+    Ok(args)
+}
+
+pub fn manual_permission_mode() -> AgentPermissionMode {
+    AgentPermissionMode {
+        id: permission_mode::MANUAL.to_string(),
+        label: "Manual".to_string(),
+        description: "Ask before approval-managed actions".to_string(),
+        risk_level: "low".to_string(),
+    }
+}
+
+pub fn codex_permission_modes() -> Vec<AgentPermissionMode> {
+    vec![
+        manual_permission_mode(),
+        AgentPermissionMode {
+            id: permission_mode::FULL_AUTO.to_string(),
+            label: "Full auto".to_string(),
+            description: "Sandboxed automatic execution".to_string(),
+            risk_level: "medium".to_string(),
+        },
+        AgentPermissionMode {
+            id: permission_mode::YOLO.to_string(),
+            label: "YOLO".to_string(),
+            description: "No approvals / no sandbox".to_string(),
+            risk_level: "high".to_string(),
+        },
+    ]
 }
 
 #[cfg(not(feature = "embedded-frontend"))]
@@ -365,13 +442,60 @@ mod tests {
 
         assert_eq!(agents[0].id, CODEX_AGENT_ID);
         assert!(agents[0].enabled);
+        assert!(agents[0].supports_permission_mode(permission_mode::YOLO));
         assert_eq!(agents[1].id, CLAUDE_AGENT_ID);
         assert!(agents[1].enabled);
+        assert!(agents[1].supports_permission_mode(permission_mode::MANUAL));
+        assert!(!agents[1].supports_permission_mode(permission_mode::YOLO));
         assert_eq!(
             agents[1].args,
             vec![
                 "--yes".to_string(),
                 "@agentclientprotocol/claude-agent-acp".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_manual_mode_preserves_base_args() {
+        let base_args = vec!["--base".to_string()];
+        let args = codex_acp_args_for_permission_mode(&base_args, permission_mode::MANUAL).unwrap();
+
+        assert_eq!(args, base_args);
+    }
+
+    #[test]
+    fn codex_full_auto_mode_adds_sandboxed_auto_overrides() {
+        let args =
+            codex_acp_args_for_permission_mode(&["--base".to_string()], permission_mode::FULL_AUTO)
+                .unwrap();
+
+        assert_eq!(
+            args,
+            vec![
+                "--base",
+                "-c",
+                "approval_policy=\"on-request\"",
+                "-c",
+                "sandbox_mode=\"workspace-write\""
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_yolo_mode_adds_no_approval_no_sandbox_overrides() {
+        let args =
+            codex_acp_args_for_permission_mode(&["--base".to_string()], permission_mode::YOLO)
+                .unwrap();
+
+        assert_eq!(
+            args,
+            vec![
+                "--base",
+                "-c",
+                "approval_policy=\"never\"",
+                "-c",
+                "sandbox_mode=\"danger-full-access\""
             ]
         );
     }

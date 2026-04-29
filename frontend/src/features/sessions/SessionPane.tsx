@@ -7,6 +7,14 @@ import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
 import type { AgentRuntimeStatus, ChatMessage, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
+import {
+  fallbackPermissionModes,
+  connectionStatusForMode,
+  isYoloSession,
+  permissionModeClass,
+  permissionModeDescription,
+  permissionModeLabel
+} from "../../utils/permissionMode";
 
 const TIMELINE_BOTTOM_MARGIN_PX = 96;
 const PROGRAMMATIC_SCROLL_WINDOW_MS = 350;
@@ -37,7 +45,9 @@ export function SessionPane({
   const running = currentSession.session.status === "running" || waitingApproval;
   const continuity = currentSession.continuity;
   const agentName = currentSession.session.agentName;
-  const agentConnection = agentStatus?.status;
+  const permissionModes = agentStatus ? fallbackPermissionModes(agentStatus) : [];
+  const permissionMode = currentSession.session.permissionMode;
+  const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
   const agentReady = !agentConnection || agentConnection.state === "ready";
   const canSend = continuity.continuable && !running && agentReady;
   const canRestore = continuity.restorable && !continuity.restoring;
@@ -213,10 +223,19 @@ export function SessionPane({
             Diff
           </Button>
           <span className={`badge ${agentConnection?.state ?? "ready"}`}>{agentName}</span>
+          <span
+            className={`permission-mode-badge ${permissionModeClass(permissionMode)}`}
+            title={permissionModeDescription(permissionMode, permissionModes)}
+          >
+            {permissionModeLabel(permissionMode, permissionModes)}
+          </span>
           <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
         </div>
       </div>
       <div className="timeline" id="timeline">
+        {isYoloSession(currentSession.session) ? (
+          <div className="notice warning">YOLO mode: approvals and sandboxing are bypassed.</div>
+        ) : null}
         {currentSession.failureMessage ? <div className="notice error">{currentSession.failureMessage}</div> : null}
         {continuity.failureMessage ? <div className="notice error">{continuity.failureMessage}</div> : null}
         {continuity.restoring ? <div className="notice">Restoring session context...</div> : null}

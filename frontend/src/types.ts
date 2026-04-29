@@ -10,6 +10,19 @@ export type AgentRuntimeStatus = {
   title: string;
   enabled: boolean;
   status: ConnectionStatus;
+  permissionModes: AgentPermissionModeStatus[];
+};
+
+export type PermissionModeId = "manual" | "full_auto" | "yolo" | (string & {});
+
+export type PermissionModeRiskLevel = "low" | "medium" | "high" | (string & {});
+
+export type AgentPermissionModeStatus = {
+  id: PermissionModeId;
+  label: string;
+  description: string;
+  riskLevel: PermissionModeRiskLevel;
+  status: ConnectionStatus;
 };
 
 export type AgentSessionCapabilities = {
@@ -31,6 +44,7 @@ export type Session = {
   workspaceId: string;
   agentId: string;
   agentName: string;
+  permissionMode: PermissionModeId;
   acpSessionId?: string | null;
   externalSessionId?: string | null;
   status: string;
@@ -238,7 +252,7 @@ export type AppData = {
 
 export type RealtimeEvent =
   | { type: "connection_status"; status: ConnectionStatus }
-  | { type: "agent_connection_status"; agentId: string; status: ConnectionStatus }
+  | { type: "agent_connection_status"; agentId: string; permissionMode?: PermissionModeId; status: ConnectionStatus }
   | { type: "session_status"; sessionId: string; status: string }
   | { type: "text_delta"; sessionId: string; delta: string }
   | { type: "assistant_message"; sessionId: string; content: string }

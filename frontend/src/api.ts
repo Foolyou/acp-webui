@@ -3,6 +3,7 @@ import type {
   AuthStatus,
   ChatMessage,
   PermissionRequest,
+  PermissionModeId,
   ReviewArtifact,
   SessionConfigState,
   SessionListItem,
@@ -57,10 +58,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path })
     }),
-  createSession: (workspaceId: string, agentId?: string) =>
+  createSession: (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) =>
     request<SessionDetail>(`/api/workspaces/${workspaceId}/sessions`, {
       method: "POST",
-      body: agentId ? JSON.stringify({ agentId }) : undefined
+      body:
+        agentId || permissionMode
+          ? JSON.stringify({
+              ...(agentId ? { agentId } : {}),
+              ...(permissionMode ? { permissionMode } : {})
+            })
+          : undefined
     }),
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),

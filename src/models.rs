@@ -19,11 +19,21 @@ pub struct Session {
     pub workspace_id: String,
     pub agent_id: String,
     pub agent_name: String,
+    pub permission_mode: String,
     pub acp_session_id: Option<String>,
     pub external_session_id: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionMode {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub risk_level: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -480,6 +490,7 @@ pub struct CreateWorkspaceRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
     pub agent_id: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +510,16 @@ pub mod status {
     pub const RUNNING: &str = "running";
     pub const WAITING_APPROVAL: &str = "waiting_approval";
     pub const FAILED: &str = "failed";
+}
+
+pub mod permission_mode {
+    pub const MANUAL: &str = "manual";
+    pub const FULL_AUTO: &str = "full_auto";
+    pub const YOLO: &str = "yolo";
+
+    pub fn is_known(value: &str) -> bool {
+        matches!(value, MANUAL | FULL_AUTO | YOLO)
+    }
 }
 
 pub mod continuity_state {

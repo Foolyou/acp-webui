@@ -113,7 +113,7 @@ Codex and Claude should be present in the built-in agent catalog by default. The
 
 The system should follow the ACP model.
 
-An agent connection may support multiple sessions. ACP Web UI maintains one lazy runtime slot per configured available agent. Once started, that runtime owns its child process, JSON-RPC peer, session maps, restore maps, assistant buffers, and permission responders. The first design should not assume one process per session unless later evidence shows that a specific agent requires it.
+An agent connection may support multiple sessions. ACP Web UI maintains lazy runtime slots per configured available agent and permission mode when the agent's launch behavior changes by mode. Once started, that runtime owns its child process, JSON-RPC peer, session maps, restore maps, assistant buffers, and permission responders. The first design should not assume one process per session unless later evidence shows that a specific agent requires it.
 
 ### 3.6 Permission Model
 
@@ -123,7 +123,7 @@ The backend should forward ACP permission requests to the mobile UI and return t
 
 High-risk operations are expected to require approval according to the agent's own behavior.
 
-The product should support a yolo mode, but yolo mode must be visible and scoped deliberately. The first design preference is session or workspace scope rather than a hidden global default.
+The product supports YOLO as a visible session-scoped permission mode. Users create a new session to change between manual, full-auto, and YOLO behavior; there is no hidden global YOLO default in this version.
 
 ### 3.7 Review Data Source
 
@@ -510,7 +510,6 @@ These are not yet decided:
 
 - How much raw ACP data should be retained by default.
 - What retention policy should apply to terminal output.
-- How yolo mode should be scoped in the final product: session, workspace, process, or app-level.
 - Whether session review should support comments or checklist-style review notes later.
 - How much agent capability discovery should be reflected directly in the UI.
 - Whether `git diff` fallback should support unstaged only, staged plus unstaged, or configurable modes.

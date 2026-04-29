@@ -65,7 +65,7 @@ export function WorkspaceSessionsRoute() {
     <SessionsPane
       agents={state.agents}
       loading={state.sessionsLoading}
-      onCreate={(agentId) => createSession(workspaceId, agentId)}
+      onCreate={(agentId, permissionMode) => createSession(workspaceId, agentId, permissionMode)}
       sessions={state.sessions}
       workspace={workspace}
     />
@@ -81,7 +81,14 @@ export function NewSessionRoute() {
     <CreatingSessionPane
       agent={agent}
       creating={state.creatingSessionWorkspaceId === workspaceId}
-      onRetry={() => actions.createSession(workspaceId, state.creatingSessionAgentId ?? undefined)}
+      permissionMode={state.creatingSessionPermissionMode}
+      onRetry={() =>
+        actions.createSession(
+          workspaceId,
+          state.creatingSessionAgentId ?? undefined,
+          state.creatingSessionPermissionMode ?? undefined
+        )
+      }
       workspace={workspace}
     />
   );

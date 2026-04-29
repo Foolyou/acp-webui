@@ -248,12 +248,33 @@ impl Storage {
         .await
     }
 
+    #[cfg(test)]
     pub async fn create_session_for_agent_with_config_options(
         &self,
         workspace_id: &str,
         agent_id: &str,
         agent_name: &str,
         acp_session_id: String,
+        config_options: Option<Vec<SessionConfigOption>>,
+    ) -> anyhow::Result<Session> {
+        self.create_session_for_agent_with_permission_mode_and_config_options(
+            workspace_id,
+            agent_id,
+            agent_name,
+            acp_session_id,
+            crate::models::permission_mode::MANUAL,
+            config_options,
+        )
+        .await
+    }
+
+    pub async fn create_session_for_agent_with_permission_mode_and_config_options(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        agent_name: &str,
+        acp_session_id: String,
+        permission_mode: &str,
         config_options: Option<Vec<SessionConfigOption>>,
     ) -> anyhow::Result<Session> {
         let id = Uuid::new_v4().to_string();
@@ -267,6 +288,7 @@ impl Storage {
                 workspace_id,
                 agent_id,
                 agent_name,
+                permission_mode,
                 acp_session_id,
                 external_session_id,
                 continuation_state,
@@ -278,13 +300,14 @@ impl Storage {
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(workspace_id)
         .bind(agent_id)
         .bind(agent_name)
+        .bind(permission_mode)
         .bind(&acp_session_id)
         .bind(&acp_session_id)
         .bind(continuity_state::LIVE)
@@ -324,6 +347,7 @@ impl Storage {
                 workspace_id,
                 agent_id,
                 agent_name,
+                permission_mode,
                 acp_session_id,
                 external_session_id,
                 status,
@@ -510,6 +534,7 @@ impl Storage {
                 s.workspace_id,
                 s.agent_id,
                 s.agent_name,
+                s.permission_mode,
                 s.acp_session_id,
                 s.external_session_id,
                 s.status,
@@ -1459,6 +1484,7 @@ struct SessionListItemRow {
     workspace_id: String,
     agent_id: String,
     agent_name: String,
+    permission_mode: String,
     acp_session_id: Option<String>,
     external_session_id: Option<String>,
     status: String,
@@ -1695,6 +1721,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             workspace_id: row.workspace_id,
             agent_id: row.agent_id,
             agent_name: row.agent_name,
+            permission_mode: row.permission_mode,
             acp_session_id: row.acp_session_id,
             external_session_id: row.external_session_id,
             status: normalize_session_status(row.status, pending_permission.is_some()),
@@ -1942,6 +1969,10 @@ mod tests {
             .create_session(&workspace.id, "acp-session-1".to_string())
             .await
             .unwrap();
+        assert_eq!(
+            session.permission_mode,
+            crate::models::permission_mode::MANUAL
+        );
 
         storage
             .create_message(&session.id, role::USER, "Hello", status::IDLE)
@@ -1954,9 +1985,129 @@ mod tests {
 
         let detail = storage.session_detail(&session.id).await.unwrap();
         assert_eq!(detail.workspace.name, "Test");
+        assert_eq!(
+            detail.session.permission_mode,
+            crate::models::permission_mode::MANUAL
+        );
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn persists_explicit_session_permission_mode_in_detail_and_list() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+
+        let session = storage
+            .create_session_for_agent_with_permission_mode_and_config_options(
+                &workspace.id,
+                CODEX_AGENT_ID,
+                "Codex",
+                "acp-session-yolo".to_string(),
+                crate::models::permission_mode::YOLO,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session.permission_mode,
+            crate::models::permission_mode::YOLO
+        );
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(
+            detail.session.permission_mode,
+            crate::models::permission_mode::YOLO
+        );
+        let list = storage.list_session_items().await.unwrap();
+        assert_eq!(
+            list[0].session.permission_mode,
+            crate::models::permission_mode::YOLO
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_mode_migration_defaults_existing_sessions_to_manual() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                agent_name TEXT NOT NULL,
+                acp_session_id TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                external_session_id TEXT,
+                continuation_state TEXT NOT NULL DEFAULT 'live',
+                restore_failure_message TEXT,
+                restore_started_at TEXT,
+                restore_completed_at TEXT,
+                agent_id TEXT NOT NULL DEFAULT 'codex',
+                config_options_json TEXT,
+                current_model_config_id TEXT,
+                current_model_value TEXT,
+                current_model_name TEXT
+            );
+
+            INSERT INTO workspaces (id, name, path, created_at)
+            VALUES ('workspace-old', 'Old workspace', 'old-workspace', '2026-01-01T00:00:00Z');
+
+            INSERT INTO sessions (
+                id,
+                workspace_id,
+                agent_id,
+                agent_name,
+                acp_session_id,
+                external_session_id,
+                continuation_state,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                'session-old',
+                'workspace-old',
+                'codex',
+                'Codex',
+                'acp-session-old',
+                'acp-session-old',
+                'live',
+                'idle',
+                '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z'
+            );
+            "#,
+        )
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/0008_session_permission_mode.sql"
+        ))
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+
+        let session = storage.get_session("session-old").await.unwrap();
+        assert_eq!(
+            session.permission_mode,
+            crate::models::permission_mode::MANUAL
+        );
     }
 
     #[test]

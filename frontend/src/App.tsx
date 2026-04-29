@@ -16,14 +16,15 @@ import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
 import { applyRealtimeEvent } from "./realtime";
 import { placeholderContext, router } from "./routes/router";
-import type { AgentRuntimeStatus, AuthStatus, PermissionRequest, RealtimeEvent, SessionDetail } from "./types";
+import type { AgentRuntimeStatus, AuthStatus, PermissionModeId, PermissionRequest, RealtimeEvent, SessionDetail } from "./types";
+import { fallbackPermissionModes } from "./utils/permissionMode";
 
 function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState {
   return {
     ...current,
     auth,
     codex: initialState.codex,
-    agents: [],
+  agents: [],
     socketState: "disconnected",
     inbox: [],
     sessions: [],
@@ -33,6 +34,7 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
     busy: false,
     creatingSessionWorkspaceId: null,
     creatingSessionAgentId: null,
+    creatingSessionPermissionMode: null,
     initialized: true
   };
 }
@@ -40,21 +42,49 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
 function updateAgentStatus(
   agents: AgentRuntimeStatus[],
   agentId: string,
-  status: AgentRuntimeStatus["status"]
+  status: AgentRuntimeStatus["status"],
+  permissionMode?: PermissionModeId
 ): AgentRuntimeStatus[] {
   const existing = agents.find((agent) => agent.id === agentId);
   if (!existing) {
+    const fallbackMode = {
+      id: permissionMode ?? ("manual" as const),
+      label: permissionMode === "yolo" ? "YOLO" : permissionMode === "full_auto" ? "Full auto" : "Manual",
+      description:
+        permissionMode === "yolo"
+          ? "No approvals / no sandbox"
+          : permissionMode === "full_auto"
+            ? "Sandboxed automatic execution"
+            : "Ask before approval-managed actions",
+      riskLevel: permissionMode === "yolo" ? ("high" as const) : permissionMode === "full_auto" ? ("medium" as const) : ("low" as const),
+      status
+    };
     return [
       ...agents,
       {
         id: agentId,
         title: agentId,
         enabled: true,
-        status
+        status,
+        permissionModes: [fallbackMode]
       }
     ];
   }
-  return agents.map((agent) => (agent.id === agentId ? { ...agent, status } : agent));
+  return agents.map((agent) => {
+    if (agent.id !== agentId) {
+      return agent;
+    }
+    if (!permissionMode) {
+      return { ...agent, status };
+    }
+    return {
+      ...agent,
+      status: permissionMode === "manual" ? status : agent.status,
+      permissionModes: fallbackPermissionModes(agent).map((mode) =>
+        mode.id === permissionMode ? { ...mode, status } : mode
+      )
+    };
+  });
 }
 
 function pendingPermissionQueue(detail: SessionDetail): PermissionRequest[] {
@@ -169,7 +199,7 @@ export function App() {
           setState((current) => ({
             ...current,
             codex: message.status,
-            agents: updateAgentStatus(current.agents, "codex", message.status)
+            agents: updateAgentStatus(current.agents, "codex", message.status, "manual")
           }));
           return;
         }
@@ -177,7 +207,7 @@ export function App() {
           setState((current) => ({
             ...current,
             codex: message.agentId === "codex" ? message.status : current.codex,
-            agents: updateAgentStatus(current.agents, message.agentId, message.status)
+            agents: updateAgentStatus(current.agents, message.agentId, message.status, message.permissionMode)
           }));
           return;
         }
@@ -298,16 +328,17 @@ export function App() {
     [runBusy]
   );
 
-  const createSession = useCallback(async (workspaceId: string, agentId?: string) => {
+  const createSession = useCallback(async (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) => {
     setState((current) => ({
       ...current,
       creatingSessionWorkspaceId: workspaceId,
       creatingSessionAgentId: agentId ?? null,
+      creatingSessionPermissionMode: permissionMode ?? "manual",
       error: null
     }));
     await router.navigate({ to: "/workspaces/$workspaceId/sessions/new", params: { workspaceId } });
     try {
-      const detail = await api.createSession(workspaceId, agentId);
+      const detail = await api.createSession(workspaceId, agentId, permissionMode);
       localStorage.setItem("currentWorkspaceId", detail.workspace.id);
       localStorage.setItem("currentSessionId", detail.session.id);
       setState((current) => ({
@@ -316,6 +347,7 @@ export function App() {
         currentWorkspaceId: detail.workspace.id,
         creatingSessionWorkspaceId: null,
         creatingSessionAgentId: null,
+        creatingSessionPermissionMode: null,
         sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
         liveAssistant: ""
       }));
@@ -333,6 +365,7 @@ export function App() {
         ...current,
         creatingSessionWorkspaceId: null,
         creatingSessionAgentId: null,
+        creatingSessionPermissionMode: null,
         error: errorMessage(error)
       }));
     }

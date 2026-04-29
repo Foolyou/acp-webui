@@ -20,10 +20,10 @@ use tokio::{
 use crate::{
     config::{AgentConfig, Config, CODEX_AGENT_ID},
     models::{
-        permission_status, review_artifact_kind, role, status, tool_call_status,
-        AgentSessionCapabilities, NewReviewArtifact, PermissionRequest, ReviewArtifact,
-        ReviewArtifactSummary, SessionConfigOption, SessionConfigState, SessionContinuity,
-        SessionCurrentModel, TimelineItem, ToolCallRow, UpsertToolCall,
+        permission_mode, permission_status, review_artifact_kind, role, status, tool_call_status,
+        AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact, PermissionRequest,
+        ReviewArtifact, ReviewArtifactSummary, SessionConfigOption, SessionConfigState,
+        SessionContinuity, SessionCurrentModel, TimelineItem, ToolCallRow, UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -91,6 +91,29 @@ pub struct AgentRuntimeStatus {
     pub title: String,
     pub enabled: bool,
     pub status: ConnectionStatus,
+    pub permission_modes: Vec<AgentPermissionModeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionModeStatus {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub risk_level: String,
+    pub status: ConnectionStatus,
+}
+
+impl AgentPermissionModeStatus {
+    fn from_mode(mode: &AgentPermissionMode, status: ConnectionStatus) -> Self {
+        Self {
+            id: mode.id.clone(),
+            label: mode.label.clone(),
+            description: mode.description.clone(),
+            risk_level: mode.risk_level.clone(),
+            status,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +128,7 @@ pub enum RealtimeEvent {
     },
     AgentConnectionStatus {
         agent_id: String,
+        permission_mode: String,
         status: ConnectionStatus,
     },
     SessionStatus {
@@ -172,6 +196,7 @@ pub struct NewSessionOutcome {
 #[derive(Debug)]
 pub struct AgentRuntime {
     agent: AgentConfig,
+    permission_mode: String,
     storage: Storage,
     status: Arc<RwLock<ConnectionStatus>>,
     peer: RwLock<Option<Arc<JsonRpcPeer>>>,
@@ -204,19 +229,26 @@ impl AgentRuntime {
         storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
-        let runtime = Self::starting_for_agent(agent, storage, events_tx);
+        let runtime = Self::starting_for_agent(
+            agent,
+            permission_mode::MANUAL.to_string(),
+            storage,
+            events_tx,
+        );
         runtime.start_connection().await;
         runtime
     }
 
     fn starting_for_agent(
         agent: AgentConfig,
+        permission_mode: String,
         storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
         Arc::new(Self {
             status: Arc::new(RwLock::new(ConnectionStatus::starting(&agent))),
             agent,
+            permission_mode,
             storage,
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
@@ -263,6 +295,7 @@ impl AgentRuntime {
     ) -> Arc<Self> {
         Arc::new(Self {
             agent,
+            permission_mode: permission_mode::MANUAL.to_string(),
             storage,
             status: Arc::new(RwLock::new(ConnectionStatus::failed(message))),
             peer: RwLock::new(None),
@@ -298,6 +331,7 @@ impl AgentRuntime {
         let agent_name = agent.id.clone();
         Arc::new(Self {
             agent,
+            permission_mode: permission_mode::MANUAL.to_string(),
             storage,
             status: Arc::new(RwLock::new(ConnectionStatus::ready(
                 Some(json!({"name": format!("test-{agent_name}")})),
@@ -317,6 +351,11 @@ impl AgentRuntime {
 
     pub fn agent(&self) -> &AgentConfig {
         &self.agent
+    }
+
+    #[cfg(test)]
+    pub fn permission_mode(&self) -> &str {
+        &self.permission_mode
     }
 
     pub async fn ensure_ready(&self) -> anyhow::Result<Arc<JsonRpcPeer>> {
@@ -691,9 +730,10 @@ impl AgentRuntime {
         let status = self.status().await;
         let _ = self.events_tx.send(RealtimeEvent::AgentConnectionStatus {
             agent_id: self.agent.id.clone(),
+            permission_mode: self.permission_mode.clone(),
             status: status.clone(),
         });
-        if self.agent.id == CODEX_AGENT_ID {
+        if self.agent.id == CODEX_AGENT_ID && self.permission_mode == permission_mode::MANUAL {
             let _ = self
                 .events_tx
                 .send(RealtimeEvent::ConnectionStatus { status });
@@ -708,9 +748,25 @@ struct AgentRuntimeEntry {
     start_lock: Mutex<()>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AgentRuntimeKey {
+    agent_id: String,
+    permission_mode: String,
+}
+
+impl AgentRuntimeKey {
+    fn new(agent_id: impl Into<String>, permission_mode: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            permission_mode: permission_mode.into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AgentRuntimeManager {
-    entries: HashMap<String, AgentRuntimeEntry>,
+    agents: HashMap<String, AgentConfig>,
+    entries: HashMap<AgentRuntimeKey, AgentRuntimeEntry>,
     order: Vec<String>,
     default_agent_id: String,
     storage: Storage,
@@ -723,21 +779,29 @@ impl AgentRuntimeManager {
         storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
+        let mut agents = HashMap::new();
         let mut entries = HashMap::new();
         let mut order = Vec::new();
         for agent in config.agent_configs() {
             order.push(agent.id.clone());
-            entries.insert(
-                agent.id.clone(),
-                AgentRuntimeEntry {
-                    config: agent,
-                    runtime: RwLock::new(None),
-                    start_lock: Mutex::new(()),
-                },
-            );
+            for mode in &agent.permission_modes {
+                let runtime_config = agent
+                    .runtime_config_for_permission_mode(&mode.id)
+                    .expect("built-in permission mode mapping is valid");
+                entries.insert(
+                    AgentRuntimeKey::new(&agent.id, &mode.id),
+                    AgentRuntimeEntry {
+                        config: runtime_config,
+                        runtime: RwLock::new(None),
+                        start_lock: Mutex::new(()),
+                    },
+                );
+            }
+            agents.insert(agent.id.clone(), agent);
         }
 
         Arc::new(Self {
+            agents,
             entries,
             order,
             default_agent_id: config.default_agent_id().to_string(),
@@ -753,21 +817,37 @@ impl AgentRuntimeManager {
         events_tx: broadcast::Sender<RealtimeEvent>,
         statuses: HashMap<String, Arc<AgentRuntime>>,
     ) -> Arc<Self> {
+        let mut agents = HashMap::new();
         let mut entries = HashMap::new();
         let mut order = Vec::new();
         for agent in config.agent_configs() {
             order.push(agent.id.clone());
-            entries.insert(
-                agent.id.clone(),
-                AgentRuntimeEntry {
-                    runtime: RwLock::new(statuses.get(&agent.id).cloned()),
-                    start_lock: Mutex::new(()),
-                    config: agent,
-                },
-            );
+            for mode in &agent.permission_modes {
+                let runtime = statuses
+                    .get(&format!("{}:{}", agent.id, mode.id))
+                    .or_else(|| {
+                        (mode.id == permission_mode::MANUAL)
+                            .then(|| statuses.get(&agent.id))
+                            .flatten()
+                    })
+                    .cloned();
+                let runtime_config = agent
+                    .runtime_config_for_permission_mode(&mode.id)
+                    .expect("built-in permission mode mapping is valid");
+                entries.insert(
+                    AgentRuntimeKey::new(&agent.id, &mode.id),
+                    AgentRuntimeEntry {
+                        runtime: RwLock::new(runtime),
+                        start_lock: Mutex::new(()),
+                        config: runtime_config,
+                    },
+                );
+            }
+            agents.insert(agent.id.clone(), agent);
         }
 
         Arc::new(Self {
+            agents,
             entries,
             order,
             default_agent_id: config.default_agent_id().to_string(),
@@ -784,21 +864,56 @@ impl AgentRuntimeManager {
         let resolved = agent_id
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(self.default_agent_id());
-        let entry = self
-            .entries
+        let agent = self
+            .agents
             .get(resolved)
             .ok_or_else(|| anyhow!("Unknown agent id `{resolved}`"))?;
-        if !entry.config.enabled {
-            return Err(anyhow!("{} is disabled", entry.config.title));
+        if !agent.enabled {
+            return Err(anyhow!("{} is disabled", agent.title));
         }
         Ok(resolved.to_string())
     }
 
-    pub async fn runtime(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
-        let entry = self
-            .entries
+    pub fn resolve_permission_mode(
+        &self,
+        agent_id: &str,
+        requested_permission_mode: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let mode = requested_permission_mode
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(permission_mode::MANUAL);
+        if !permission_mode::is_known(mode) {
+            return Err(anyhow!("Unknown permission mode `{mode}`"));
+        }
+        let agent = self
+            .agents
             .get(agent_id)
             .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        if !agent.supports_permission_mode(mode) {
+            return Err(anyhow!(
+                "{} does not support permission mode `{mode}`",
+                agent.title
+            ));
+        }
+        Ok(mode.to_string())
+    }
+
+    #[cfg(test)]
+    pub async fn runtime(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
+        self.runtime_for_permission_mode(agent_id, permission_mode::MANUAL)
+            .await
+    }
+
+    pub async fn runtime_for_permission_mode(
+        &self,
+        agent_id: &str,
+        permission_mode: &str,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
+        let key = AgentRuntimeKey::new(agent_id, permission_mode);
+        let entry = self.entries.get(&key).ok_or_else(|| {
+            anyhow!("Unknown agent id `{agent_id}` or permission mode `{permission_mode}`")
+        })?;
         if !entry.config.enabled {
             return Err(anyhow!("{} is disabled", entry.config.title));
         }
@@ -810,11 +925,21 @@ impl AgentRuntimeManager {
             .ok_or_else(|| anyhow!("{} runtime has not started", entry.config.title))
     }
 
+    #[cfg(test)]
     pub async fn runtime_for_use(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
-        let entry = self
-            .entries
-            .get(agent_id)
-            .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        self.runtime_for_permission_mode_use(agent_id, permission_mode::MANUAL)
+            .await
+    }
+
+    pub async fn runtime_for_permission_mode_use(
+        &self,
+        agent_id: &str,
+        permission_mode: &str,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
+        let key = AgentRuntimeKey::new(agent_id, permission_mode);
+        let entry = self.entries.get(&key).ok_or_else(|| {
+            anyhow!("Unknown agent id `{agent_id}` or permission mode `{permission_mode}`")
+        })?;
         if !entry.config.enabled {
             return Err(anyhow!("{} is disabled", entry.config.title));
         }
@@ -845,6 +970,7 @@ impl AgentRuntimeManager {
 
         let runtime = AgentRuntime::starting_for_agent(
             entry.config.clone(),
+            permission_mode.to_string(),
             self.storage.clone(),
             self.events_tx.clone(),
         );
@@ -856,35 +982,53 @@ impl AgentRuntimeManager {
     pub async fn statuses(&self) -> Vec<AgentRuntimeStatus> {
         let mut statuses = Vec::with_capacity(self.order.len());
         for agent_id in &self.order {
-            let Some(entry) = self.entries.get(agent_id) else {
+            let Some(agent) = self.agents.get(agent_id) else {
                 continue;
             };
-            let status = if !entry.config.enabled {
-                ConnectionStatus::disabled(format!("{} is disabled", entry.config.title))
+            let status = if !agent.enabled {
+                ConnectionStatus::disabled(format!("{} is disabled", agent.title))
             } else {
-                match entry.runtime.read().await.clone() {
-                    Some(runtime) => runtime.status().await,
-                    None => ConnectionStatus::idle(&entry.config),
-                }
+                self.status_for_mode(agent, permission_mode::MANUAL).await
             };
+            let mut permission_modes = Vec::with_capacity(agent.permission_modes.len());
+            for mode in &agent.permission_modes {
+                let mode_status = if !agent.enabled {
+                    ConnectionStatus::disabled(format!("{} is disabled", agent.title))
+                } else {
+                    self.status_for_mode(agent, &mode.id).await
+                };
+                permission_modes.push(AgentPermissionModeStatus::from_mode(mode, mode_status));
+            }
             statuses.push(AgentRuntimeStatus {
-                id: entry.config.id.clone(),
-                title: entry.config.title.clone(),
-                enabled: entry.config.enabled,
+                id: agent.id.clone(),
+                title: agent.title.clone(),
+                enabled: agent.enabled,
                 status,
+                permission_modes,
             });
         }
         statuses
     }
 
     pub async fn codex_status(&self) -> ConnectionStatus {
-        match self.entries.get(CODEX_AGENT_ID) {
-            Some(entry) if !entry.config.enabled => ConnectionStatus::disabled("Codex is disabled"),
+        match self.agents.get(CODEX_AGENT_ID) {
+            Some(agent) if !agent.enabled => ConnectionStatus::disabled("Codex is disabled"),
+            Some(agent) => self.status_for_mode(agent, permission_mode::MANUAL).await,
+            None => ConnectionStatus::failed("Codex runtime is not available"),
+        }
+    }
+
+    async fn status_for_mode(&self, agent: &AgentConfig, mode: &str) -> ConnectionStatus {
+        let key = AgentRuntimeKey::new(&agent.id, mode);
+        match self.entries.get(&key) {
             Some(entry) => match entry.runtime.read().await.clone() {
                 Some(runtime) => runtime.status().await,
                 None => ConnectionStatus::idle(&entry.config),
             },
-            None => ConnectionStatus::failed("Codex runtime is not available"),
+            None => ConnectionStatus::failed(format!(
+                "{} permission mode `{mode}` is not available",
+                agent.title
+            )),
         }
     }
 }
@@ -1996,6 +2140,7 @@ fn tool_call_kind(tool_call: &Value) -> String {
 mod tests {
     use std::{
         path::{Path, PathBuf},
+        sync::Arc,
         time::Duration,
     };
 
@@ -2536,6 +2681,75 @@ for line in sys.stdin:
 
         assert_eq!(runtime.status().await.state, "ready");
         assert_eq!(manager.codex_status().await.state, "ready");
+    }
+
+    #[tokio::test]
+    async fn manager_isolates_codex_runtimes_by_permission_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let config = config_for_fake(script, "text");
+        let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
+        let manager = AgentRuntimeManager::start(&config, storage, events_tx).await;
+
+        let manual = manager
+            .runtime_for_permission_mode_use(CODEX_AGENT_ID, permission_mode::MANUAL)
+            .await
+            .unwrap();
+        let yolo = manager
+            .runtime_for_permission_mode_use(CODEX_AGENT_ID, permission_mode::YOLO)
+            .await
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&manual, &yolo));
+        assert_eq!(manual.permission_mode(), permission_mode::MANUAL);
+        assert_eq!(yolo.permission_mode(), permission_mode::YOLO);
+        assert!(!manual
+            .agent()
+            .args
+            .contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
+        assert!(yolo
+            .agent()
+            .args
+            .contains(&"approval_policy=\"never\"".to_string()));
+        assert!(yolo
+            .agent()
+            .args
+            .contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
+    }
+
+    #[tokio::test]
+    async fn manager_reports_permission_mode_statuses_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let config = config_for_fake(script, "text");
+        let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
+        let manager = AgentRuntimeManager::start(&config, storage, events_tx).await;
+
+        let _ = manager
+            .runtime_for_permission_mode_use(CODEX_AGENT_ID, permission_mode::YOLO)
+            .await
+            .unwrap();
+
+        let statuses = manager.statuses().await;
+        let codex = statuses
+            .iter()
+            .find(|agent| agent.id == CODEX_AGENT_ID)
+            .unwrap();
+        let manual = codex
+            .permission_modes
+            .iter()
+            .find(|mode| mode.id == permission_mode::MANUAL)
+            .unwrap();
+        let yolo = codex
+            .permission_modes
+            .iter()
+            .find(|mode| mode.id == permission_mode::YOLO)
+            .unwrap();
+
+        assert_eq!(manual.status.state, "idle");
+        assert_eq!(yolo.status.state, "ready");
     }
 
     #[test]

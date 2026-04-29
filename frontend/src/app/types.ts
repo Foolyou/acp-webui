@@ -4,6 +4,7 @@ import type {
   AuthStatus,
   InboxItem,
   PermissionRequest,
+  PermissionModeId,
   ReviewArtifact,
   SessionDetail,
   SessionListItem,
@@ -27,13 +28,14 @@ export type UiState = {
   busy: boolean;
   creatingSessionWorkspaceId: string | null;
   creatingSessionAgentId: string | null;
+  creatingSessionPermissionMode: PermissionModeId | null;
   error: string | null;
   auth: AuthStatus | null;
 };
 
 export type AppActions = {
   cancelApproval: () => Promise<void>;
-  createSession: (workspaceId: string, agentId?: string) => Promise<void>;
+  createSession: (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) => Promise<void>;
   createWorkspace: (path: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessionList: (workspaceId?: string | null) => Promise<void>;
@@ -69,6 +71,7 @@ export const initialState: UiState = {
   busy: false,
   creatingSessionWorkspaceId: null,
   creatingSessionAgentId: null,
+  creatingSessionPermissionMode: null,
   error: null,
   auth: null
 };

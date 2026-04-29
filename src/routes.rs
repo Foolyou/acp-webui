@@ -24,11 +24,11 @@ use crate::{
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
-        continuity_state, review_artifact_kind, role, status, CreateSessionRequest,
-        CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message, PermissionRequest,
-        PromptRequest, ResolvePermissionRequest, ReviewArtifact, ReviewArtifactSummary, Session,
-        SessionConfigState, SessionContinuity, SessionDetail, SessionListItem,
-        SetSessionConfigOptionRequest, TimelineItem, Workspace,
+        continuity_state, permission_mode, review_artifact_kind, role, status,
+        CreateSessionRequest, CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message,
+        PermissionRequest, PromptRequest, ResolvePermissionRequest, ReviewArtifact,
+        ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity, SessionDetail,
+        SessionListItem, SetSessionConfigOptionRequest, TimelineItem, Workspace,
     },
     storage::Storage,
 };
@@ -318,9 +318,16 @@ async fn create_session(
         .agents
         .resolve_agent_id(requested_agent_id)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let requested_permission_mode = payload
+        .as_ref()
+        .and_then(|Json(payload)| payload.permission_mode.as_deref());
+    let permission_mode = state
+        .agents
+        .resolve_permission_mode(&agent_id, requested_permission_mode)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let runtime = state
         .agents
-        .runtime_for_use(&agent_id)
+        .runtime_for_permission_mode_use(&agent_id, &permission_mode)
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
 
@@ -332,11 +339,12 @@ async fn create_session(
 
     let session = state
         .storage
-        .create_session_for_agent_with_config_options(
+        .create_session_for_agent_with_permission_mode_and_config_options(
             &workspace.id,
             &agent_id,
             &runtime.agent().title,
             acp_session_id.clone(),
+            &permission_mode,
             new_session.config_options,
         )
         .await
@@ -702,14 +710,14 @@ impl AppState {
         session: &Session,
     ) -> AppResult<Arc<CodexRuntime>> {
         self.agents
-            .runtime(&session.agent_id)
+            .runtime_for_permission_mode(&session.agent_id, &session.permission_mode)
             .await
             .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
     }
 
     async fn runtime_for_session_use(&self, session: &Session) -> AppResult<Arc<CodexRuntime>> {
         self.agents
-            .runtime_for_use(&session.agent_id)
+            .runtime_for_permission_mode_use(&session.agent_id, &session.permission_mode)
             .await
             .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
     }
@@ -730,7 +738,11 @@ impl AppState {
 
     async fn session_continuity(&self, session: &Session) -> AppResult<SessionContinuity> {
         let row = self.storage.session_continuity_row(&session.id).await?;
-        let runtime = match self.agents.runtime(&session.agent_id).await {
+        let runtime = match self
+            .agents
+            .runtime_for_permission_mode(&session.agent_id, &session.permission_mode)
+            .await
+        {
             Ok(runtime) => runtime,
             Err(error) => {
                 return Ok(SessionContinuity::view_only(format!(
@@ -1003,6 +1015,7 @@ async fn websocket_loop(mut socket: WebSocket, state: AppState) {
     for agent in state.agents.statuses().await {
         let event = RealtimeEvent::AgentConnectionStatus {
             agent_id: agent.id,
+            permission_mode: permission_mode::MANUAL.to_string(),
             status: agent.status,
         };
         if send_ws_event(&mut socket, &event).await.is_err() {
@@ -1074,7 +1087,7 @@ mod tests {
     use tokio::time::{sleep, timeout};
 
     use crate::{
-        config::{AgentConfig, Config, CLAUDE_AGENT_ID, CODEX_AGENT_ID},
+        config::{manual_permission_mode, AgentConfig, Config, CLAUDE_AGENT_ID, CODEX_AGENT_ID},
         models::{AgentSessionCapabilities, NewReviewArtifact},
         storage::NewPermissionRequest,
     };
@@ -1193,6 +1206,47 @@ mod tests {
         )
     }
 
+    async fn test_state_with_lazy_fake_codex() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let database_url = format!("sqlite://{}", dir.path().join("test.db").display());
+        let storage = Storage::connect(&database_url).await.unwrap();
+        storage.migrate().await.unwrap();
+        let (events_tx, _) = broadcast::channel(64);
+        let script = write_multi_agent_fake_acp(&dir);
+        let config = Config {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 7635,
+            work_dir: dir.path().to_path_buf(),
+            database_url,
+            codex_acp_command: "uv".to_string(),
+            codex_acp_args: vec![
+                "run".to_string(),
+                "--script".to_string(),
+                script.to_string_lossy().to_string(),
+                CODEX_AGENT_ID.to_string(),
+            ],
+            claude_acp_enabled: false,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
+            frontend_dist: Some(dir.path().join("dist")),
+            pairing_token: Some("test-token".to_string()),
+            disable_auth: true,
+            trusted_clients: vec![],
+        };
+        let auth = AuthService::from_config(&config).unwrap();
+        let agents = AgentRuntimeManager::start(&config, storage.clone(), events_tx.clone()).await;
+
+        (
+            AppState {
+                storage,
+                agents,
+                events_tx,
+                auth,
+            },
+            dir,
+        )
+    }
+
     fn fake_agent(id: &str, title: &str, script: PathBuf) -> AgentConfig {
         AgentConfig {
             id: id.to_string(),
@@ -1205,6 +1259,7 @@ mod tests {
                 id.to_string(),
             ],
             enabled: true,
+            permission_modes: vec![manual_permission_mode()],
         }
     }
 
@@ -1840,6 +1895,10 @@ for line in sys.stdin:
         let codex_json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(codex_json["session"]["agentId"], "codex");
         assert_eq!(codex_json["session"]["agentName"], "Codex");
+        assert_eq!(
+            codex_json["session"]["permissionMode"],
+            permission_mode::MANUAL
+        );
 
         let claude_body = serde_json::json!({"agentId": "claude"});
         let claude_response = app
@@ -1861,6 +1920,10 @@ for line in sys.stdin:
         let claude_json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(claude_json["session"]["agentId"], "claude");
         assert_eq!(claude_json["session"]["agentName"], "Claude");
+        assert_eq!(
+            claude_json["session"]["permissionMode"],
+            permission_mode::MANUAL
+        );
 
         let list_response = app
             .oneshot(
@@ -1884,6 +1947,95 @@ for line in sys.stdin:
             .collect::<Vec<_>>();
         assert!(agent_ids.contains(&"codex"));
         assert!(agent_ids.contains(&"claude"));
+    }
+
+    #[tokio::test]
+    async fn creates_codex_session_with_explicit_yolo_permission_mode() {
+        let (state, _dir) = test_state_with_lazy_fake_codex().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "agentId": "codex",
+                            "permissionMode": "yolo"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["session"]["permissionMode"], permission_mode::YOLO);
+
+        let list_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(list[0]["session"]["permissionMode"], permission_mode::YOLO);
+    }
+
+    #[tokio::test]
+    async fn rejects_permission_mode_unsupported_by_agent_before_creating_session() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "agentId": "claude",
+                            "permissionMode": "yolo"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.storage.list_session_items().await.unwrap().is_empty());
     }
 
     #[tokio::test]

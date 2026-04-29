@@ -63,10 +63,10 @@ The React frontend SHALL preserve the existing browser interactions for permissi
 - **AND** it SHALL clear that resolved approval from the active UI after the backend resolves the request
 - **AND** it SHALL show the next queued approval when one remains
 
-#### Scenario: Always option is visible but disabled
+#### Scenario: Always option is visible and selectable
 - **WHEN** a pending permission request includes allow-always or reject-always options
-- **THEN** the React frontend SHALL render those options as disabled
-- **AND** it SHALL communicate that they are not available in this version
+- **THEN** the React frontend SHALL render those options as selectable agent-provided choices
+- **AND** it SHALL submit the selected option id through the same permission resolution API
 
 #### Scenario: Approval queue has more than one request
 - **WHEN** the current session has multiple queued approvals
@@ -83,7 +83,7 @@ The React rewrite SHALL include browser automation coverage for the local Codex 
 
 #### Scenario: End-to-end suite runs against React frontend
 - **WHEN** the backend binary, frontend build, and Playwright E2E suite are run with the fake ACP process
-- **THEN** the tests SHALL cover workspace and session creation, routed navigation, prompt/response restore, permission approval with disabled always options, compact tool rows or review artifact inspection, mobile overlay basics, and keyboard prompt submission
+- **THEN** the tests SHALL cover workspace and session creation, routed navigation, prompt/response restore, permission approval with selectable always options, permission mode creation indicators, compact tool rows or review artifact inspection, mobile overlay basics, and keyboard prompt submission
 
 ### Requirement: User can choose an agent when creating a session
 The React frontend SHALL let the user choose from available configured agents before creating a workspace session.

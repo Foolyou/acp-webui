@@ -1,8 +1,14 @@
 import { Link } from "@tanstack/react-router";
 import { Button } from "react-aria-components";
 import { PageHeader } from "../../components/common";
-import type { AgentRuntimeStatus, SessionListItem, Workspace } from "../../types";
+import type { AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
 import { formatRelativeTime } from "../../utils/format";
+import {
+  fallbackPermissionModes,
+  isYoloSession,
+  permissionModeClass,
+  permissionModeLabel
+} from "../../utils/permissionMode";
 
 export function SessionsPane({
   agents,
@@ -13,7 +19,7 @@ export function SessionsPane({
 }: {
   agents: AgentRuntimeStatus[];
   loading: boolean;
-  onCreate: (agentId: string) => void;
+  onCreate: (agentId: string, permissionMode: PermissionModeId) => void;
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
@@ -48,23 +54,37 @@ function AgentCreateControls({
   size
 }: {
   agents: AgentRuntimeStatus[];
-  onCreate: (agentId: string) => void;
+  onCreate: (agentId: string, permissionMode: PermissionModeId) => void;
   size?: "small";
 }) {
   return (
     <div className={`agent-create-controls ${size ?? ""}`}>
       {agents.map((agent) => {
-        const available = agent.enabled && agent.status.state !== "starting" && agent.status.state !== "disabled";
+        const modes = fallbackPermissionModes(agent);
         return (
-          <Button
-            className={`agent-option ${agent.status.state}`}
-            isDisabled={!available}
-            key={agent.id}
-            onPress={() => onCreate(agent.id)}
-          >
-            <strong>{agent.title}</strong>
-            <span>{agentStatusText(agent)}</span>
-          </Button>
+          <div className={`agent-option-group ${size ?? ""}`} key={agent.id}>
+            <div className="agent-option-summary">
+              <strong>{agent.title}</strong>
+              <span>{agentStatusText(agent)}</span>
+            </div>
+            <div className="permission-mode-options" role="group" aria-label={`${agent.title} permission modes`}>
+              {modes.map((mode) => {
+                const available =
+                  agent.enabled && mode.status.state !== "starting" && mode.status.state !== "disabled";
+                return (
+                  <Button
+                    className={`permission-mode-option ${mode.status.state} ${permissionModeClass(mode.id)}`}
+                    isDisabled={!available}
+                    key={mode.id}
+                    onPress={() => onCreate(agent.id, mode.id)}
+                  >
+                    <strong>{mode.label}</strong>
+                    <span>{mode.description}</span>
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
         );
       })}
     </div>
@@ -94,6 +114,12 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       ) : null}
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
+        {item.session.permissionMode !== "manual" ? (
+          <strong className={`permission-mode-badge ${permissionModeClass(item.session.permissionMode)}`}>
+            {permissionModeLabel(item.session.permissionMode)}
+          </strong>
+        ) : null}
+        {isYoloSession(item.session) ? <strong className="permission-mode-warning">No approvals / no sandbox</strong> : null}
         <ContinuityBadge item={item} />
         {item.pendingPermission ? (
           <strong>

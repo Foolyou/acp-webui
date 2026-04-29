@@ -22,6 +22,7 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
       workspaceId: "workspace-1",
       agentId: "codex",
       agentName: "Codex",
+      permissionMode: "manual",
       acpSessionId: "acp-session-1",
       externalSessionId: "acp-session-1",
       status: "idle",
@@ -78,7 +79,16 @@ function agent(state: string): AgentRuntimeStatus {
     id: "codex",
     title: "Codex",
     enabled: true,
-    status: { state, message: state === "ready" ? null : "Unavailable" }
+    status: { state, message: state === "ready" ? null : "Unavailable" },
+    permissionModes: [
+      {
+        id: "manual",
+        label: "Manual",
+        description: "Ask first",
+        riskLevel: "low",
+        status: { state, message: state === "ready" ? null : "Unavailable" }
+      }
+    ]
   };
 }
 
@@ -146,4 +156,3 @@ describe("session config helpers", () => {
     expect(list[0].continuity.state).toBe("live");
   });
 });
-

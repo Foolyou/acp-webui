@@ -9,11 +9,11 @@ This slice connects a Rust local daemon to ACP agents over stdio. Users can crea
 - Codex through `codex-acp`
 - Optional Claude support through `@agentclientprotocol/claude-agent-acp`
 - Local workspaces
-- Session creation with per-session agent selection
+- Session creation with per-session agent and permission mode selection
 - Sessions list for reopening persisted sessions
 - ACP-first session continuation through verified `session/load` support when the connected agent advertises it
 - Text prompts and text replies
-- Permission approval requests with allow-once and reject-once resolution
+- Permission approval requests with agent-provided resolution options, including always options when the agent advertises them
 - Inbox view for sessions waiting on approval
 - Session review artifact cards for ACP tool call evidence
 - Full-screen review drill-downs for artifact details and on-demand workspace diffs
@@ -22,11 +22,13 @@ This slice connects a Rust local daemon to ACP agents over stdio. Users can crea
 - SQLite persistence
 - Per-agent runtime status and WebSocket live updates
 
-Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, arbitrary custom-agent settings UI, private agent transcript parsing, in-app Claude authentication, or durable restoration of in-flight approval responders after backend restart.
+Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, remembered local allow/reject policy rules, arbitrary custom-agent settings UI, private agent transcript parsing, in-app Claude authentication, or durable restoration of in-flight approval responders after backend restart.
 
 Persisted sessions remain reviewable after browser refresh or backend restart. Prompt submission is enabled only when the backend has live ACP runtime context or the user successfully restores an eligible session through a verified agent capability. ACP Web UI currently implements `session/load`; `session/resume` is detected as a separate agent capability but is not enabled as a continuation path in this version.
 
-`allow_always` and `reject_always` ACP options are shown in the browser when an agent provides them, but they are disabled until a deliberate local policy model exists.
+Codex sessions can be created in `manual`, `full_auto`, or `yolo` permission modes. `manual` preserves the approval-managed ACP flow, `full_auto` uses sandboxed automatic execution, and `yolo` bypasses approvals and sandboxing for that session. Claude currently exposes only `manual` until an adapter-specific mapping is verified.
+
+`allow_always` and `reject_always` ACP options are shown and selectable when an agent provides them. ACP Web UI forwards the selected option id to the agent; it does not add its own remembered local policy engine.
 
 ## Requirements
 
@@ -217,7 +219,7 @@ npm run e2e
 
 The E2E test starts `target/debug/acp-webui` on `127.0.0.1:7638`, creates a workspace and session, sends a prompt through the browser, receives a fake assistant text reply, refreshes the page, and verifies the persisted timeline is restored.
 Set `ACP_WEBUI_E2E_BINARY` to point the suite at an alternate debug binary when `target/debug/acp-webui` is already running or locked by another process.
-It also exercises a fake permission request, verifies the mobile approval sheet, confirms always options are disabled, and approves the request with an allow-once option.
+It also exercises manual and YOLO permission-mode session creation, a fake permission request, the mobile approval sheet, selectable always options, and approval with an allow-once option.
 The suite covers backend restart followed by ACP `session/load` restoration, restore failure messaging, and view-only fallback states.
 The suite also exercises a fake ACP tool call review artifact, opens its session-scoped drill-down, and verifies that Review is not exposed as a first-level navigation item.
 

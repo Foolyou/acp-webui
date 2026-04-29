@@ -57,8 +57,8 @@ Alternative considered: show all modes for every agent and fail at creation time
 For Codex:
 
 - `manual`: launch with existing configured Codex ACP command and args.
-- `full_auto`: launch with Codex configuration equivalent to CLI `--full-auto`, preserving sandboxing while reducing approval prompts.
-- `yolo`: launch with Codex configuration equivalent to CLI `--dangerously-bypass-approvals-and-sandbox`.
+- `full_auto`: append `-c approval_policy="on-request" -c sandbox_mode="workspace-write"`, matching the verified Codex CLI `--full-auto` prompt-input behavior for sandboxed automatic execution.
+- `yolo`: append `-c approval_policy="never" -c sandbox_mode="danger-full-access"`, matching the verified Codex CLI `--dangerously-bypass-approvals-and-sandbox` behavior.
 
 Implementation should prefer `codex-acp -c ...` overrides because `codex-acp --help` exposes config overrides and not the Codex TUI convenience flags. The exact config keys should be verified during implementation against the installed Codex version and covered by fake-runtime tests.
 
@@ -92,6 +92,4 @@ Rollback is straightforward: keep the `permission_mode` column ignored by old co
 
 ## Open Questions
 
-- Which exact `codex-acp -c` keys best match `--full-auto` for the installed Codex version?
-- Should `full_auto` be exposed in the first UI alongside `yolo`, or kept backend-ready but hidden until copy is finalized?
 - Should future app settings allow choosing a default permission mode per workspace, or should every non-manual session require explicit selection?
