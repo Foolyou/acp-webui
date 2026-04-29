@@ -40,12 +40,13 @@ The system SHALL derive compact current-model metadata from the session configur
 - **AND** the browser SHALL not render a model selection control for that session
 
 ### Requirement: Browser displays advertised model choices
-The browser SHALL show a model selector in Session Detail when the current session has an advertised ACP model configuration option.
+The browser SHALL show a model selector in Session Detail when the current session has an advertised ACP model configuration option, and the selector SHALL live in the sticky prompt composer control area rather than a scroll-away page header.
 
 #### Scenario: Session detail has a model selector
 - **WHEN** the browser renders Session Detail for a session with a model configuration option
 - **THEN** it SHALL show the current model display name or value
 - **AND** it SHALL offer the advertised model choices using the agent-provided option names and descriptions when available
+- **AND** the selector SHALL remain available near the prompt input while the user scrolls through session history
 
 #### Scenario: Session detail has dependent configuration changes
 - **WHEN** a model selection response changes the full set of configuration options
@@ -122,4 +123,3 @@ The system SHALL include compact current-model metadata in session list rows whe
 - **WHEN** the browser loads a session list row for a session without a model projection
 - **THEN** it SHALL omit model summary UI for that row
 - **AND** the row SHALL remain navigable and otherwise unchanged
-
