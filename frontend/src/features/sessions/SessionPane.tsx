@@ -4,15 +4,15 @@ import { Button } from "react-aria-components";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
-import type { ChatMessage, ConnectionStatus, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
+import type { AgentRuntimeStatus, ChatMessage, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
 
 const TIMELINE_BOTTOM_MARGIN_PX = 96;
 const PROGRAMMATIC_SCROLL_WINDOW_MS = 350;
 
 export function SessionPane({
+  agentStatus,
   busy,
-  codex,
   currentSession,
   liveAssistant,
   onOpenDiffFallback,
@@ -20,8 +20,8 @@ export function SessionPane({
   onRestoreSession,
   onSendPrompt
 }: {
+  agentStatus: AgentRuntimeStatus | null;
   busy: boolean;
-  codex: ConnectionStatus;
   currentSession: SessionDetail;
   liveAssistant: string;
   onOpenDiffFallback: () => void;
@@ -33,7 +33,10 @@ export function SessionPane({
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
   const running = currentSession.session.status === "running" || waitingApproval;
   const continuity = currentSession.continuity;
-  const canSend = continuity.continuable && !running;
+  const agentName = currentSession.session.agentName;
+  const agentConnection = agentStatus?.status;
+  const agentReady = !agentConnection || agentConnection.state === "ready";
+  const canSend = continuity.continuable && !running && agentReady;
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
@@ -198,11 +201,12 @@ export function SessionPane({
   return (
     <section className="session-layout">
       <div className="session-toolbar">
-        <PageHeader eyebrow={currentSession.workspace.name} title="Session" />
+        <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
         <div className="section-actions">
           <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
             Diff
           </Button>
+          <span className={`badge ${agentConnection?.state ?? "ready"}`}>{agentName}</span>
           <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
         </div>
       </div>
@@ -222,7 +226,7 @@ export function SessionPane({
         {currentSession.timeline.map((item) => (
           <TimelineRow item={item} key={`${item.kind}-${item.id}`} onOpenReviewArtifact={onOpenReviewArtifact} />
         ))}
-        {running && !liveAssistant ? <RunningSkeleton waitingApproval={waitingApproval} /> : null}
+        {running && !liveAssistant ? <RunningSkeleton agentName={agentName} waitingApproval={waitingApproval} /> : null}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
         <div ref={timelineEndRef} aria-hidden="true" className="timeline-end" />
       </div>
@@ -242,7 +246,8 @@ export function SessionPane({
       ) : null}
       <PromptComposer
         busy={busy}
-        codex={codex}
+        agentName={agentName}
+        agentStatus={agentStatus}
         disabled={!canSend}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
@@ -342,10 +347,10 @@ function ToolCallRow({
   );
 }
 
-function RunningSkeleton({ waitingApproval }: { waitingApproval: boolean }) {
+function RunningSkeleton({ agentName, waitingApproval }: { agentName: string; waitingApproval: boolean }) {
   return (
     <div className="message assistant live">
-      <div className="message-role">{waitingApproval ? "approval" : "codex"}</div>
+      <div className="message-role">{waitingApproval ? "approval" : agentName}</div>
       <div className="skeleton-line wide" />
       <div className="skeleton-line" />
     </div>
@@ -353,8 +358,9 @@ function RunningSkeleton({ waitingApproval }: { waitingApproval: boolean }) {
 }
 
 function PromptComposer({
+  agentName,
+  agentStatus,
   busy,
-  codex,
   disabled,
   onSendPrompt,
   onRestoreSession,
@@ -365,8 +371,9 @@ function PromptComposer({
   restoreRequired,
   waitingApproval
 }: {
+  agentName: string;
+  agentStatus: AgentRuntimeStatus | null;
   busy: boolean;
-  codex: ConnectionStatus;
   disabled: boolean;
   onSendPrompt: (prompt: string) => Promise<void>;
   onRestoreSession: () => Promise<void>;
@@ -405,9 +412,9 @@ function PromptComposer({
     : waitingApproval
       ? "Waiting for approval"
       : running
-        ? "Codex is working..."
-        : codex.state !== "ready"
-          ? codex.message ?? "Codex is not ready"
+        ? `${agentName} is working...`
+        : agentStatus && agentStatus.status.state !== "ready"
+          ? agentStatus.status.message ?? `${agentName} is ${agentStatus.status.state}`
           : null;
 
   return (
@@ -442,7 +449,7 @@ function PromptComposer({
                 : "Start a new session to continue"
               : waitingApproval
                 ? "Resolve approval before sending another prompt"
-                : "Ask Codex..."
+                : `Ask ${agentName}...`
           }
           rows={3}
           value={prompt}

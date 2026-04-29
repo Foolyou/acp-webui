@@ -63,8 +63,9 @@ export function WorkspaceSessionsRoute() {
 
   return (
     <SessionsPane
+      agents={state.agents}
       loading={state.sessionsLoading}
-      onCreate={() => createSession(workspaceId)}
+      onCreate={(agentId) => createSession(workspaceId, agentId)}
       sessions={state.sessions}
       workspace={workspace}
     />
@@ -75,10 +76,12 @@ export function NewSessionRoute() {
   const { workspaceId } = newSessionRoute.useParams();
   const { actions, state } = useAppContext();
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+  const agent = state.agents.find((item) => item.id === state.creatingSessionAgentId) ?? null;
   return (
     <CreatingSessionPane
+      agent={agent}
       creating={state.creatingSessionWorkspaceId === workspaceId}
-      onRetry={() => actions.createSession(workspaceId)}
+      onRetry={() => actions.createSession(workspaceId, state.creatingSessionAgentId ?? undefined)}
       workspace={workspace}
     />
   );
@@ -99,11 +102,13 @@ export function SessionDetailRoute() {
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
     return <LoadingPanel text="Loading session" />;
   }
+  const agentStatus =
+    state.agents.find((agent) => agent.id === state.currentSession?.session.agentId) ?? null;
 
   return (
     <SessionPane
+      agentStatus={agentStatus}
       busy={state.busy}
-      codex={state.codex}
       currentSession={state.currentSession}
       liveAssistant={state.liveAssistant}
       onOpenDiffFallback={actions.openDiffFallback}

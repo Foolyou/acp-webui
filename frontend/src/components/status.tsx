@@ -1,9 +1,11 @@
-import type { ConnectionStatus, SocketState } from "../types";
+import type { AgentRuntimeStatus, SocketState } from "../types";
 
-export function StatusStack({ codex, socketState }: { codex: ConnectionStatus; socketState: SocketState }) {
+export function StatusStack({ agents, socketState }: { agents: AgentRuntimeStatus[]; socketState: SocketState }) {
   return (
     <div className="status-stack">
-      <StatusPill detail={codex.message ?? "Codex"} stateText={codex.state} />
+      {agents.map((agent) => (
+        <StatusPill detail={agent.status.message ?? agent.title} key={agent.id} stateText={agent.status.state} />
+      ))}
       <StatusPill detail="Realtime" stateText={socketState} />
     </div>
   );

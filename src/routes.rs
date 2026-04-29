@@ -20,13 +20,13 @@ use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
-    acp::{CodexRuntime, ConnectionStatus, RealtimeEvent},
+    acp::{AgentRuntimeManager, AgentRuntimeStatus, CodexRuntime, ConnectionStatus, RealtimeEvent},
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
-        continuity_state, review_artifact_kind, role, status, CreateWorkspaceRequest,
-        DiffFallbackResponse, InboxItem, Message, PermissionRequest, PromptRequest,
-        ResolvePermissionRequest, ReviewArtifact, ReviewArtifactSummary, Session,
+        continuity_state, review_artifact_kind, role, status, CreateSessionRequest,
+        CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message, PermissionRequest,
+        PromptRequest, ResolvePermissionRequest, ReviewArtifact, ReviewArtifactSummary, Session,
         SessionContinuity, SessionDetail, SessionListItem, TimelineItem, Workspace,
     },
     storage::Storage,
@@ -46,7 +46,7 @@ struct FrontendAsset;
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Storage,
-    pub codex: Arc<CodexRuntime>,
+    pub agents: Arc<AgentRuntimeManager>,
     pub events_tx: broadcast::Sender<RealtimeEvent>,
     pub auth: AuthService,
 }
@@ -55,6 +55,7 @@ pub struct AppState {
 #[serde(rename_all = "camelCase")]
 struct AppStateResponse {
     codex: ConnectionStatus,
+    agents: Vec<AgentRuntimeStatus>,
     inbox: Vec<InboxItem>,
 }
 
@@ -237,7 +238,8 @@ async fn pair(
 async fn app_state(State(state): State<AppState>) -> AppResult<Json<AppStateResponse>> {
     let inbox = state.storage.list_inbox_items().await?;
     Ok(Json(AppStateResponse {
-        codex: state.codex.status().await,
+        codex: state.agents.codex_status().await,
+        agents: state.agents.statuses().await,
         inbox,
     }))
 }
@@ -296,6 +298,7 @@ async fn create_workspace(
 async fn create_session(
     State(state): State<AppState>,
     Path(workspace_id): Path<String>,
+    payload: Option<Json<CreateSessionRequest>>,
 ) -> AppResult<Json<SessionDetail>> {
     let workspace = state
         .storage
@@ -303,19 +306,35 @@ async fn create_session(
         .await
         .map_err(|_| AppError::NotFound("Workspace not found".to_string()))?;
 
-    let acp_session_id = state
-        .codex
+    let requested_agent_id = payload
+        .as_ref()
+        .and_then(|Json(payload)| payload.agent_id.as_deref());
+    let agent_id = state
+        .agents
+        .resolve_agent_id(requested_agent_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let runtime = state
+        .agents
+        .runtime_for_use(&agent_id)
+        .await
+        .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
+
+    let acp_session_id = runtime
         .new_session(workspace.path.clone())
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
 
     let session = state
         .storage
-        .create_session(&workspace.id, acp_session_id.clone())
+        .create_session_for_agent(
+            &workspace.id,
+            &agent_id,
+            &runtime.agent().title,
+            acp_session_id.clone(),
+        )
         .await
         .map_err(AppError::Other)?;
-    state
-        .codex
+    runtime
         .register_session(acp_session_id, session.id.clone())
         .await;
 
@@ -341,6 +360,7 @@ async fn restore_session(
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
     let workspace = state.storage.get_workspace(&session.workspace_id).await?;
+    let runtime = state.runtime_for_session_use(&session).await?;
     let continuity = state.session_continuity(&session).await?;
 
     if continuity.continuable {
@@ -352,11 +372,11 @@ async fn restore_session(
         ));
     }
 
-    if !continuity.restorable || !state.codex.can_load_session().await {
+    if !continuity.restorable || !runtime.can_load_session().await {
         return Err(AppError::Conflict(
             continuity
                 .reason
-                .unwrap_or_else(|| view_only_reason().to_string()),
+                .unwrap_or_else(|| view_only_reason(&session.agent_name)),
         ));
     }
 
@@ -370,13 +390,15 @@ async fn restore_session(
         ));
     };
 
-    state.storage.mark_session_restore_started(&session_id).await?;
+    state
+        .storage
+        .mark_session_restore_started(&session_id)
+        .await?;
     let _ = state.events_tx.send(RealtimeEvent::SessionRestoreStarted {
         session_id: session_id.clone(),
     });
 
-    match state
-        .codex
+    match runtime
         .load_session(external_session_id, session_id.clone(), workspace.path)
         .await
     {
@@ -385,9 +407,11 @@ async fn restore_session(
                 .storage
                 .mark_session_restore_succeeded(&session_id)
                 .await?;
-            let _ = state.events_tx.send(RealtimeEvent::SessionRestoreSucceeded {
-                session_id: session_id.clone(),
-            });
+            let _ = state
+                .events_tx
+                .send(RealtimeEvent::SessionRestoreSucceeded {
+                    session_id: session_id.clone(),
+                });
             Ok(Json(state.session_detail(&session_id).await?))
         }
         Err(error) => {
@@ -530,7 +554,7 @@ async fn submit_prompt(
             }
             _ => continuity
                 .reason
-                .unwrap_or_else(|| view_only_reason().to_string()),
+                .unwrap_or_else(|| view_only_reason(&session.agent_name)),
         };
         return Err(AppError::Conflict(reason));
     }
@@ -540,6 +564,7 @@ async fn submit_prompt(
             "Session is missing an ACP session id".to_string(),
         ));
     };
+    let runtime = state.runtime_for_existing_session(&session).await?;
 
     let message = state
         .storage
@@ -557,7 +582,7 @@ async fn submit_prompt(
 
     tokio::spawn(run_prompt_turn(
         state.storage.clone(),
-        state.codex.clone(),
+        runtime,
         state.events_tx.clone(),
         session.id.clone(),
         acp_session_id,
@@ -568,12 +593,27 @@ async fn submit_prompt(
 }
 
 impl AppState {
+    async fn runtime_for_existing_session(&self, session: &Session) -> AppResult<Arc<CodexRuntime>> {
+        self.agents
+            .runtime(&session.agent_id)
+            .await
+            .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
+    }
+
+    async fn runtime_for_session_use(&self, session: &Session) -> AppResult<Arc<CodexRuntime>> {
+        self.agents
+            .runtime_for_use(&session.agent_id)
+            .await
+            .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
+    }
+
     async fn session_detail(&self, session_id: &str) -> AppResult<SessionDetail> {
         let session = self
             .storage
             .get_session(session_id)
             .await
             .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+        let _ = self.runtime_for_session_use(&session).await;
         let continuity = self.session_continuity(&session).await?;
         self.storage
             .session_detail_with_session_continuity(session_id, continuity)
@@ -583,8 +623,25 @@ impl AppState {
 
     async fn session_continuity(&self, session: &Session) -> AppResult<SessionContinuity> {
         let row = self.storage.session_continuity_row(&session.id).await?;
-        if self
-            .codex
+        let runtime = match self.agents.runtime(&session.agent_id).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Ok(SessionContinuity::view_only(format!(
+                    "{} {}",
+                    view_only_reason(&session.agent_name),
+                    error
+                )));
+            }
+        };
+        let runtime_status = runtime.status().await;
+        if runtime_status.state != "ready" {
+            return Ok(SessionContinuity::view_only(agent_unavailable_reason(
+                &session.agent_name,
+                &runtime_status,
+            )));
+        }
+
+        if runtime
             .has_registered_session(session.acp_session_id.as_deref())
             .await
         {
@@ -599,16 +656,13 @@ impl AppState {
             .external_session_id
             .as_deref()
             .or(session.acp_session_id.as_deref());
-        let runtime_continuity = self
-            .codex
+        let runtime_continuity = runtime
             .runtime_session_continuity(session.acp_session_id.as_deref(), external_session_id)
             .await;
         let can_load = runtime_continuity.state == continuity_state::LOADABLE;
 
         match row.continuation_state.as_str() {
-            continuity_state::RESTORING => {
-                Ok(SessionContinuity::restoring(row.restore_started_at))
-            }
+            continuity_state::RESTORING => Ok(SessionContinuity::restoring(row.restore_started_at)),
             continuity_state::RESTORE_FAILED => Ok(SessionContinuity::restore_failed(
                 row.restore_failure_message
                     .unwrap_or_else(|| "Failed to restore session.".to_string()),
@@ -630,19 +684,36 @@ async fn apply_session_list_continuity(
             Ok(continuity) => continuity,
             Err(error) => {
                 tracing::error!(?error, "failed to project session continuity");
-                SessionContinuity::view_only(view_only_reason())
+                SessionContinuity::view_only(view_only_reason(&item.session.agent_name))
             }
         };
         item.continuable = continuity.continuable;
-        item.view_only_reason = continuity.reason.clone().filter(|_| !continuity.continuable);
+        item.view_only_reason = continuity
+            .reason
+            .clone()
+            .filter(|_| !continuity.continuable);
         item.continuity = continuity;
         updated.push(item);
     }
     updated
 }
 
-fn view_only_reason() -> &'static str {
-    "This session history is available for review, but the live Codex runtime context is not available. Start a new session to continue working."
+fn view_only_reason(agent_name: &str) -> String {
+    format!(
+        "This session history is available for review, but the live {agent_name} runtime context is not available. Start a new session to continue working."
+    )
+}
+
+fn agent_unavailable_reason(agent_name: &str, status: &ConnectionStatus) -> String {
+    let suffix = status
+        .message
+        .as_deref()
+        .map(|message| format!(": {message}"))
+        .unwrap_or_default();
+    format!(
+        "{agent_name} is {}{suffix}. This session history is available for review, but the live {agent_name} runtime context is not available. Prompts are disabled until the agent runtime is ready.",
+        status.state
+    )
 }
 
 async fn resolve_permission(
@@ -657,8 +728,19 @@ async fn resolve_permission(
         ));
     }
 
-    let permission = state
-        .codex
+    let stored_permission = state
+        .storage
+        .get_permission_request(&permission_id)
+        .await
+        .map_err(|_| AppError::NotFound("Permission request not found".to_string()))?;
+    let session = state
+        .storage
+        .get_session(&stored_permission.session_id)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    let runtime = state.runtime_for_existing_session(&session).await?;
+
+    let permission = runtime
         .resolve_permission(&permission_id, option_id)
         .await
         .map_err(|error| AppError::Conflict(error.to_string()))?;
@@ -669,11 +751,12 @@ async fn cancel_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> AppResult<Json<SessionDetail>> {
-    state
+    let session = state
         .storage
         .get_session(&session_id)
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    let runtime = state.runtime_for_existing_session(&session).await?;
     if state
         .storage
         .pending_permission_for_session(&session_id)
@@ -685,8 +768,7 @@ async fn cancel_session(
         ));
     }
 
-    state
-        .codex
+    runtime
         .cancel_pending_permissions_for_session(&session_id)
         .await
         .map_err(|error| AppError::Conflict(error.to_string()))?;
@@ -706,13 +788,13 @@ async fn cancel_session(
 
 async fn run_prompt_turn(
     storage: Storage,
-    codex: Arc<CodexRuntime>,
+    runtime: Arc<CodexRuntime>,
     events_tx: broadcast::Sender<RealtimeEvent>,
     session_id: String,
     acp_session_id: String,
     prompt: String,
 ) {
-    match codex.prompt(acp_session_id, prompt).await {
+    match runtime.prompt(acp_session_id, prompt).await {
         Ok(outcome) => {
             match storage.get_session(&session_id).await {
                 Ok(session) if session.status == status::FAILED => {
@@ -806,10 +888,19 @@ async fn websocket_loop(mut socket: WebSocket, state: AppState) {
     let mut rx = state.events_tx.subscribe();
 
     let initial = RealtimeEvent::ConnectionStatus {
-        status: state.codex.status().await,
+        status: state.agents.codex_status().await,
     };
     if send_ws_event(&mut socket, &initial).await.is_err() {
         return;
+    }
+    for agent in state.agents.statuses().await {
+        let event = RealtimeEvent::AgentConnectionStatus {
+            agent_id: agent.id,
+            status: agent.status,
+        };
+        if send_ws_event(&mut socket, &event).await.is_err() {
+            return;
+        }
     }
 
     loop {
@@ -869,10 +960,14 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use std::{net::SocketAddr, process::Command as StdCommand};
+    use std::{
+        collections::HashMap, net::SocketAddr, path::PathBuf, process::Command as StdCommand,
+        time::Duration,
+    };
+    use tokio::time::{sleep, timeout};
 
     use crate::{
-        config::Config,
+        config::{AgentConfig, Config, CLAUDE_AGENT_ID, CODEX_AGENT_ID},
         models::{AgentSessionCapabilities, NewReviewArtifact},
         storage::NewPermissionRequest,
     };
@@ -896,6 +991,9 @@ mod tests {
             database_url,
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
+            claude_acp_enabled: false,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
@@ -903,16 +1001,22 @@ mod tests {
         };
         let auth = AuthService::from_config(&config).unwrap();
         let codex = CodexRuntime::ready_for_tests(
-            config,
+            config.clone(),
             storage.clone(),
             events_tx.clone(),
             session_capabilities,
+        );
+        let agents = AgentRuntimeManager::for_tests(
+            &config,
+            storage.clone(),
+            events_tx.clone(),
+            HashMap::from([(codex.agent().id.clone(), codex.clone())]),
         );
 
         (
             AppState {
                 storage,
-                codex,
+                agents,
                 events_tx,
                 auth,
             },
@@ -922,6 +1026,180 @@ mod tests {
 
     async fn auth_test_state() -> (AppState, tempfile::TempDir) {
         test_state_with_auth(Some("test-token".to_string()), false, vec![]).await
+    }
+
+    async fn test_state_with_fake_agents() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let database_url = format!("sqlite://{}", dir.path().join("test.db").display());
+        let storage = Storage::connect(&database_url).await.unwrap();
+        storage.migrate().await.unwrap();
+        let (events_tx, _) = broadcast::channel(64);
+        let script = write_multi_agent_fake_acp(&dir);
+        let config = Config {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 7635,
+            work_dir: dir.path().to_path_buf(),
+            database_url,
+            codex_acp_command: "codex-acp".to_string(),
+            codex_acp_args: vec![],
+            claude_acp_enabled: true,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
+            frontend_dist: Some(dir.path().join("dist")),
+            pairing_token: Some("test-token".to_string()),
+            disable_auth: true,
+            trusted_clients: vec![],
+        };
+        let auth = AuthService::from_config(&config).unwrap();
+        let codex = CodexRuntime::start_for_agent(
+            fake_agent(CODEX_AGENT_ID, "Codex", script.clone()),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+        let claude = CodexRuntime::start_for_agent(
+            fake_agent(CLAUDE_AGENT_ID, "Claude", script),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+        assert_eq!(codex.status().await.state, "ready");
+        assert_eq!(claude.status().await.state, "ready");
+        let agents = AgentRuntimeManager::for_tests(
+            &config,
+            storage.clone(),
+            events_tx.clone(),
+            HashMap::from([
+                (CODEX_AGENT_ID.to_string(), codex),
+                (CLAUDE_AGENT_ID.to_string(), claude),
+            ]),
+        );
+
+        (
+            AppState {
+                storage,
+                agents,
+                events_tx,
+                auth,
+            },
+            dir,
+        )
+    }
+
+    fn fake_agent(id: &str, title: &str, script: PathBuf) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            title: title.to_string(),
+            command: "uv".to_string(),
+            args: vec![
+                "run".to_string(),
+                "--script".to_string(),
+                script.to_string_lossy().to_string(),
+                id.to_string(),
+            ],
+            enabled: true,
+        }
+    }
+
+    fn write_multi_agent_fake_acp(dir: &tempfile::TempDir) -> PathBuf {
+        let script = dir.path().join("multi_agent_fake_acp.py");
+        std::fs::write(
+            &script,
+            r#"
+import json
+import sys
+
+agent = sys.argv[1]
+
+def send(message):
+    print(json.dumps(message), flush=True)
+
+def prompt_text(message):
+    chunks = message.get("params", {}).get("prompt", [])
+    return "".join(chunk.get("text", "") for chunk in chunks if isinstance(chunk, dict))
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    request_id = message.get("id")
+
+    if method == "initialize":
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "agentInfo": {"name": agent},
+                "agentCapabilities": {
+                    "loadSession": True,
+                    "sessionCapabilities": {"resume": False, "list": True}
+                }
+            }
+        })
+    elif method == "session/new":
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"sessionId": "shared-session"}
+        })
+    elif method == "session/load":
+        session_id = message.get("params", {}).get("sessionId", "shared-session")
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Restored by " + agent}
+                }
+            }
+        })
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": session_id}})
+    elif method == "session/prompt":
+        session_id = message.get("params", {}).get("sessionId", "shared-session")
+        text = prompt_text(message).lower()
+        if "permission" in text:
+            send({
+                "jsonrpc": "2.0",
+                "id": agent + "-permission",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": session_id,
+                    "toolCall": {
+                        "toolCallId": "tool-" + agent,
+                        "title": "Run " + agent,
+                        "kind": "execute",
+                        "content": [{"type": "text", "text": "echo " + agent}]
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+                    ]
+                }
+            })
+            response = json.loads(sys.stdin.readline())
+            selected = response.get("result", {}).get("outcome", {}).get("optionId", "cancelled")
+            content = "Permission resolved by " + agent + " with " + selected
+        else:
+            content = "Hello from " + agent
+        send({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": content}
+                }
+            }
+        })
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+"#,
+        )
+        .unwrap();
+        script
     }
 
     async fn test_state_with_auth(
@@ -941,18 +1219,28 @@ mod tests {
             database_url,
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
+            claude_acp_enabled: false,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token,
             disable_auth,
             trusted_clients,
         };
         let auth = AuthService::from_config(&config).unwrap();
-        let codex = CodexRuntime::failed_for_tests(config, storage.clone(), events_tx.clone());
+        let codex =
+            CodexRuntime::failed_for_tests(config.clone(), storage.clone(), events_tx.clone());
+        let agents = AgentRuntimeManager::for_tests(
+            &config,
+            storage.clone(),
+            events_tx.clone(),
+            HashMap::from([(codex.agent().id.clone(), codex.clone())]),
+        );
 
         (
             AppState {
                 storage,
-                codex,
+                agents,
                 events_tx,
                 auth,
             },
@@ -978,6 +1266,40 @@ mod tests {
 
     fn loopback_peer() -> &'static str {
         "127.0.0.1:48152"
+    }
+
+    async fn wait_for_message_containing(storage: &Storage, session_id: &str, needle: &str) {
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let messages = storage.list_messages(session_id).await.unwrap();
+                if messages
+                    .iter()
+                    .any(|message| message.content.contains(needle))
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_pending_permission(storage: &Storage, session_id: &str) -> PermissionRequest {
+        timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(permission) = storage
+                    .pending_permission_for_session(session_id)
+                    .await
+                    .unwrap()
+                {
+                    break permission;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1344,6 +1666,223 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["codex"]["state"], "failed");
+        assert_eq!(json["agents"][0]["id"], "codex");
+        assert_eq!(json["agents"][0]["status"]["state"], "failed");
+    }
+
+    #[tokio::test]
+    async fn creates_codex_and_claude_sessions_in_same_workspace() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let codex_body = serde_json::json!({"agentId": "codex"});
+        let codex_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(codex_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(codex_response.status(), StatusCode::OK);
+        let body = to_bytes(codex_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let codex_json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(codex_json["session"]["agentId"], "codex");
+        assert_eq!(codex_json["session"]["agentName"], "Codex");
+
+        let claude_body = serde_json::json!({"agentId": "claude"});
+        let claude_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(claude_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claude_response.status(), StatusCode::OK);
+        let body = to_bytes(claude_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let claude_json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(claude_json["session"]["agentId"], "claude");
+        assert_eq!(claude_json["session"]["agentName"], "Claude");
+
+        let list_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let body = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: Value = serde_json::from_slice(&body).unwrap();
+        let agent_ids = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["session"]["agentId"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(agent_ids.contains(&"codex"));
+        assert!(agent_ids.contains(&"claude"));
+    }
+
+    #[tokio::test]
+    async fn routes_prompt_restore_and_permission_by_session_agent() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let codex_session = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                "codex",
+                "Codex",
+                "shared-session".to_string(),
+            )
+            .await
+            .unwrap();
+        let claude_session = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                "claude",
+                "Claude",
+                "shared-session".to_string(),
+            )
+            .await
+            .unwrap();
+        state
+            .agents
+            .runtime("codex")
+            .await
+            .unwrap()
+            .register_session("shared-session".to_string(), codex_session.id.clone())
+            .await;
+        state
+            .agents
+            .runtime("claude")
+            .await
+            .unwrap()
+            .register_session("shared-session".to_string(), claude_session.id.clone())
+            .await;
+        let app = api_router(state.clone());
+
+        let prompt_body = serde_json::json!({"prompt": "hello"});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", claude_session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(prompt_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        wait_for_message_containing(&state.storage, &claude_session.id, "Hello from claude").await;
+        assert!(!state
+            .storage
+            .list_messages(&codex_session.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|message| message.content.contains("Hello from claude")));
+
+        let restore_session = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                "claude",
+                "Claude",
+                "restore-claude".to_string(),
+            )
+            .await
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/restore", restore_session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        wait_for_message_containing(&state.storage, &restore_session.id, "Restored by claude")
+            .await;
+
+        let permission_body = serde_json::json!({"prompt": "needs permission"});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", claude_session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(permission_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let permission = wait_for_pending_permission(&state.storage, &claude_session.id).await;
+        let resolve_body = serde_json::json!({"optionId": "allow-once"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/permission-requests/{}/resolve",
+                        permission.id
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(resolve_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        wait_for_message_containing(
+            &state.storage,
+            &claude_session.id,
+            "Permission resolved by claude with allow-once",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2033,7 +2572,10 @@ mod tests {
         assert!(json["error"].as_str().unwrap().contains("Restore"));
 
         state
-            .codex
+            .agents
+            .runtime("codex")
+            .await
+            .unwrap()
             .register_session("acp-session".to_string(), session.id.clone())
             .await;
         let response = app

@@ -213,9 +213,26 @@ impl Storage {
         Ok(workspace)
     }
 
+    #[cfg(test)]
     pub async fn create_session(
         &self,
         workspace_id: &str,
+        acp_session_id: String,
+    ) -> anyhow::Result<Session> {
+        self.create_session_for_agent(
+            workspace_id,
+            crate::config::CODEX_AGENT_ID,
+            "Codex",
+            acp_session_id,
+        )
+        .await
+    }
+
+    pub async fn create_session_for_agent(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        agent_name: &str,
         acp_session_id: String,
     ) -> anyhow::Result<Session> {
         let id = Uuid::new_v4().to_string();
@@ -226,6 +243,7 @@ impl Storage {
             INSERT INTO sessions (
                 id,
                 workspace_id,
+                agent_id,
                 agent_name,
                 acp_session_id,
                 external_session_id,
@@ -234,11 +252,13 @@ impl Storage {
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, 'codex', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(workspace_id)
+        .bind(agent_id)
+        .bind(agent_name)
         .bind(&acp_session_id)
         .bind(&acp_session_id)
         .bind(continuity_state::LIVE)
@@ -257,6 +277,7 @@ impl Storage {
             SELECT
                 id,
                 workspace_id,
+                agent_id,
                 agent_name,
                 acp_session_id,
                 external_session_id,
@@ -378,6 +399,7 @@ impl Storage {
             SELECT
                 s.id AS session_id,
                 s.workspace_id,
+                s.agent_id,
                 s.agent_name,
                 s.acp_session_id,
                 s.external_session_id,
@@ -1320,6 +1342,7 @@ impl Storage {
 struct SessionListItemRow {
     session_id: String,
     workspace_id: String,
+    agent_id: String,
     agent_name: String,
     acp_session_id: Option<String>,
     external_session_id: Option<String>,
@@ -1445,6 +1468,7 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
         session: Session {
             id: row.session_id,
             workspace_id: row.workspace_id,
+            agent_id: row.agent_id,
             agent_name: row.agent_name,
             acp_session_id: row.acp_session_id,
             external_session_id: row.external_session_id,
@@ -1607,7 +1631,7 @@ fn sqlite_file_path(database_url: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::review_artifact_kind;
+    use crate::{config::CODEX_AGENT_ID, models::review_artifact_kind};
 
     async fn create_test_permission(
         storage: &Storage,
@@ -1668,6 +1692,50 @@ mod tests {
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn old_shape_session_inserts_default_to_codex_agent() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO sessions (
+                id,
+                workspace_id,
+                agent_name,
+                acp_session_id,
+                external_session_id,
+                continuation_state,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("old-session")
+        .bind(&workspace.id)
+        .bind("codex")
+        .bind("acp-old")
+        .bind("acp-old")
+        .bind(continuity_state::LIVE)
+        .bind(status::IDLE)
+        .bind(now())
+        .bind(now())
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+
+        let session = storage.get_session("old-session").await.unwrap();
+        assert_eq!(session.agent_id, CODEX_AGENT_ID);
+        assert_eq!(session.agent_name, "codex");
     }
 
     #[tokio::test]

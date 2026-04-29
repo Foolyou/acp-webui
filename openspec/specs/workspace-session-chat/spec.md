@@ -21,21 +21,22 @@ The system SHALL allow the user to create a workspace from a local filesystem pa
 
 ### Requirement: User can create a session in a workspace
 
-The system SHALL allow the user to create a Codex-backed session for a workspace with visible creation feedback.
+The system SHALL allow the user to create an agent-backed session for a workspace with visible creation feedback.
 
 #### Scenario: Session is created for an existing workspace
 
-- **WHEN** the user creates a session for an existing workspace and the Codex connection is ready
-- **THEN** the backend SHALL create an ACP session through Codex
-- **AND** it SHALL persist a local session record linked to the workspace
+- **WHEN** the user creates a session for an existing workspace and selects an available agent
+- **THEN** the backend SHALL start that agent runtime if it is idle or retryable failed
+- **AND** it SHALL create an ACP session through the selected agent after the runtime is ready
+- **AND** it SHALL persist a local session record linked to the workspace with the selected agent id
 - **AND** the browser SHALL show an optimistic chat loading state until the new session detail is available
 - **AND** the browser SHALL navigate to or display the new session detail view
 
-#### Scenario: Session creation is requested while Codex is not ready
+#### Scenario: Session creation is requested while selected agent is starting or disabled
 
-- **WHEN** the user tries to create a session while the Codex connection is starting or failed
+- **WHEN** the user tries to create a session while the selected agent connection is already starting or the selected agent is disabled
 - **THEN** the backend SHALL reject the request
-- **AND** the browser SHALL show the current Codex connection status
+- **AND** the browser SHALL show the current connection status for that selected agent
 
 #### Scenario: Session creation takes noticeable time
 
@@ -43,15 +44,21 @@ The system SHALL allow the user to create a Codex-backed session for a workspace
 - **THEN** the browser SHALL continue showing a loading chat shell or skeleton
 - **AND** it SHALL avoid presenting the app as idle or merely disabling the create button
 
+#### Scenario: Session creation omits agent id
+
+- **WHEN** a compatible client creates a session without sending an agent id
+- **THEN** the backend SHALL use the configured default agent
+- **AND** it SHALL persist that resolved agent id on the session
+
 ### Requirement: User can submit a text prompt
 
-The system SHALL allow the user to submit a text prompt to an idle continuable session.
+The system SHALL allow the user to submit a text prompt to an idle continuable session through that session's selected agent.
 
 #### Scenario: Prompt is submitted to an idle session
 
 - **WHEN** the user submits a non-empty text prompt to an idle continuable session
 - **THEN** the backend SHALL persist the user prompt as a session message or timeline item
-- **AND** it SHALL send the prompt to Codex through ACP
+- **AND** it SHALL send the prompt to the session's selected agent through ACP
 - **AND** the browser SHALL show the submitted prompt in the session timeline
 
 #### Scenario: Empty prompt is submitted
@@ -93,17 +100,17 @@ The system SHALL include pending permission request state when returning session
 
 ### Requirement: Browser displays Codex text responses
 
-The system SHALL display text responses from Codex in the session timeline.
+The system SHALL display text responses from the session's selected ACP agent in the session timeline.
 
 #### Scenario: Text response is received
 
-- **WHEN** Codex sends text response content for a session
+- **WHEN** the selected agent sends text response content for a session
 - **THEN** the backend SHALL forward the text content to connected browsers for that session
 - **AND** the browser SHALL display the text as an assistant message in the timeline
 
 #### Scenario: Text response completes
 
-- **WHEN** Codex finishes a text response for a prompt turn
+- **WHEN** the selected agent finishes a text response for a prompt turn
 - **THEN** the backend SHALL persist the completed assistant message
 - **AND** the browser SHALL show the session as idle or completed for that turn
 
@@ -125,18 +132,18 @@ The system SHALL persist session chat history and reload it through the normaliz
 
 ### Requirement: Browser receives live session updates
 
-The system SHALL provide a realtime channel for session text and timeline updates.
+The system SHALL provide a realtime channel for session text and timeline updates from each session's selected agent.
 
 #### Scenario: Browser is connected during a running prompt
 
-- **WHEN** the browser has an open realtime connection for a session and Codex emits text content or tool activity
+- **WHEN** the browser has an open realtime connection for a session and the selected agent emits text content or tool activity
 - **THEN** the browser SHALL receive the supported update without polling
 
 #### Scenario: Browser reconnects after disconnect
 
 - **WHEN** the browser reconnects after a temporary disconnect
 - **THEN** it SHALL be able to reload the current persisted normalized session timeline
-- **AND** it SHALL resume receiving subsequent live updates when the session is continuable
+- **AND** it SHALL resume receiving subsequent live updates when the session is continuable and its selected agent runtime is ready
 
 ### Requirement: Session timeline includes review artifact cards
 The system SHALL present session review evidence inside the Session Detail timeline.

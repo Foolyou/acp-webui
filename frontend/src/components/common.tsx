@@ -30,7 +30,7 @@ export function BrandBlock() {
   return (
     <div className="brand">
       <p className="eyebrow">ACP Web UI</p>
-      <h1>Codex Session</h1>
+      <h1>Agent Session</h1>
     </div>
   );
 }

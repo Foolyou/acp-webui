@@ -1,8 +1,5 @@
-# session-list Specification
+## MODIFIED Requirements
 
-## Purpose
-Define the mobile Sessions surface, including the backend session list projection, row metadata, navigation to Session Detail, realtime freshness, and loading or empty states.
-## Requirements
 ### Requirement: Backend provides session list projection
 The system SHALL provide persisted session list projections suitable for workspace-scoped navigation across multiple agents.
 
@@ -32,34 +29,6 @@ The system SHALL provide persisted session list projections suitable for workspa
 - **THEN** the session list row SHALL remain visible and reviewable
 - **AND** it SHALL expose continuity metadata that prevents prompt submission until the agent runtime is ready or the session is restored
 
-### Requirement: User can open session from Sessions list
-The system SHALL allow the user to navigate from a workspace-scoped session list row to the corresponding Session Detail route.
-
-#### Scenario: User selects a session
-- **WHEN** the user selects a session from the Sessions list
-- **THEN** the browser SHALL navigate to that session's routed Session Detail
-- **AND** it SHALL render the Session Detail for that session
-
-#### Scenario: Selected session no longer exists
-- **WHEN** the user selects a session that no longer exists or cannot be loaded
-- **THEN** the browser SHALL show a readable error
-- **AND** it SHALL keep the user in the current workspace context
-
-### Requirement: Sessions list stays current during realtime updates
-The system SHALL keep the visible Sessions list current as session status, approval state, and review artifact availability change.
-
-#### Scenario: Session status changes while Sessions list is visible
-- **WHEN** the browser is showing the Sessions list and receives a session status update
-- **THEN** the browser SHALL update the affected row's status without requiring a full page reload
-
-#### Scenario: Approval state changes while Sessions list is visible
-- **WHEN** the browser is showing the Sessions list and receives permission requested or permission resolved events
-- **THEN** the browser SHALL update the affected row's pending approval indicator
-
-#### Scenario: Review artifact becomes available while Sessions list is visible
-- **WHEN** the browser is showing the Sessions list and receives a review artifact event
-- **THEN** the browser SHALL update the affected row to indicate review evidence is available
-
 ### Requirement: Sessions list supports empty and loading states
 The Sessions surface SHALL provide clear loading, creation, agent selection, and empty states aligned to the routed workbench.
 
@@ -76,4 +45,3 @@ The Sessions surface SHALL provide clear loading, creation, agent selection, and
 - **WHEN** the user starts creating a new session from the Sessions surface
 - **THEN** the browser SHALL transition to an optimistic chat creation state that identifies the selected agent
 - **AND** the Sessions surface SHALL not add a permanent row until the backend returns a real session
-

@@ -271,6 +271,56 @@ pre {
   justify-content: flex-end;
 }
 
+.agent-create-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.agent-create-controls.small {
+  justify-content: flex-end;
+}
+
+.agent-option {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 7.5rem;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.52rem 0.68rem;
+  text-align: left;
+}
+
+.agent-create-controls.small .agent-option {
+  min-width: 6.4rem;
+  padding: 0.42rem 0.62rem;
+}
+
+.agent-option.ready {
+  border-color: rgba(45, 95, 85, 0.34);
+}
+
+.agent-option.idle {
+  border-color: rgba(65, 88, 118, 0.28);
+}
+
+.agent-option.failed,
+.agent-option.disabled {
+  border-color: rgba(155, 53, 45, 0.28);
+}
+
+.agent-option strong,
+.agent-option span {
+  overflow-wrap: anywhere;
+}
+
+.agent-option span {
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+}
+
 .primary {
   background: var(--color-surface-strong);
   color: #fff;
@@ -452,16 +502,20 @@ pre {
 }
 
 .status-dot.ready,
+.status-dot.idle,
 .pill.ready,
+.pill.idle,
 .pill.connected {
   border-color: rgba(45, 95, 85, 0.34);
 }
 
-.status-dot.ready {
+.status-dot.ready,
+.status-dot.idle {
   background: var(--color-accent);
 }
 
 .pill.failed,
+.pill.disabled,
 .pill.disconnected {
   border-color: rgba(155, 53, 45, 0.38);
 }

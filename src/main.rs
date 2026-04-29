@@ -44,12 +44,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (events_tx, _) = tokio::sync::broadcast::channel(256);
-    let codex = acp::CodexRuntime::start(config.clone(), storage.clone(), events_tx.clone()).await;
+    let agents = acp::AgentRuntimeManager::start(&config, storage.clone(), events_tx.clone()).await;
     let auth = auth::AuthService::from_config(&config)?;
 
     let state = AppState {
         storage,
-        codex,
+        agents,
         events_tx,
         auth: auth.clone(),
     };

@@ -41,6 +41,13 @@ async function startBackend() {
       "run",
       "--codex-acp-arg=--script",
       "--codex-acp-arg",
+      fakeAcpScript,
+      "--claude-acp-command",
+      "uv",
+      "--claude-acp-arg",
+      "run",
+      "--claude-acp-arg=--script",
+      "--claude-acp-arg",
       fakeAcpScript
     ],
     {
@@ -114,6 +121,14 @@ test("pairs an anonymous browser before loading app state", async ({ page }) => 
       status: 200,
       body: JSON.stringify({
         codex: { state: "ready", message: "Codex" },
+        agents: [
+          {
+            id: "codex",
+            title: "Codex",
+            enabled: true,
+            status: { state: "ready", message: "Codex" }
+          }
+        ],
         inbox: []
       })
     });
@@ -149,7 +164,7 @@ test("pairs an anonymous browser before loading app state", async ({ page }) => 
 test("creates a workspace and session, sends a prompt, and restores after refresh", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await page.getByRole("button", { name: "Menu" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
@@ -157,10 +172,9 @@ test("creates a workspace and session, sends a prompt, and restores after refres
 
   await page.getByPlaceholder("/home/user/project").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
+  await expect(agentCreateButton(page, "Codex")).toBeVisible();
 
-  await page.getByRole("button", { name: "New Session" }).click();
-  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+  await startSession(page);
 
   await page.getByPlaceholder("Ask Codex...").fill("Reply with the smoke phrase.");
   await page.keyboard.press("Control+Enter");
@@ -174,7 +188,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
 
   const ids = sessionRouteIds(page);
   await openMenuAndClick(page, /Sessions/);
-  await expect(page.getByRole("link", { name: /acp-webui.*codex.*idle/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /acp-webui.*Codex.*idle/i })).toBeVisible();
 
   const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
   const detail = await detailResponse.json();
@@ -210,13 +224,153 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
 });
 
+test("creates a Claude session when Claude is selected", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await startSession(page, "Claude");
+  await page.getByPlaceholder("Ask Claude...").fill("Reply with the smoke phrase.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByText("Reply with the smoke phrase.")).toBeVisible();
+  await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
+  const ids = sessionRouteIds(page);
+  await openMenuAndClick(page, /Sessions/);
+  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  await expect(sessionLink).toContainText("Claude");
+});
+
+test("keeps ready agents selectable when another agent has failed", async ({ page }) => {
+  await page.addInitScript(() => {
+    class MockSocket extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+
+      send() {}
+
+      close() {
+        this.dispatchEvent(new CloseEvent("close"));
+      }
+    }
+
+    window.WebSocket = MockSocket as unknown as typeof WebSocket;
+  });
+
+  const workspace = {
+    id: "mock-workspace",
+    name: "Mock workspace",
+    path: repoRoot,
+    createdAt: new Date().toISOString()
+  };
+  const session = {
+    id: "mock-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    acpSessionId: "mock-acp-session",
+    externalSessionId: "mock-acp-session",
+    status: "idle",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const continuity = {
+    state: "live",
+    continuable: true,
+    restorable: false,
+    restoring: false,
+    reason: null,
+    failureMessage: null,
+    restoreStartedAt: null,
+    restoreCompletedAt: null
+  };
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        access: "paired_session",
+        pairingRequired: false,
+        clientIp: "127.0.0.1"
+      })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: null },
+        agents: [
+          { id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } },
+          {
+            id: "claude",
+            title: "Claude",
+            enabled: true,
+            status: { state: "failed", message: "Claude needs local authentication" }
+          }
+        ],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify([workspace])
+    });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route(`**/api/workspaces/${workspace.id}/sessions`, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        contentType: "application/json",
+        status: 200,
+        body: JSON.stringify({
+          session,
+          workspace,
+          messages: [],
+          reviewArtifacts: [],
+          timeline: [],
+          pendingPermission: null,
+          pendingPermissions: [],
+          pendingApprovalCount: 0,
+          queuedApprovalCount: 0,
+          failureMessage: null,
+          continuity,
+          continuable: true,
+          viewOnlyReason: null
+        })
+      });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+
+  await page.goto(`/workspaces/${workspace.id}/sessions`);
+  await expect(agentCreateButton(page, "Claude")).toBeEnabled();
+  await expect(agentCreateButton(page, "Claude")).toContainText("Claude needs local authentication");
+  await expect(agentCreateButton(page, "Codex")).toBeEnabled();
+  await agentCreateButton(page, "Codex").click();
+  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+});
+
 test("restores a persisted session after backend restart and sends a follow-up prompt", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Create scroll history.");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Scroll history line 80")).toBeVisible();
@@ -244,11 +398,10 @@ test("restores a persisted session after backend restart and sends a follow-up p
 test("shows restore failure and view-only fallback states", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
-  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+  await startSession(page);
   const ids = sessionRouteIds(page);
   const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
   const detail = await detailResponse.json();
@@ -294,10 +447,10 @@ test("shows restore failure and view-only fallback states", async ({ page }) => 
 test("renders markdown messages and markdown review artifacts", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Show **markdown response**.");
   await page.keyboard.press("Control+Enter");
 
@@ -328,10 +481,10 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
 test("wraps long assistant pre blocks", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Show wrapping response.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -345,14 +498,15 @@ test("wraps long assistant pre blocks", async ({ page }) => {
 test("repairs assistant markdown fences glued to prose", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Show malformed fence response.");
   await page.getByRole("button", { name: "Send" }).click();
 
-  const assistant = page.locator(".message.assistant").last();
+  await expect(page.getByText("Final paragraph")).toBeVisible();
+  const assistant = page.locator(".message.assistant", { hasText: "Final paragraph" });
   await expect(assistant.locator("pre")).toHaveCount(3);
   await expect(assistant.locator("pre").nth(0)).toContainText("first block");
   await expect(assistant.locator("p", { hasText: "Next paragraph" })).toBeVisible();
@@ -366,10 +520,10 @@ test("repairs assistant markdown fences glued to prose", async ({ page }) => {
 test("auto-scrolls session timeline unless the user scrolls away", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Create scroll history.");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Scroll history line 80")).toBeVisible();
@@ -420,10 +574,10 @@ test("auto-scrolls session timeline unless the user scrolls away", async ({ page
 test("approves a pending permission request and keeps always options disabled", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Trigger approval flow.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -449,27 +603,26 @@ test("approves a pending permission request and keeps always options disabled", 
 test("opens home to the workspace sessions list instead of the last session", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
-  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+  await startSession(page);
   const ids = sessionRouteIds(page);
 
   await page.goto("/");
 
   await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
-  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
+  await expect(agentCreateButton(page, "Codex")).toBeVisible();
   await expect(page.getByPlaceholder("Ask Codex...")).toHaveCount(0);
 });
 
 test("advances through queued approval requests in one session", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Trigger queued approval flow.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -488,11 +641,11 @@ test("advances through queued approval requests in one session", async ({ page }
 test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".mobile-status", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review" })).toHaveCount(0);
   await ensureWorkspace(page);
 
-  await page.getByRole("button", { name: "New Session" }).click();
+  await startSession(page);
   await page.getByPlaceholder("Ask Codex...").fill("Trigger review artifact.");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -528,7 +681,18 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
   }
   await page.getByPlaceholder("/home/user/project").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("button", { name: "New Session" })).toBeVisible();
+  await expect(agentCreateButton(page, "Codex")).toBeVisible();
+}
+
+function agentCreateButton(page: import("@playwright/test").Page, agentName: string) {
+  return page
+    .locator(".section-actions .agent-create-controls")
+    .getByRole("button", { name: new RegExp(agentName) });
+}
+
+async function startSession(page: import("@playwright/test").Page, agentName = "Codex") {
+  await agentCreateButton(page, agentName).click();
+  await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
 }
 
 async function openMenuAndClick(page: import("@playwright/test").Page, name: RegExp) {
@@ -627,7 +791,7 @@ async function waitForBackend() {
       const response = await fetch(`${backendUrl}/api/app-state`);
       if (response.ok) {
         const state = (await response.json()) as { codex: { state: string } };
-        if (state.codex.state === "ready") {
+        if (state.codex.state === "idle" || state.codex.state === "ready") {
           return;
         }
       }

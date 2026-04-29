@@ -78,6 +78,9 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
 
     case "connection_status":
       return state;
+
+    case "agent_connection_status":
+      return state;
   }
 }
 

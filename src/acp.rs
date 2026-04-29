@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use crate::{
-    config::Config,
+    config::{AgentConfig, Config, CODEX_AGENT_ID},
     models::{
         permission_option_kind, permission_status, review_artifact_kind, role, status,
         tool_call_status, AgentSessionCapabilities, NewReviewArtifact, PermissionRequest,
@@ -37,10 +37,19 @@ pub struct ConnectionStatus {
 }
 
 impl ConnectionStatus {
-    fn starting() -> Self {
+    fn idle(agent: &AgentConfig) -> Self {
+        Self {
+            state: "idle".to_string(),
+            message: Some(format!("{} runtime has not started", agent.title)),
+            agent_info: None,
+            session_capabilities: AgentSessionCapabilities::none(),
+        }
+    }
+
+    fn starting(agent: &AgentConfig) -> Self {
         Self {
             state: "starting".to_string(),
-            message: Some("Starting codex-acp".to_string()),
+            message: Some(format!("Starting {}", agent.title)),
             agent_info: None,
             session_capabilities: AgentSessionCapabilities::none(),
         }
@@ -63,6 +72,24 @@ impl ConnectionStatus {
             session_capabilities: AgentSessionCapabilities::none(),
         }
     }
+
+    fn disabled(message: impl Into<String>) -> Self {
+        Self {
+            state: "disabled".to_string(),
+            message: Some(message.into()),
+            agent_info: None,
+            session_capabilities: AgentSessionCapabilities::none(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeStatus {
+    pub id: String,
+    pub title: String,
+    pub enabled: bool,
+    pub status: ConnectionStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +100,10 @@ impl ConnectionStatus {
 )]
 pub enum RealtimeEvent {
     ConnectionStatus {
+        status: ConnectionStatus,
+    },
+    AgentConnectionStatus {
+        agent_id: String,
         status: ConnectionStatus,
     },
     SessionStatus {
@@ -127,8 +158,8 @@ pub struct PromptOutcome {
 }
 
 #[derive(Debug)]
-pub struct CodexRuntime {
-    config: Config,
+pub struct AgentRuntime {
+    agent: AgentConfig,
     storage: Storage,
     status: Arc<RwLock<ConnectionStatus>>,
     peer: RwLock<Option<Arc<JsonRpcPeer>>>,
@@ -138,32 +169,63 @@ pub struct CodexRuntime {
     events_tx: broadcast::Sender<RealtimeEvent>,
 }
 
-impl CodexRuntime {
+pub type CodexRuntime = AgentRuntime;
+
+impl AgentRuntime {
+    #[cfg(test)]
     pub async fn start(
         config: Config,
         storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
-        let runtime = Arc::new(Self {
-            config,
+        let agent = config
+            .agent_configs()
+            .into_iter()
+            .find(|agent| agent.id == CODEX_AGENT_ID)
+            .expect("codex agent config is always present");
+        Self::start_for_agent(agent, storage, events_tx).await
+    }
+
+    #[cfg(test)]
+    pub async fn start_for_agent(
+        agent: AgentConfig,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+    ) -> Arc<Self> {
+        let runtime = Self::starting_for_agent(agent, storage, events_tx);
+        runtime.start_connection().await;
+        runtime
+    }
+
+    fn starting_for_agent(
+        agent: AgentConfig,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            status: Arc::new(RwLock::new(ConnectionStatus::starting(&agent))),
+            agent,
             storage,
-            status: Arc::new(RwLock::new(ConnectionStatus::starting())),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
             restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
-        });
+        })
+    }
 
-        runtime.emit_status().await;
+    async fn start_connection(&self) {
+        self.emit_status().await;
 
-        if let Err(error) = runtime.connect().await {
-            tracing::error!(?error, "failed to initialize codex-acp");
-            *runtime.status.write().await = ConnectionStatus::failed(error.to_string());
-            runtime.emit_status().await;
+        if let Err(error) = self.connect().await {
+            tracing::error!(
+                ?error,
+                agent_id = self.agent.id.as_str(),
+                "failed to initialize ACP agent"
+            );
+            *self.status.write().await = ConnectionStatus::failed(error.to_string());
+            self.emit_status().await;
         }
-
-        runtime
     }
 
     #[cfg(test)]
@@ -172,12 +234,25 @@ impl CodexRuntime {
         storage: Storage,
         events_tx: broadcast::Sender<RealtimeEvent>,
     ) -> Arc<Self> {
+        let agent = config
+            .agent_configs()
+            .into_iter()
+            .find(|agent| agent.id == CODEX_AGENT_ID)
+            .expect("codex agent config is always present");
+        Self::failed_for_agent_tests(agent, storage, events_tx, "Codex runtime disabled for test")
+    }
+
+    #[cfg(test)]
+    pub fn failed_for_agent_tests(
+        agent: AgentConfig,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+        message: impl Into<String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            config,
+            agent,
             storage,
-            status: Arc::new(RwLock::new(ConnectionStatus::failed(
-                "Codex runtime disabled for test",
-            ))),
+            status: Arc::new(RwLock::new(ConnectionStatus::failed(message))),
             peer: RwLock::new(None),
             session_map: Arc::new(RwLock::new(HashMap::new())),
             restore_session_map: Arc::new(RwLock::new(HashMap::new())),
@@ -193,11 +268,27 @@ impl CodexRuntime {
         events_tx: broadcast::Sender<RealtimeEvent>,
         session_capabilities: AgentSessionCapabilities,
     ) -> Arc<Self> {
+        let agent = config
+            .agent_configs()
+            .into_iter()
+            .find(|agent| agent.id == CODEX_AGENT_ID)
+            .expect("codex agent config is always present");
+        Self::ready_for_agent_tests(agent, storage, events_tx, session_capabilities)
+    }
+
+    #[cfg(test)]
+    pub fn ready_for_agent_tests(
+        agent: AgentConfig,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+        session_capabilities: AgentSessionCapabilities,
+    ) -> Arc<Self> {
+        let agent_name = agent.id.clone();
         Arc::new(Self {
-            config,
+            agent,
             storage,
             status: Arc::new(RwLock::new(ConnectionStatus::ready(
-                Some(json!({"name": "test-codex"})),
+                Some(json!({"name": format!("test-{agent_name}")})),
                 session_capabilities,
             ))),
             peer: RwLock::new(None),
@@ -212,11 +303,16 @@ impl CodexRuntime {
         self.status.read().await.clone()
     }
 
+    pub fn agent(&self) -> &AgentConfig {
+        &self.agent
+    }
+
     pub async fn ensure_ready(&self) -> anyhow::Result<Arc<JsonRpcPeer>> {
         if self.status.read().await.state != "ready" {
             let status = self.status.read().await.clone();
             return Err(anyhow!(
-                "Codex connection is not ready{}",
+                "{} connection is not ready{}",
+                self.agent.title,
                 status
                     .message
                     .as_deref()
@@ -229,7 +325,7 @@ impl CodexRuntime {
             .read()
             .await
             .clone()
-            .ok_or_else(|| anyhow!("Codex connection is not available"))
+            .ok_or_else(|| anyhow!("{} connection is not available", self.agent.title))
     }
 
     pub async fn new_session(&self, cwd: String) -> anyhow::Result<String> {
@@ -293,9 +389,10 @@ impl CodexRuntime {
                 "This agent advertises session/resume, but this version only enables ACP session/load restores.",
             )
         } else if has_external_session_id {
-            SessionContinuity::view_only(
-                "This session history is available for review, but the live Codex runtime context is not available. Start a new session to continue working.",
-            )
+            SessionContinuity::view_only(format!(
+                "This session history is available for review, but the live {} runtime context is not available. Start a new session to continue working.",
+                self.agent.title
+            ))
         } else {
             SessionContinuity::view_only("Session is missing an agent session id.")
         }
@@ -309,7 +406,10 @@ impl CodexRuntime {
     ) -> anyhow::Result<()> {
         let peer = self.ensure_ready().await?;
         if !self.session_capabilities().await.load_session {
-            return Err(anyhow!("Codex ACP does not advertise session/load support"));
+            return Err(anyhow!(
+                "{} ACP does not advertise session/load support",
+                self.agent.title
+            ));
         }
 
         self.restore_session_map
@@ -494,9 +594,9 @@ impl CodexRuntime {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
-        let mut command = Command::new(&self.config.codex_acp_command);
+        let mut command = Command::new(&self.agent.command);
         command
-            .args(&self.config.codex_acp_args)
+            .args(&self.agent.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -505,7 +605,7 @@ impl CodexRuntime {
         let child = command.spawn().with_context(|| {
             format!(
                 "failed to launch `{}` with args {:?}",
-                self.config.codex_acp_command, self.config.codex_acp_args
+                self.agent.command, self.agent.args
             )
         })?;
 
@@ -544,9 +644,204 @@ impl CodexRuntime {
     }
 
     async fn emit_status(&self) {
-        let _ = self.events_tx.send(RealtimeEvent::ConnectionStatus {
-            status: self.status().await,
+        let status = self.status().await;
+        let _ = self.events_tx.send(RealtimeEvent::AgentConnectionStatus {
+            agent_id: self.agent.id.clone(),
+            status: status.clone(),
         });
+        if self.agent.id == CODEX_AGENT_ID {
+            let _ = self
+                .events_tx
+                .send(RealtimeEvent::ConnectionStatus { status });
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AgentRuntimeEntry {
+    config: AgentConfig,
+    runtime: RwLock<Option<Arc<AgentRuntime>>>,
+    start_lock: Mutex<()>,
+}
+
+#[derive(Debug)]
+pub struct AgentRuntimeManager {
+    entries: HashMap<String, AgentRuntimeEntry>,
+    order: Vec<String>,
+    default_agent_id: String,
+    storage: Storage,
+    events_tx: broadcast::Sender<RealtimeEvent>,
+}
+
+impl AgentRuntimeManager {
+    pub async fn start(
+        config: &Config,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+    ) -> Arc<Self> {
+        let mut entries = HashMap::new();
+        let mut order = Vec::new();
+        for agent in config.agent_configs() {
+            order.push(agent.id.clone());
+            entries.insert(
+                agent.id.clone(),
+                AgentRuntimeEntry {
+                    config: agent,
+                    runtime: RwLock::new(None),
+                    start_lock: Mutex::new(()),
+                },
+            );
+        }
+
+        Arc::new(Self {
+            entries,
+            order,
+            default_agent_id: config.default_agent_id().to_string(),
+            storage,
+            events_tx,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn for_tests(
+        config: &Config,
+        storage: Storage,
+        events_tx: broadcast::Sender<RealtimeEvent>,
+        statuses: HashMap<String, Arc<AgentRuntime>>,
+    ) -> Arc<Self> {
+        let mut entries = HashMap::new();
+        let mut order = Vec::new();
+        for agent in config.agent_configs() {
+            order.push(agent.id.clone());
+            entries.insert(
+                agent.id.clone(),
+                AgentRuntimeEntry {
+                    runtime: RwLock::new(statuses.get(&agent.id).cloned()),
+                    start_lock: Mutex::new(()),
+                    config: agent,
+                },
+            );
+        }
+
+        Arc::new(Self {
+            entries,
+            order,
+            default_agent_id: config.default_agent_id().to_string(),
+            storage,
+            events_tx,
+        })
+    }
+
+    pub fn default_agent_id(&self) -> &str {
+        &self.default_agent_id
+    }
+
+    pub fn resolve_agent_id(&self, agent_id: Option<&str>) -> anyhow::Result<String> {
+        let resolved = agent_id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(self.default_agent_id());
+        let entry = self
+            .entries
+            .get(resolved)
+            .ok_or_else(|| anyhow!("Unknown agent id `{resolved}`"))?;
+        if !entry.config.enabled {
+            return Err(anyhow!("{} is disabled", entry.config.title));
+        }
+        Ok(resolved.to_string())
+    }
+
+    pub async fn runtime(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
+        let entry = self
+            .entries
+            .get(agent_id)
+            .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        if !entry.config.enabled {
+            return Err(anyhow!("{} is disabled", entry.config.title));
+        }
+        entry
+            .runtime
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow!("{} runtime has not started", entry.config.title))
+    }
+
+    pub async fn runtime_for_use(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
+        let entry = self
+            .entries
+            .get(agent_id)
+            .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        if !entry.config.enabled {
+            return Err(anyhow!("{} is disabled", entry.config.title));
+        }
+
+        if let Some(runtime) = entry.runtime.read().await.clone() {
+            match runtime.status().await.state.as_str() {
+                "ready" => return Ok(runtime),
+                "starting" => {
+                    let _guard = entry.start_lock.lock().await;
+                    if let Some(runtime) = entry.runtime.read().await.clone() {
+                        if runtime.status().await.state != "failed" {
+                            return Ok(runtime);
+                        }
+                    }
+                }
+                "failed" => {}
+                _ => return Ok(runtime),
+            }
+        }
+
+        let _guard = entry.start_lock.lock().await;
+        if let Some(runtime) = entry.runtime.read().await.clone() {
+            let state = runtime.status().await.state;
+            if state != "failed" {
+                return Ok(runtime);
+            }
+        }
+
+        let runtime = AgentRuntime::starting_for_agent(
+            entry.config.clone(),
+            self.storage.clone(),
+            self.events_tx.clone(),
+        );
+        *entry.runtime.write().await = Some(runtime.clone());
+        runtime.start_connection().await;
+        Ok(runtime)
+    }
+
+    pub async fn statuses(&self) -> Vec<AgentRuntimeStatus> {
+        let mut statuses = Vec::with_capacity(self.order.len());
+        for agent_id in &self.order {
+            let Some(entry) = self.entries.get(agent_id) else {
+                continue;
+            };
+            let status = if !entry.config.enabled {
+                ConnectionStatus::disabled(format!("{} is disabled", entry.config.title))
+            } else {
+                match entry.runtime.read().await.clone() {
+                    Some(runtime) => runtime.status().await,
+                    None => ConnectionStatus::idle(&entry.config),
+                }
+            };
+            statuses.push(AgentRuntimeStatus {
+                id: entry.config.id.clone(),
+                title: entry.config.title.clone(),
+                enabled: entry.config.enabled,
+                status,
+            });
+        }
+        statuses
+    }
+
+    pub async fn codex_status(&self) -> ConnectionStatus {
+        match self.entries.get(CODEX_AGENT_ID) {
+            Some(entry) if !entry.config.enabled => ConnectionStatus::disabled("Codex is disabled"),
+            Some(entry) => match entry.runtime.read().await.clone() {
+                Some(runtime) => runtime.status().await,
+                None => ConnectionStatus::idle(&entry.config),
+            },
+            None => ConnectionStatus::failed("Codex runtime is not available"),
+        }
     }
 }
 
@@ -1479,6 +1774,9 @@ mod tests {
                 script.to_string_lossy().to_string(),
                 mode.to_string(),
             ],
+            claude_acp_enabled: false,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
@@ -1494,6 +1792,9 @@ mod tests {
             database_url: "sqlite::memory:".to_string(),
             codex_acp_command: "codex-acp".to_string(),
             codex_acp_args: vec![],
+            claude_acp_enabled: false,
+            claude_acp_command: "npx".to_string(),
+            claude_acp_args: vec![],
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
@@ -1842,6 +2143,27 @@ for line in sys.stdin:
         .unwrap();
 
         assert_eq!(runtime.status().await.state, "failed");
+    }
+
+    #[tokio::test]
+    async fn manager_reports_idle_runtime_until_first_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let config = config_for_fake(script, "text");
+        let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
+
+        let manager = AgentRuntimeManager::start(&config, storage, events_tx).await;
+
+        assert_eq!(manager.codex_status().await.state, "idle");
+        let statuses = manager.statuses().await;
+        assert_eq!(statuses[0].id, CODEX_AGENT_ID);
+        assert_eq!(statuses[0].status.state, "idle");
+
+        let runtime = manager.runtime_for_use(CODEX_AGENT_ID).await.unwrap();
+
+        assert_eq!(runtime.status().await.state, "ready");
+        assert_eq!(manager.codex_status().await.state, "ready");
     }
 
     #[test]

@@ -13,13 +13,15 @@ export function WorkbenchShell() {
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const showSessionApproval = /\/sessions\/[^/]+$/.test(pathname);
+  const primaryAgent = state.agents.find((agent) => agent.id === "codex") ?? state.agents[0];
+  const mobileStatus = primaryAgent?.status.state ?? state.codex.state;
 
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="Primary">
         <BrandBlock />
         <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
-        <StatusStack codex={state.codex} socketState={state.socketState} />
+        <StatusStack agents={state.agents} socketState={state.socketState} />
       </aside>
 
       <section className="workbench">
@@ -31,11 +33,11 @@ export function WorkbenchShell() {
           </Button>
           <div>
             <p className="eyebrow">ACP Web UI</p>
-            <h1>{selectedWorkspace?.name ?? "Codex Session"}</h1>
+            <h1>{selectedWorkspace?.name ?? "Agent Session"}</h1>
           </div>
           <div className="mobile-status">
-            <StatusDot stateText={state.codex.state} />
-            <span>{state.codex.state}</span>
+            <StatusDot stateText={mobileStatus} />
+            <span>{mobileStatus}</span>
           </div>
         </header>
 

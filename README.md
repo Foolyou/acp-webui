@@ -2,13 +2,14 @@
 
 Mobile-first local web UI for Agent Client Protocol agents.
 
-This earliest slice connects a Rust local daemon to Codex through `codex-acp`, lets a browser create a local workspace and session, sends text prompts, and displays text responses.
+This slice connects a Rust local daemon to ACP agents over stdio. Users can create Codex or Claude sessions inside the same local workspace, send text prompts, approve permission requests, restore eligible persisted sessions, and review session evidence.
 
 ## Current Scope
 
-- Codex only, through `codex-acp`
+- Codex through `codex-acp`
+- Optional Claude support through `@agentclientprotocol/claude-agent-acp`
 - Local workspaces
-- Session creation
+- Session creation with per-session agent selection
 - Sessions list for reopening persisted sessions
 - ACP-first session continuation through verified `session/load` support when the connected agent advertises it
 - Text prompts and text replies
@@ -19,9 +20,9 @@ This earliest slice connects a Rust local daemon to Codex through `codex-acp`, l
 - Pairing token access control for non-trusted browsers
 - Trusted client IP/CIDR allowlist for deliberate local bypass
 - SQLite persistence
-- WebSocket live updates
+- Per-agent runtime status and WebSocket live updates
 
-Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, multi-agent selection, private agent transcript parsing, or durable restoration of in-flight approval responders after backend restart.
+Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, yolo mode, remembered allow-always/reject-always policies, arbitrary custom-agent settings UI, private agent transcript parsing, in-app Claude authentication, or durable restoration of in-flight approval responders after backend restart.
 
 Persisted sessions remain reviewable after browser refresh or backend restart. Prompt submission is enabled only when the backend has live ACP runtime context or the user successfully restores an eligible session through a verified agent capability. ACP Web UI currently implements `session/load`; `session/resume` is detected as a separate agent capability but is not enabled as a continuation path in this version.
 
@@ -32,16 +33,34 @@ Persisted sessions remain reviewable after browser refresh or backend restart. P
 - Rust toolchain
 - Node.js and npm when building the frontend or building from source
 - `uv` for the Python-backed fake ACP E2E fixture and cross-device Python setup
-- `codex-acp` available on PATH, or a custom command supplied to the backend
-- Codex authentication already configured in the local environment
+- `codex-acp` available on PATH, or a custom Codex command supplied to the backend
+- Node.js/npm available at runtime when enabling Claude through the default `npx` command
+- Codex and/or Claude authentication already configured in the local environment used to launch the backend
 
-Release binaries include the ACP Web UI backend, production frontend assets, and SQLite migrations. They still require an ACP agent adapter such as `codex-acp` at runtime.
+Release binaries include the ACP Web UI backend, production frontend assets, and SQLite migrations. They still require ACP agent adapters such as `codex-acp` or `@agentclientprotocol/claude-agent-acp` at runtime.
 
 `codex-acp` can be run directly if installed, or through npm:
 
 ```bash
 npx @zed-industries/codex-acp
 ```
+
+Codex and Claude appear as session choices by default. Their ACP runtimes start lazily when the user creates a session with that agent, so Claude does not need to be launched at backend startup. The default Claude command launches this on first use:
+
+```bash
+npx --yes @agentclientprotocol/claude-agent-acp
+```
+
+Override the Claude adapter command or args when needed:
+
+```bash
+acp-webui \
+  --claude-acp-command npx \
+  --claude-acp-arg --yes \
+  --claude-acp-arg @agentclientprotocol/claude-agent-acp
+```
+
+Claude login is not handled in the browser. If the adapter reports a missing authentication or configuration prerequisite, ACP Web UI shows that failure on the Claude agent while idle or ready Codex sessions remain usable.
 
 ## Runtime State
 
@@ -94,6 +113,8 @@ cargo run -- \
   --codex-acp-command codex-acp
 ```
 
+Claude is listed in the browser without an extra startup flag and starts when the user creates a Claude session.
+
 The backend protects `/api/*` and `/api/ws` with pairing-token access control. Loopback clients (`127.0.0.1` and `::1`) are trusted by default for local development. Other client IPs must pair with the token shown in the backend terminal unless they are explicitly trusted.
 
 To use a stable pairing token:
@@ -143,6 +164,22 @@ On Windows, run the embedded frontend smoke test:
 ```
 
 The smoke test builds the frontend and release binary, starts the binary from a temporary directory that does not contain `frontend/dist`, and verifies that `/`, an embedded asset, and an SPA route load successfully.
+
+To build and run the embedded release binary bound only to your local Tailscale IPv4 address:
+
+```powershell
+.\scripts\run-tailscale.ps1
+```
+
+The script detects the local `100.64.0.0/10` Tailscale IPv4 address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>` instead of `0.0.0.0`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
+
+Useful variants:
+
+```powershell
+.\scripts\run-tailscale.ps1 -SkipBuild -Port 7640
+.\scripts\run-tailscale.ps1 -TrustedClients 100.64.12.34/32
+.\scripts\run-tailscale.ps1 -StopExisting
+```
 
 ## Browser E2E
 

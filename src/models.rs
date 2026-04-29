@@ -16,6 +16,7 @@ pub struct Workspace {
 pub struct Session {
     pub id: String,
     pub workspace_id: String,
+    pub agent_id: String,
     pub agent_name: String,
     pub acp_session_id: Option<String>,
     pub external_session_id: Option<String>,
@@ -410,6 +411,12 @@ pub struct SessionListPermission {
 pub struct CreateWorkspaceRequest {
     pub path: String,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

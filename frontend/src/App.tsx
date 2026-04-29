@@ -15,13 +15,14 @@ import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
 import { applyRealtimeEvent } from "./realtime";
 import { placeholderContext, router } from "./routes/router";
-import type { AuthStatus, PermissionRequest, RealtimeEvent, SessionDetail } from "./types";
+import type { AgentRuntimeStatus, AuthStatus, PermissionRequest, RealtimeEvent, SessionDetail } from "./types";
 
 function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState {
   return {
     ...current,
     auth,
     codex: initialState.codex,
+    agents: [],
     socketState: "disconnected",
     inbox: [],
     sessions: [],
@@ -30,8 +31,29 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
     liveAssistant: "",
     busy: false,
     creatingSessionWorkspaceId: null,
+    creatingSessionAgentId: null,
     initialized: true
   };
+}
+
+function updateAgentStatus(
+  agents: AgentRuntimeStatus[],
+  agentId: string,
+  status: AgentRuntimeStatus["status"]
+): AgentRuntimeStatus[] {
+  const existing = agents.find((agent) => agent.id === agentId);
+  if (!existing) {
+    return [
+      ...agents,
+      {
+        id: agentId,
+        title: agentId,
+        enabled: true,
+        status
+      }
+    ];
+  }
+  return agents.map((agent) => (agent.id === agentId ? { ...agent, status } : agent));
 }
 
 function pendingPermissionQueue(detail: SessionDetail): PermissionRequest[] {
@@ -85,6 +107,7 @@ export function App() {
       ...current,
       auth,
       codex: appState.codex,
+      agents: appState.agents,
       inbox: appState.inbox,
       sessions,
       workspaces,
@@ -142,7 +165,19 @@ export function App() {
       socket.addEventListener("message", (event) => {
         const message = JSON.parse(event.data) as RealtimeEvent;
         if (message.type === "connection_status") {
-          setState((current) => ({ ...current, codex: message.status }));
+          setState((current) => ({
+            ...current,
+            codex: message.status,
+            agents: updateAgentStatus(current.agents, "codex", message.status)
+          }));
+          return;
+        }
+        if (message.type === "agent_connection_status") {
+          setState((current) => ({
+            ...current,
+            codex: message.agentId === "codex" ? message.status : current.codex,
+            agents: updateAgentStatus(current.agents, message.agentId, message.status)
+          }));
           return;
         }
         setState((current) => ({
@@ -262,11 +297,16 @@ export function App() {
     [runBusy]
   );
 
-  const createSession = useCallback(async (workspaceId: string) => {
-    setState((current) => ({ ...current, creatingSessionWorkspaceId: workspaceId, error: null }));
+  const createSession = useCallback(async (workspaceId: string, agentId?: string) => {
+    setState((current) => ({
+      ...current,
+      creatingSessionWorkspaceId: workspaceId,
+      creatingSessionAgentId: agentId ?? null,
+      error: null
+    }));
     await router.navigate({ to: "/workspaces/$workspaceId/sessions/new", params: { workspaceId } });
     try {
-      const detail = await api.createSession(workspaceId);
+      const detail = await api.createSession(workspaceId, agentId);
       localStorage.setItem("currentWorkspaceId", detail.workspace.id);
       localStorage.setItem("currentSessionId", detail.session.id);
       setState((current) => ({
@@ -274,6 +314,7 @@ export function App() {
         currentSession: detail,
         currentWorkspaceId: detail.workspace.id,
         creatingSessionWorkspaceId: null,
+        creatingSessionAgentId: null,
         sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
         liveAssistant: ""
       }));
@@ -290,6 +331,7 @@ export function App() {
       setState((current) => ({
         ...current,
         creatingSessionWorkspaceId: null,
+        creatingSessionAgentId: null,
         error: errorMessage(error)
       }));
     }

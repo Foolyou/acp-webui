@@ -1,4 +1,5 @@
 import type {
+  AgentRuntimeStatus,
   ConnectionStatus,
   AuthStatus,
   InboxItem,
@@ -12,6 +13,7 @@ import type {
 
 export type UiState = {
   codex: ConnectionStatus;
+  agents: AgentRuntimeStatus[];
   socketState: SocketState;
   initialized: boolean;
   workspaces: Workspace[];
@@ -24,13 +26,14 @@ export type UiState = {
   liveAssistant: string;
   busy: boolean;
   creatingSessionWorkspaceId: string | null;
+  creatingSessionAgentId: string | null;
   error: string | null;
   auth: AuthStatus | null;
 };
 
 export type AppActions = {
   cancelApproval: () => Promise<void>;
-  createSession: (workspaceId: string) => Promise<void>;
+  createSession: (workspaceId: string, agentId?: string) => Promise<void>;
   createWorkspace: (path: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessionList: (workspaceId?: string | null) => Promise<void>;
@@ -51,6 +54,7 @@ export type AppRouterContext = {
 
 export const initialState: UiState = {
   codex: { state: "starting", message: "Loading app state" },
+  agents: [],
   socketState: "connecting",
   initialized: false,
   workspaces: [],
@@ -63,6 +67,7 @@ export const initialState: UiState = {
   liveAssistant: "",
   busy: false,
   creatingSessionWorkspaceId: null,
+  creatingSessionAgentId: null,
   error: null,
   auth: null
 };

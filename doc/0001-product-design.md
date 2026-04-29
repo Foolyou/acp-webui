@@ -7,9 +7,9 @@ Date: 2026-04-27
 
 ACP Web UI is intended to be a mobile-first local web interface for agents that implement Agent Client Protocol (ACP).
 
-The initial target is Codex through Zed's `codex-acp`, with near-term expansion to Claude Code, OpenCode, and other ACP-compatible agents.
+The initial supported agents are Codex through `codex-acp` and optional Claude through `@agentclientprotocol/claude-agent-acp`, with room for OpenCode and other ACP-compatible agents.
 
-The current implementation has moved beyond the initial exploration stage. It includes a Rust local daemon, SQLite persistence, a React/Vite frontend, session lists, permission approvals, normalized timeline projections, review artifacts, and session-scoped diff fallback. The remaining product work is concentrated around local access safety, settings, stronger reconnect replay, raw ACP diagnostics, retention policy, and multi-agent preparation.
+The current implementation has moved beyond the initial exploration stage. It includes a Rust local daemon, SQLite persistence, a React/Vite frontend, session-scoped Codex/Claude agent selection, session lists, permission approvals, normalized timeline projections, review artifacts, and session-scoped diff fallback. The remaining product work is concentrated around local access safety, settings, stronger reconnect replay, raw ACP diagnostics, retention policy, and broader custom-agent configuration.
 
 The product should not be treated as a mobile IDE. Its primary role is a local-first mobile cockpit for supervising, guiding, approving, and reviewing agent work.
 
@@ -23,6 +23,7 @@ Relevant references:
 - ACP file system: https://agentclientprotocol.com/protocol/file-system
 - ACP Rust library: https://agentclientprotocol.com/libraries/rust
 - Zed `codex-acp`: https://github.com/zed-industries/codex-acp
+- Claude ACP adapter package: https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp
 
 ## 2. Product Positioning
 
@@ -63,8 +64,9 @@ Rust Local Daemon
         | stdio JSON-RPC
         v
 ACP Agent Adapter
-  - first target: codex-acp
-  - later: Claude Code, OpenCode, other ACP agents
+  - codex-acp
+  - @agentclientprotocol/claude-agent-acp
+  - later: OpenCode, other ACP agents
 ```
 
 The backend is not merely a generic API wrapper. It should be understood as a headless ACP client: it provides the client-side capabilities that a desktop editor would normally provide, while the mobile browser provides the user interaction surface.
@@ -87,9 +89,9 @@ The backend should not default to broad, unsafe exposure. Pairing token authenti
 
 ### 3.4 Agent Support Strategy
 
-The first supported agent is Codex through `codex-acp`.
+The first supported agents are Codex through `codex-acp` and Claude through the current `@agentclientprotocol/claude-agent-acp` package.
 
-The design should still avoid baking Codex-specific assumptions into core UI and storage concepts. Near-term support for Claude Code and OpenCode is expected.
+The design should avoid baking one agent into core UI and storage concepts. Agent identity is a session attribute, so one workspace can contain separate Codex and Claude sessions.
 
 Agent integration should be modeled around ACP concepts and capabilities:
 
@@ -103,11 +105,15 @@ Agent integration should be modeled around ACP concepts and capabilities:
 - Session update
 - Artifact
 
+Claude authentication is an external prerequisite in the current product. ACP Web UI reports adapter startup, initialization, or prompt failures as agent-specific runtime status, but it does not implement an in-browser Claude login flow.
+
+Codex and Claude should be present in the built-in agent catalog by default. Their runtime status starts as `idle`; the backend launches and initializes the selected adapter only when the user creates or otherwise needs a session for that agent. A failed runtime can be retried by selecting that agent again, while other idle or ready agents remain usable.
+
 ### 3.5 ACP Session Model
 
 The system should follow the ACP model.
 
-An agent connection may support multiple sessions. The first design should not assume one process per session unless later evidence shows that a specific agent requires it.
+An agent connection may support multiple sessions. ACP Web UI maintains one lazy runtime slot per configured available agent. Once started, that runtime owns its child process, JSON-RPC peer, session maps, restore maps, assistant buffers, and permission responders. The first design should not assume one process per session unless later evidence shows that a specific agent requires it.
 
 ### 3.6 Permission Model
 
@@ -466,7 +472,7 @@ Likely data areas:
 - Terminal output
 - App settings
 
-Current implementation note: SQLite already stores workspaces, sessions, messages, permission requests, review artifacts, and tool calls. Raw ACP message persistence, a durable normalized event table, app settings, and retention policy are still open implementation areas.
+Current implementation note: SQLite already stores workspaces, sessions with stable `agent_id`, messages, permission requests, review artifacts, and tool calls. Raw ACP message persistence, a durable normalized event table, app settings, and retention policy are still open implementation areas.
 
 The schema should leave room for retention policies, especially for terminal output and raw ACP logs.
 
@@ -519,8 +525,9 @@ Product architecture decisions:
 - Build a mobile-first local ACP cockpit, not a mobile IDE.
 - Use a Rust local daemon as a headless ACP client.
 - Connect to agent adapters through stdio JSON-RPC.
-- Start with Codex through `codex-acp`.
-- Design for near-term multi-agent support.
+- Support Codex through `codex-acp`.
+- Support optional Claude sessions through `@agentclientprotocol/claude-agent-acp`.
+- Keep agent selection session-scoped inside each workspace.
 - Use pairing token authentication in the first version.
 - Use opaque HttpOnly browser session cookies after successful pairing.
 - Trust loopback clients by default and allow explicit trusted IP/CIDR configuration; do not trust forwarded headers in the first version.

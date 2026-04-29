@@ -1,8 +1,15 @@
 export type ConnectionStatus = {
-  state: "starting" | "ready" | "failed" | string;
+  state: "idle" | "starting" | "ready" | "failed" | "disabled" | string;
   message?: string | null;
   agentInfo?: unknown;
   sessionCapabilities?: AgentSessionCapabilities;
+};
+
+export type AgentRuntimeStatus = {
+  id: string;
+  title: string;
+  enabled: boolean;
+  status: ConnectionStatus;
 };
 
 export type AgentSessionCapabilities = {
@@ -22,6 +29,7 @@ export type Workspace = {
 export type Session = {
   id: string;
   workspaceId: string;
+  agentId: string;
   agentName: string;
   acpSessionId?: string | null;
   externalSessionId?: string | null;
@@ -179,11 +187,13 @@ export type SessionListItem = {
 
 export type AppData = {
   codex: ConnectionStatus;
+  agents: AgentRuntimeStatus[];
   inbox: InboxItem[];
 };
 
 export type RealtimeEvent =
   | { type: "connection_status"; status: ConnectionStatus }
+  | { type: "agent_connection_status"; agentId: string; status: ConnectionStatus }
   | { type: "session_status"; sessionId: string; status: string }
   | { type: "text_delta"; sessionId: string; delta: string }
   | { type: "assistant_message"; sessionId: string; content: string }

@@ -56,9 +56,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path })
     }),
-  createSession: (workspaceId: string) =>
+  createSession: (workspaceId: string, agentId?: string) =>
     request<SessionDetail>(`/api/workspaces/${workspaceId}/sessions`, {
-      method: "POST"
+      method: "POST",
+      body: agentId ? JSON.stringify({ agentId }) : undefined
     }),
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),
