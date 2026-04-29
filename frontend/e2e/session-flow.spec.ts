@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import type { SessionDetail, TimelineItem } from "../src/types";
 
 const frontendDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(frontendDir, "../..");
@@ -364,6 +365,164 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
   await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
 });
 
+test("keeps prompt input responsive with a long rendered timeline", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+
+  const workspace = {
+    id: "long-timeline-workspace",
+    name: "Long timeline workspace",
+    path: repoRoot,
+    createdAt: new Date().toISOString()
+  };
+  const session = {
+    id: "long-timeline-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    acpSessionId: "long-timeline-acp-session",
+    externalSessionId: "long-timeline-acp-session",
+    status: "idle",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const continuity = {
+    state: "live",
+    continuable: true,
+    restorable: false,
+    restoring: false,
+    reason: null,
+    failureMessage: null,
+    restoreStartedAt: null,
+    restoreCompletedAt: null
+  };
+  const detail: SessionDetail = {
+    session,
+    workspace,
+    messages: [],
+    reviewArtifacts: [],
+    timeline: buildLongTimeline(session.id),
+    pendingPermission: null,
+    pendingPermissions: [],
+    pendingApprovalCount: 0,
+    queuedApprovalCount: 0,
+    failureMessage: null,
+    continuity,
+    continuable: true,
+    viewOnlyReason: null
+  };
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        access: "paired_session",
+        pairingRequired: false,
+        clientIp: "127.0.0.1"
+      })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: null },
+        agents: [{ id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } }],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([workspace]) });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route(`**/api/sessions/${session.id}`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
+  });
+
+  await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
+  await expect(page.getByText("Long timeline message 180")).toBeVisible();
+  await expect(page.locator("details.tool-row").first()).toBeVisible();
+  await expect(page.locator(".review-card").first()).toBeVisible();
+
+  const timelineState = await page.locator(".timeline").evaluate((element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      childCount: element.children.length,
+      display: style.display,
+      height: rect.height,
+      visibility: style.visibility
+    };
+  });
+  expect(timelineState.childCount).toBeGreaterThan(150);
+  expect(timelineState.display).not.toBe("none");
+  expect(timelineState.visibility).not.toBe("hidden");
+  expect(timelineState.height).toBeGreaterThan(0);
+
+  const prompt = "Measure prompt typing through a long rendered timeline without visible input delay.";
+  const composer = page.getByPlaceholder("Ask Codex...");
+  await expect(composer).toBeEnabled();
+  await composer.focus();
+  await page.evaluate(() => {
+    const textarea = document.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Prompt composer textarea not found");
+    }
+    const metrics = {
+      gaps: [] as number[],
+      lastInputAt: performance.now()
+    };
+    (window as typeof window & { __longTimelineTypingMetrics?: typeof metrics }).__longTimelineTypingMetrics = metrics;
+    textarea.addEventListener("input", () => {
+      const now = performance.now();
+      metrics.gaps.push(now - metrics.lastInputAt);
+      metrics.lastInputAt = now;
+    });
+  });
+  const startedAt = await page.evaluate(() => {
+    const metrics = (window as typeof window & {
+      __longTimelineTypingMetrics?: { gaps: number[]; lastInputAt: number };
+    }).__longTimelineTypingMetrics;
+    if (metrics) {
+      metrics.gaps.length = 0;
+      metrics.lastInputAt = performance.now();
+    }
+    return performance.now();
+  });
+  await page.keyboard.type(prompt);
+  const metrics = await page.evaluate(
+    ({ expectedPrompt, start }) => {
+      const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+      const timeline = document.querySelector<HTMLElement>(".timeline");
+      const typingMetrics = (window as typeof window & {
+        __longTimelineTypingMetrics?: { gaps: number[]; lastInputAt: number };
+      }).__longTimelineTypingMetrics;
+      const durationMs = performance.now() - start;
+      const gaps = typingMetrics?.gaps ?? [];
+      const sortedGaps = [...gaps].sort((a, b) => a - b);
+      const p95Index = Math.max(0, Math.ceil(sortedGaps.length * 0.95) - 1);
+      return {
+        inputCount: gaps.length,
+        msPerChar: durationMs / expectedPrompt.length,
+        p95InputGapMs: sortedGaps[p95Index] ?? 0,
+        timelineDisplay: timeline ? getComputedStyle(timeline).display : "missing",
+        value: textarea?.value ?? ""
+      };
+    },
+    { expectedPrompt: prompt, start: startedAt }
+  );
+
+  expect(metrics.value).toBe(prompt);
+  expect(metrics.inputCount).toBe(prompt.length);
+  expect(metrics.timelineDisplay).not.toBe("none");
+  expect(metrics.msPerChar).toBeLessThan(75);
+  expect(metrics.p95InputGapMs).toBeLessThan(150);
+});
+
 test("restores a persisted session after backend restart and sends a follow-up prompt", async ({ page }) => {
   await page.goto("/");
 
@@ -671,6 +830,109 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.reload();
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toHaveCount(1);
 });
+
+async function mockConnectedWebSocket(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    class MockSocket extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+      }
+
+      send() {}
+
+      close() {
+        this.dispatchEvent(new CloseEvent("close"));
+      }
+    }
+
+    window.WebSocket = MockSocket as unknown as typeof WebSocket;
+  });
+}
+
+function buildLongTimeline(sessionId: string): TimelineItem[] {
+  const timestamp = "2026-04-29T00:00:00.000Z";
+  const items: TimelineItem[] = [];
+
+  for (let index = 1; index <= 180; index += 1) {
+    const id = `long-timeline-${index}`;
+    if (index !== 180 && index % 45 === 0) {
+      items.push({
+        kind: "review_artifact",
+        id,
+        sessionId,
+        timestamp,
+        status: "completed",
+        toolCallId: `tool-${index}`,
+        artifactKind: "markdown",
+        title: `Review artifact ${index}`,
+        summary: "Compact review artifact summary kept in the long timeline fixture.",
+        source: "long timeline performance fixture"
+      });
+      continue;
+    }
+    if (index !== 180 && index % 30 === 0) {
+      items.push({
+        kind: "tool_call",
+        id,
+        sessionId,
+        timestamp,
+        status: "completed",
+        toolCallId: `tool-${index}`,
+        toolKind: "execute",
+        title: `Run long timeline command ${index}`,
+        summary: "Completed command output for the long timeline performance fixture.",
+        input: {
+          command: `echo long timeline fixture ${index}`,
+          cwd: repoRoot
+        },
+        output: {
+          stdout: `Long timeline command ${index} output\n`.repeat(8)
+        },
+        reviewArtifactIds: []
+      });
+      continue;
+    }
+    if (index !== 180 && index % 37 === 0) {
+      items.push({
+        kind: "permission",
+        id,
+        sessionId,
+        timestamp,
+        status: "resolved",
+        toolCallId: `permission-tool-${index}`,
+        title: `Resolved permission ${index}`,
+        permissionKind: "execute"
+      });
+      continue;
+    }
+
+    items.push({
+      kind: "message",
+      id,
+      sessionId,
+      timestamp,
+      status: "completed",
+      role: index % 2 === 0 ? "assistant" : "user",
+      content: [
+        `### Long timeline message ${index}`,
+        "",
+        `This is rich Markdown content in a long rendered timeline row ${index}.`,
+        "",
+        "- rendered list item",
+        "- another rendered list item",
+        "",
+        "```txt",
+        `long timeline code sample ${index}`,
+        "```"
+      ].join("\n")
+    });
+  }
+
+  return items;
+}
 
 async function ensureWorkspace(page: import("@playwright/test").Page) {
   await openMenuAndClick(page, /Workspaces/);

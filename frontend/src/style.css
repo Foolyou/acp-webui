@@ -567,8 +567,8 @@ pre {
 }
 
 .timeline {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 0.7rem;
   min-height: 14rem;
   min-width: 0;
