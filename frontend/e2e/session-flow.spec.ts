@@ -252,6 +252,8 @@ test("displays, switches, persists, and disables advertised model selector", asy
   await startSession(page);
   const modelSelect = page.getByLabel("Model");
   await expect(modelSelect).toBeVisible();
+  await expect(page.locator(".composer-wrap").getByLabel("Model")).toBeVisible();
+  await expect(page.locator(".session-toolbar").getByLabel("Model")).toHaveCount(0);
   await expect(modelSelect).toHaveValue(/fast|pro/);
 
   await modelSelect.selectOption("pro");

@@ -614,7 +614,7 @@ pre {
 
 .scroll-follow-control {
   position: sticky;
-  bottom: calc(8rem + env(safe-area-inset-bottom));
+  bottom: calc(10.5rem + env(safe-area-inset-bottom));
   z-index: 8;
   display: flex;
   justify-content: center;
@@ -960,6 +960,19 @@ pre {
   flex: 0 0 auto;
 }
 
+.composer-control-bar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.composer-control-bar .model-selector {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
 .composer-actions {
   display: flex;
   align-items: center;
@@ -1181,7 +1194,7 @@ pre {
   }
 
   .scroll-follow-control {
-    bottom: 6.75rem;
+    bottom: 8.75rem;
   }
 
   .composer {

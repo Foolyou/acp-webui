@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { Button } from "react-aria-components";
 import { currentModelLabel, modelConfigOption, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
@@ -209,15 +209,6 @@ export function SessionPane({
       <div className="session-toolbar">
         <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
         <div className="section-actions">
-          {modelOption ? (
-            <ModelSelector
-              busy={busy}
-              disabledReason={modelDisabledReason}
-              option={modelOption}
-              values={modelValues}
-              onSetSessionConfigOption={onSetSessionConfigOption}
-            />
-          ) : null}
           <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
             Diff
           </Button>
@@ -272,6 +263,17 @@ export function SessionPane({
         restoreRequired={continuity.restorable || continuity.restoring}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
+        controls={
+          modelOption ? (
+            <ModelSelector
+              busy={busy}
+              disabledReason={modelDisabledReason}
+              option={modelOption}
+              values={modelValues}
+              onSetSessionConfigOption={onSetSessionConfigOption}
+            />
+          ) : null
+        }
       />
     </section>
   );
@@ -424,6 +426,7 @@ function PromptComposer({
   restoreButtonLabel,
   restoreDisabled,
   continuityReason,
+  controls,
   restoreRequired,
   waitingApproval
 }: {
@@ -437,6 +440,7 @@ function PromptComposer({
   restoreButtonLabel: string | null;
   restoreDisabled: boolean;
   continuityReason?: string | null;
+  controls?: ReactNode;
   restoreRequired: boolean;
   waitingApproval: boolean;
 }) {
@@ -491,6 +495,7 @@ function PromptComposer({
           ) : null}
         </div>
       ) : null}
+      {controls ? <div className="composer-control-bar">{controls}</div> : null}
       <form className="composer" onSubmit={onSubmit}>
         <textarea
           disabled={disabled}
