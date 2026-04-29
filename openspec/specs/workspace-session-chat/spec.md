@@ -51,36 +51,30 @@ The system SHALL allow the user to create an agent-backed session for a workspac
 - **AND** it SHALL persist that resolved agent id on the session
 
 ### Requirement: User can submit a text prompt
-
-The system SHALL allow the user to submit a text prompt to an idle continuable session through that session's selected agent.
+The system SHALL allow the user to submit a text prompt to an idle continuable session.
 
 #### Scenario: Prompt is submitted to an idle session
-
 - **WHEN** the user submits a non-empty text prompt to an idle continuable session
 - **THEN** the backend SHALL persist the user prompt as a session message or timeline item
-- **AND** it SHALL send the prompt to the session's selected agent through ACP
+- **AND** it SHALL send the prompt to Codex through ACP
 - **AND** the browser SHALL show the submitted prompt in the session timeline
 
 #### Scenario: Empty prompt is submitted
-
 - **WHEN** the user submits an empty or whitespace-only prompt
 - **THEN** the browser or backend SHALL reject the prompt
 - **AND** no ACP prompt request SHALL be sent
 
 #### Scenario: Prompt is submitted while the session is running
-
 - **WHEN** the user attempts to submit another prompt while a session turn is running
 - **THEN** the system SHALL prevent prompt queueing
 - **AND** the browser SHALL indicate that the current turn must finish before another prompt can be sent
 
 #### Scenario: Prompt is submitted while the session is waiting for approval
-
-- **WHEN** the user attempts to submit another prompt while a session turn is waiting for approval
+- **WHEN** the user attempts to submit another prompt while a session turn has one or more pending approvals
 - **THEN** the system SHALL prevent prompt queueing
-- **AND** the browser SHALL indicate that the pending approval must be resolved before another prompt can be sent
+- **AND** the browser SHALL indicate that pending approvals must be resolved before another prompt can be sent
 
 #### Scenario: Prompt is submitted from keyboard shortcut
-
 - **WHEN** the user presses Ctrl+Enter or Cmd+Enter in the composer while a prompt can be sent
 - **THEN** the browser SHALL submit the prompt
 - **AND** plain Enter SHALL remain available for multiline text entry
@@ -89,12 +83,18 @@ The system SHALL allow the user to submit a text prompt to an idle continuable s
 The system SHALL include pending permission request state when returning session detail.
 
 #### Scenario: Session detail is loaded while waiting for approval
-- **WHEN** the browser loads session detail for a session with a pending permission request
-- **THEN** the backend SHALL include the pending permission request in the session detail response
+- **WHEN** the browser loads session detail for a session with one or more pending permission requests
+- **THEN** the backend SHALL include the active pending permission request in the session detail response
+- **AND** it SHALL include queue metadata that identifies whether additional approvals are pending
 - **AND** the browser SHALL render the session status as `waiting_approval`
 
+#### Scenario: Session detail is loaded with queued approvals
+- **WHEN** the browser loads session detail for a session with multiple pending permission requests
+- **THEN** the backend SHALL return the pending approval queue in deterministic creation order or enough metadata for the browser to show the active request and queued count
+- **AND** the browser SHALL render the active approval and keep the composer disabled
+
 #### Scenario: Session detail is loaded after approval expired
-- **WHEN** the browser loads session detail for a session whose pending approval expired after backend restart
+- **WHEN** the browser loads session detail for a session whose pending approvals expired after backend restart
 - **THEN** the backend SHALL return the session with failed status
 - **AND** the browser SHALL show a readable failure message
 
@@ -236,4 +236,49 @@ The browser SHALL provide a shortcut back to the newest session timeline content
 - **WHEN** automatic scrolling is paused and the user manually scrolls until the newest timeline content is visible
 - **THEN** the browser SHALL restore automatic following for subsequent updates
 - **AND** it SHALL hide the return-to-bottom shortcut
+
+### Requirement: Session detail exposes restoration state
+The system SHALL include restoration state when returning Session Detail for persisted sessions.
+
+#### Scenario: Browser opens a restorable session
+- **WHEN** the browser loads Session Detail for a persisted session whose agent runtime context is not live but can be restored
+- **THEN** the backend SHALL return the persisted workspace, session metadata, normalized timeline, and continuity metadata
+- **AND** it SHALL identify that the session must be restored before new prompts can be sent
+
+#### Scenario: Browser opens a restore-failed session
+- **WHEN** the browser loads Session Detail for a session whose latest restore attempt failed
+- **THEN** the backend SHALL return the persisted timeline for review
+- **AND** it SHALL include a readable failure reason
+- **AND** it SHALL keep the composer disabled for that session
+
+### Requirement: User can restore a persisted session before prompting
+The system SHALL allow a user to restore an eligible persisted session before submitting a new text prompt.
+
+#### Scenario: User restores loadable session
+- **WHEN** the user requests continuation for a loadable persisted session
+- **THEN** the backend SHALL attempt to restore the agent runtime context through the verified agent continuation path
+- **AND** the browser SHALL show that restoration is in progress
+
+#### Scenario: Restore completes before prompting
+- **WHEN** restoration completes successfully for a persisted session
+- **THEN** the backend SHALL mark the session as continuable
+- **AND** the browser SHALL enable prompt submission when the session is idle and has no pending approvals
+
+#### Scenario: Prompt is submitted before restore completes
+- **WHEN** the user attempts to submit a prompt while a session is restorable but not yet restored
+- **THEN** the system SHALL reject the prompt
+- **AND** the browser SHALL indicate that the session must be restored before continuing
+
+### Requirement: Restored sessions preserve timeline continuity
+The system SHALL preserve the existing local timeline while restoring agent runtime context.
+
+#### Scenario: Restore replays existing history
+- **WHEN** the agent replays history during restore
+- **THEN** the backend SHALL reconcile replayed updates with the existing normalized timeline
+- **AND** the browser SHALL not show duplicate messages, tool calls, approvals, or review cards
+
+#### Scenario: Restore succeeds after backend restart
+- **WHEN** a user restores a persisted session after backend restart
+- **THEN** the browser SHALL continue showing the same local timeline
+- **AND** any new prompt submitted after restore SHALL append to that session timeline
 

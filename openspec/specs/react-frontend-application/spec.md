@@ -46,8 +46,9 @@ The React frontend SHALL connect to the existing WebSocket endpoint and apply su
 
 #### Scenario: Approval state changes
 - **WHEN** the WebSocket receives permission requested or permission resolved events
-- **THEN** the React frontend SHALL update the current session approval state
+- **THEN** the React frontend SHALL update the current session approval queue state
 - **AND** it SHALL update the Inbox list without requiring polling
+- **AND** it SHALL keep showing the active approval while additional approvals are queued
 
 #### Scenario: Review artifact is received
 - **WHEN** the WebSocket receives a review artifact event for the current session
@@ -59,12 +60,18 @@ The React frontend SHALL preserve the existing browser interactions for permissi
 #### Scenario: User resolves supported approval option
 - **WHEN** a pending permission request is visible and the user selects an allow-once or reject-once option
 - **THEN** the React frontend SHALL submit the selected option to the existing permission resolution API
-- **AND** it SHALL clear the pending approval UI after the backend resolves the request
+- **AND** it SHALL clear that resolved approval from the active UI after the backend resolves the request
+- **AND** it SHALL show the next queued approval when one remains
 
 #### Scenario: Always option is visible but disabled
 - **WHEN** a pending permission request includes allow-always or reject-always options
 - **THEN** the React frontend SHALL render those options as disabled
 - **AND** it SHALL communicate that they are not available in this version
+
+#### Scenario: Approval queue has more than one request
+- **WHEN** the current session has multiple queued approvals
+- **THEN** the React frontend SHALL display the active approval controls
+- **AND** it SHALL indicate that additional approvals remain queued without requiring the user to leave Session Detail
 
 #### Scenario: User inspects review artifact
 - **WHEN** the user opens a review artifact card from the session timeline
@@ -118,4 +125,45 @@ The React frontend SHALL surface agent runtime status where it affects session c
 - **WHEN** the user opens a session whose selected agent runtime is failed
 - **THEN** the browser SHALL keep the persisted timeline reviewable
 - **AND** it SHALL disable prompt submission with a reason tied to that agent runtime
+
+### Requirement: React frontend renders session restoration states
+The React frontend SHALL render session restoration state in Session Detail and Sessions list without requiring a page reload.
+
+#### Scenario: Session is restorable
+- **WHEN** Session Detail loads a persisted session that can be restored but is not currently continuable
+- **THEN** the React frontend SHALL show a restore or continue action
+- **AND** it SHALL keep the prompt composer disabled until restoration succeeds
+
+#### Scenario: Session is restoring
+- **WHEN** a restore request is in progress for the current session
+- **THEN** the React frontend SHALL show a non-blocking restoring state
+- **AND** it SHALL prevent duplicate restore requests for that session
+
+#### Scenario: Session restore fails
+- **WHEN** restoration fails for the current session
+- **THEN** the React frontend SHALL show a readable failure message
+- **AND** it SHALL preserve access to the persisted timeline and review evidence
+
+#### Scenario: Session is view-only
+- **WHEN** a persisted session has no verified continuation path
+- **THEN** the React frontend SHALL show the view-only reason
+- **AND** it SHALL keep the prompt composer disabled
+
+### Requirement: React frontend can request session restoration
+The React frontend SHALL call the backend restoration API when the user chooses to continue an eligible persisted session.
+
+#### Scenario: User chooses continue
+- **WHEN** the user activates the restore or continue action for an eligible session
+- **THEN** the React frontend SHALL submit a restore request for that session
+- **AND** it SHALL update local application state from the backend response and realtime events
+
+#### Scenario: Restore succeeds
+- **WHEN** the backend reports that restoration succeeded
+- **THEN** the React frontend SHALL mark the session as continuable
+- **AND** it SHALL enable prompt submission when the session is idle and has no pending approvals
+
+#### Scenario: Restore is unavailable
+- **WHEN** the backend reports that a session cannot be restored
+- **THEN** the React frontend SHALL render the backend-provided reason
+- **AND** it SHALL avoid offering prompt submission for that session
 

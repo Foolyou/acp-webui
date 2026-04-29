@@ -83,14 +83,26 @@ The system SHALL tolerate ACP updates that are outside the initial text-only sco
 - **AND** connected browsers SHALL be able to display that evidence from Session Detail
 
 ### Requirement: Codex resume support is investigated before use
-The system SHALL not promise continuation of persisted sessions through Codex resume until the ACP integration has a verified resume contract.
+The system SHALL continue persisted Codex sessions only through verified ACP session continuation capabilities exposed by `codex-acp`.
 
 #### Scenario: Persisted ACP session id exists after restart
 - **WHEN** the backend starts and finds sessions with persisted ACP session ids
 - **THEN** it SHALL NOT assume those sessions are continuable solely because an ACP session id exists
-- **AND** it SHALL expose them as view-only unless live runtime context or verified resume support is available
+- **AND** it SHALL expose them as restorable only when the active Codex ACP connection advertises a verified load or resume capability
+- **AND** it SHALL expose them as view-only when no verified continuation path is available
 
-#### Scenario: Resume capability spike is completed
-- **WHEN** the implementation investigates Codex resume support
-- **THEN** it SHALL document whether `codex-acp` exposes a stable resume method, what identifier it requires, and whether local Web UI session ids can map to Codex transcript context
+#### Scenario: Codex ACP load capability is available
+- **WHEN** the Codex ACP initialization response advertises `loadSession: true`
+- **THEN** the backend SHALL be able to restore an eligible persisted Codex session by calling `session/load`
+- **AND** it SHALL use the persisted ACP session id, the session workspace path, and the configured MCP server list for the load request
+
+#### Scenario: Codex ACP load succeeds
+- **WHEN** `session/load` completes successfully for a persisted Codex session
+- **THEN** the backend SHALL register the ACP session id with the local session id
+- **AND** it SHALL allow subsequent prompts through the normal `session/prompt` flow when the session is otherwise idle
+
+#### Scenario: Codex ACP load fails
+- **WHEN** `session/load` returns an error for a persisted Codex session
+- **THEN** the backend SHALL keep the local session history available for review
+- **AND** it SHALL keep the session non-continuable with a readable restore failure reason
 

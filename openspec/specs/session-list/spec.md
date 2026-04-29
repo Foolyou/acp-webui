@@ -4,18 +4,17 @@
 Define the mobile Sessions surface, including the backend session list projection, row metadata, navigation to Session Detail, realtime freshness, and loading or empty states.
 ## Requirements
 ### Requirement: Backend provides session list projection
-The system SHALL provide persisted session list projections suitable for workspace-scoped navigation across multiple agents.
+The system SHALL provide persisted session list projections suitable for workspace-scoped navigation.
 
 #### Scenario: Browser loads session list
 - **WHEN** the browser requests the session list for a workspace
 - **THEN** the backend SHALL return persisted sessions for that workspace ordered by most recent activity first
-- **AND** each row SHALL include the session id, workspace id, workspace name, selected agent id, selected agent display name, current status, creation timestamp, last activity timestamp, continuity metadata, pending approval indicator, and review artifact availability
+- **AND** each row SHALL include the session id, workspace id, workspace name, agent name, current status, creation timestamp, last activity timestamp, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
 
 #### Scenario: Session has pending approval
-- **WHEN** a listed session has a pending permission request
+- **WHEN** a listed session has one or more pending permission requests
 - **THEN** the session list row SHALL indicate that approval is pending
-- **AND** it SHALL include enough approval summary text for the browser to show why the session needs attention
-- **AND** it SHALL preserve the selected agent identity for that session
+- **AND** it SHALL include enough active approval summary text and queued count for the browser to show why the session needs attention
 
 #### Scenario: Session has review evidence
 - **WHEN** a listed session has one or more review artifacts or available workspace diff evidence
@@ -23,14 +22,9 @@ The system SHALL provide persisted session list projections suitable for workspa
 - **AND** it SHALL expose a compact count or flag without including full artifact payloads
 
 #### Scenario: Session cannot continue
-- **WHEN** a listed session has persisted history but no usable ACP runtime context for its selected agent
+- **WHEN** a listed session has persisted history but no usable ACP runtime context
 - **THEN** the session list row SHALL mark the session as not continuable
 - **AND** it SHALL include a compact reason suitable for the browser to present in Session Detail
-
-#### Scenario: Selected agent runtime is failed
-- **WHEN** a listed session belongs to an agent whose runtime is failed
-- **THEN** the session list row SHALL remain visible and reviewable
-- **AND** it SHALL expose continuity metadata that prevents prompt submission until the agent runtime is ready or the session is restored
 
 ### Requirement: User can open session from Sessions list
 The system SHALL allow the user to navigate from a workspace-scoped session list row to the corresponding Session Detail route.
@@ -54,7 +48,7 @@ The system SHALL keep the visible Sessions list current as session status, appro
 
 #### Scenario: Approval state changes while Sessions list is visible
 - **WHEN** the browser is showing the Sessions list and receives permission requested or permission resolved events
-- **THEN** the browser SHALL update the affected row's pending approval indicator
+- **THEN** the browser SHALL update the affected row's pending approval indicator, active approval summary, and queued approval count
 
 #### Scenario: Review artifact becomes available while Sessions list is visible
 - **WHEN** the browser is showing the Sessions list and receives a review artifact event
@@ -76,4 +70,42 @@ The Sessions surface SHALL provide clear loading, creation, agent selection, and
 - **WHEN** the user starts creating a new session from the Sessions surface
 - **THEN** the browser SHALL transition to an optimistic chat creation state that identifies the selected agent
 - **AND** the Sessions surface SHALL not add a permanent row until the backend returns a real session
+
+### Requirement: Session list represents restoration state
+The system SHALL include restoration state in workspace-scoped session list rows.
+
+#### Scenario: Listed session is live
+- **WHEN** a listed session has live agent runtime context
+- **THEN** the session list row SHALL indicate that the session is continuable
+- **AND** it SHALL avoid showing restore-required messaging
+
+#### Scenario: Listed session is restorable
+- **WHEN** a listed session has persisted history and a verified agent continuation path but no live runtime context
+- **THEN** the session list row SHALL indicate that the session can be restored
+- **AND** it SHALL include compact metadata suitable for opening the session and continuing from Session Detail
+
+#### Scenario: Listed session is permanently view-only
+- **WHEN** a listed session has persisted history but no verified continuation path
+- **THEN** the session list row SHALL mark the session as view-only
+- **AND** it SHALL include a compact reason suitable for Session Detail
+
+#### Scenario: Listed session failed to restore
+- **WHEN** a listed session has a failed restore attempt
+- **THEN** the session list row SHALL expose that failure state
+- **AND** it SHALL keep review evidence and normal session navigation available
+
+### Requirement: Session list updates during restoration
+The system SHALL keep visible session list rows current when restoration state changes.
+
+#### Scenario: Restore starts while Sessions list is visible
+- **WHEN** the browser is showing the Sessions list and receives a restore-started update
+- **THEN** the browser SHALL update the affected row to show restoration is in progress
+
+#### Scenario: Restore succeeds while Sessions list is visible
+- **WHEN** the browser is showing the Sessions list and receives a restore-succeeded update
+- **THEN** the browser SHALL update the affected row to show the session is continuable
+
+#### Scenario: Restore fails while Sessions list is visible
+- **WHEN** the browser is showing the Sessions list and receives a restore-failed update
+- **THEN** the browser SHALL update the affected row to show the restore failure state
 
