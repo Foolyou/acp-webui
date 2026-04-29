@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -172,6 +173,8 @@ pub struct Message {
 pub struct SessionDetail {
     pub session: Session,
     pub workspace: Workspace,
+    pub config_options: Option<Vec<SessionConfigOption>>,
+    pub current_model: Option<SessionCurrentModel>,
     pub messages: Vec<Message>,
     pub review_artifacts: Vec<ReviewArtifactSummary>,
     pub timeline: Vec<TimelineItem>,
@@ -183,6 +186,65 @@ pub struct SessionDetail {
     pub continuity: SessionContinuity,
     pub continuable: bool,
     pub view_only_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    #[serde(rename = "type")]
+    pub option_type: String,
+    pub current_value: Option<String>,
+    pub options: Option<Vec<SessionConfigSelectOption>>,
+    #[serde(rename = "_meta")]
+    pub meta: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum SessionConfigSelectOption {
+    Group(SessionConfigSelectGroup),
+    Value(SessionConfigSelectValue),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigSelectGroup {
+    pub name: String,
+    pub description: Option<String>,
+    pub options: Vec<SessionConfigSelectValue>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigSelectValue {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCurrentModel {
+    pub config_id: String,
+    pub value: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigState {
+    pub config_options: Option<Vec<SessionConfigOption>>,
+    pub current_model: Option<SessionCurrentModel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -388,6 +450,7 @@ pub struct SessionListItem {
     pub session: Session,
     pub workspace: Workspace,
     pub last_activity_at: String,
+    pub current_model: Option<SessionCurrentModel>,
     pub pending_permission: Option<SessionListPermission>,
     pub queued_approval_count: i64,
     pub review_artifact_count: i64,
@@ -423,6 +486,12 @@ pub struct CreateSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PromptRequest {
     pub prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSessionConfigOptionRequest {
+    pub value: String,
 }
 
 pub mod status {

@@ -115,6 +115,7 @@ export function SessionDetailRoute() {
       onOpenReviewArtifact={actions.openReviewArtifact}
       onRestoreSession={actions.restoreSession}
       onSendPrompt={actions.sendPrompt}
+      onSetSessionConfigOption={actions.setSessionConfigOption}
     />
   );
 }

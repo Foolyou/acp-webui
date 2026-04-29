@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "react-aria-components";
+import { currentModelLabel, modelConfigOption, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
@@ -18,6 +19,7 @@ export function SessionPane({
   onOpenDiffFallback,
   onOpenReviewArtifact,
   onRestoreSession,
+  onSetSessionConfigOption,
   onSendPrompt
 }: {
   agentStatus: AgentRuntimeStatus | null;
@@ -27,6 +29,7 @@ export function SessionPane({
   onOpenDiffFallback: () => void;
   onOpenReviewArtifact: (artifactId: string) => void;
   onRestoreSession: (sessionId: string) => Promise<void>;
+  onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
   onSendPrompt: (prompt: string) => Promise<void>;
 }) {
   const waitingApproval =
@@ -45,6 +48,9 @@ export function SessionPane({
     : continuity.state === "restore_failed"
       ? "Retry restore"
       : "Restore";
+  const modelOption = modelConfigOption(currentSession.configOptions);
+  const modelValues = selectValues(modelOption);
+  const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentStatus);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const programmaticScrollUntilRef = useRef(0);
@@ -203,6 +209,15 @@ export function SessionPane({
       <div className="session-toolbar">
         <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
         <div className="section-actions">
+          {modelOption ? (
+            <ModelSelector
+              busy={busy}
+              disabledReason={modelDisabledReason}
+              option={modelOption}
+              values={modelValues}
+              onSetSessionConfigOption={onSetSessionConfigOption}
+            />
+          ) : null}
           <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
             Diff
           </Button>
@@ -259,6 +274,47 @@ export function SessionPane({
         onSendPrompt={onSendPrompt}
       />
     </section>
+  );
+}
+
+function ModelSelector({
+  busy,
+  disabledReason,
+  option,
+  values,
+  onSetSessionConfigOption
+}: {
+  busy: boolean;
+  disabledReason: string | null;
+  option: NonNullable<ReturnType<typeof modelConfigOption>>;
+  values: ReturnType<typeof selectValues>;
+  onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
+}) {
+  const selectedValue = option.currentValue ?? "";
+  const selected = values.find((value) => value.value === selectedValue) ?? null;
+  const label = currentModelLabel(option) ?? option.name;
+  const disabled = busy || Boolean(disabledReason) || values.length === 0;
+
+  function onChange(event: ChangeEvent<HTMLSelectElement>) {
+    const value = event.target.value;
+    if (!value || value === selectedValue) {
+      return;
+    }
+    void onSetSessionConfigOption(option.id, value);
+  }
+
+  return (
+    <label className="model-selector" title={disabledReason ?? selected?.description ?? label}>
+      <span>{option.name}</span>
+      <select aria-label={option.name} disabled={disabled} onChange={onChange} value={selectedValue}>
+        {values.map((value) => (
+          <option key={value.value} title={value.description ?? value.name} value={value.value}>
+            {value.name}
+          </option>
+        ))}
+      </select>
+      <small>{selected?.description ?? label}</small>
+    </label>
   );
 }
 

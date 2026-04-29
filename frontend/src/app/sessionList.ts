@@ -11,6 +11,7 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
     session: detail.session,
     workspace: detail.workspace,
     lastActivityAt: detail.session.updatedAt,
+    currentModel: detail.currentModel ?? null,
     pendingPermission: detail.pendingPermission
       ? {
           id: detail.pendingPermission.id,
@@ -72,6 +73,8 @@ export function applySessionListRealtime(
       return updateSessionListContinuity(sessions, event.sessionId, restoredContinuity());
     case "session_restore_failed":
       return updateSessionListContinuity(sessions, event.sessionId, restoreFailedContinuity(event.message));
+    case "session_config_updated":
+      return updateSessionListModel(sessions, event.sessionId, event.currentModel ?? null);
     default:
       return sessions;
   }
@@ -147,6 +150,27 @@ function updateSessionListReviewAvailability(sessions: SessionListItem[], sessio
           ...item,
           reviewArtifactCount: item.reviewArtifactCount + 1,
           hasReviewArtifacts: true
+        }
+      : item
+  );
+}
+
+export function updateSessionListModel(
+  sessions: SessionListItem[],
+  sessionId: string,
+  currentModel: SessionListItem["currentModel"]
+) {
+  const now = new Date().toISOString();
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          currentModel,
+          lastActivityAt: now,
+          session: {
+            ...item.session,
+            updatedAt: now
+          }
         }
       : item
   );

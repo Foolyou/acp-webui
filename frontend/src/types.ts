@@ -149,9 +149,46 @@ export type SessionContinuity = {
   restoreCompletedAt?: string | null;
 };
 
+export type SessionConfigSelectValue = {
+  value: string;
+  name: string;
+  description?: string | null;
+};
+
+export type SessionConfigSelectGroup = {
+  name: string;
+  description?: string | null;
+  options: SessionConfigSelectValue[];
+};
+
+export type SessionConfigSelectOption = SessionConfigSelectValue | SessionConfigSelectGroup;
+
+export type SessionConfigOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  type: string;
+  currentValue?: string | null;
+  options?: SessionConfigSelectOption[] | null;
+};
+
+export type SessionCurrentModel = {
+  configId: string;
+  value: string;
+  name?: string | null;
+};
+
+export type SessionConfigState = {
+  configOptions?: SessionConfigOption[] | null;
+  currentModel?: SessionCurrentModel | null;
+};
+
 export type SessionDetail = {
   session: Session;
   workspace: Workspace;
+  configOptions?: SessionConfigOption[] | null;
+  currentModel?: SessionCurrentModel | null;
   messages: ChatMessage[];
   reviewArtifacts: ReviewArtifactSummary[];
   timeline: TimelineItem[];
@@ -183,6 +220,7 @@ export type SessionListItem = {
   session: Session;
   workspace: Workspace;
   lastActivityAt: string;
+  currentModel?: SessionCurrentModel | null;
   pendingPermission?: SessionListPermission | null;
   queuedApprovalCount?: number;
   reviewArtifactCount: number;
@@ -224,6 +262,12 @@ export type RealtimeEvent =
   | { type: "session_restore_started"; sessionId: string }
   | { type: "session_restore_succeeded"; sessionId: string }
   | { type: "session_restore_failed"; sessionId: string; message: string }
+  | {
+      type: "session_config_updated";
+      sessionId: string;
+      configOptions?: SessionConfigOption[] | null;
+      currentModel?: SessionCurrentModel | null;
+    }
   | { type: "error"; message: string };
 
 export type SocketState = "connecting" | "connected" | "disconnected";

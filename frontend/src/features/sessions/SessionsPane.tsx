@@ -89,6 +89,9 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       <span>
         {item.session.agentName} · {item.session.status} · {formatRelativeTime(item.lastActivityAt)}
       </span>
+      {item.currentModel ? (
+        <span className="model-summary">Model: {item.currentModel.name ?? item.currentModel.value}</span>
+      ) : null}
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
         <ContinuityBadge item={item} />

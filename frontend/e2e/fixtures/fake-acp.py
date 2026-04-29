@@ -8,10 +8,35 @@ import sys
 import time
 
 session_id = "fake-e2e-session"
+current_model = "fast"
 
 
 def send(message):
     print(json.dumps(message), flush=True)
+
+
+def config_options():
+    return [
+        {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": current_model,
+            "options": [
+                {
+                    "value": "fast",
+                    "name": "Fast model",
+                    "description": "Lower latency",
+                },
+                {
+                    "value": "pro",
+                    "name": "Pro model",
+                    "description": "Higher capability",
+                },
+            ],
+        }
+    ]
 
 
 for line in sys.stdin:
@@ -49,7 +74,7 @@ for line in sys.stdin:
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"sessionId": session_id},
+                "result": {"sessionId": session_id, "configOptions": config_options()},
             }
         )
     elif method == "session/load":
@@ -130,7 +155,30 @@ for line in sys.stdin:
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"sessionId": load_session_id},
+                "result": {
+                    "sessionId": load_session_id,
+                    "configOptions": config_options(),
+                },
+            }
+        )
+    elif method == "session/set_config_option":
+        config_id = message.get("params", {}).get("configId")
+        value = message.get("params", {}).get("value")
+        if config_id != "model" or value not in ["fast", "pro"]:
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32602, "message": "invalid config option"},
+                }
+            )
+            continue
+        current_model = value
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"configOptions": config_options()},
             }
         )
     elif method == "session/prompt":
@@ -347,6 +395,22 @@ for line in sys.stdin:
             text = f"Plain pre wrapping:\n\n```txt\n{long_code}\n```\n\n> {quoted_text}\n>\n> ```txt\n> {quoted_code}\n> ```"
         elif "malformed fence response" in prompt_text.lower():
             text = "Fence check:\n\n```text\nfirst block\n```Next paragraph\n\n```json\n{\"ok\":true}\n```More text\n\n```textGET session detail\n  -> done\n```Final paragraph"
+        elif "agent model update" in prompt_text.lower():
+            current_model = "pro"
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "config_option_update",
+                            "configOptions": config_options(),
+                        },
+                    },
+                }
+            )
+            text = "Agent updated the model"
         else:
             text = "ACP Web UI smoke test OK"
         send(

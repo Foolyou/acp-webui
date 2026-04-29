@@ -6,6 +6,7 @@ import {
   clearSessionListPermission,
   sessionDetailToListItem,
   setSessionListPermission,
+  updateSessionListModel,
   updateSessionListStatus
 } from "./app/sessionList";
 import { messageToTimelineItem } from "./app/timeline";
@@ -363,6 +364,30 @@ export function App() {
     [runBusy, state.currentSession?.session.id]
   );
 
+  const setSessionConfigOption = useCallback(
+    async (configId: string, value: string) => {
+      const sessionId = state.currentSession?.session.id;
+      if (!sessionId) return;
+      await runBusy(async () => {
+        const response = await api.setSessionConfigOption(sessionId, configId, value);
+        setState((current) =>
+          current.currentSession?.session.id === sessionId
+            ? {
+                ...current,
+                currentSession: {
+                  ...current.currentSession,
+                  configOptions: response.configOptions ?? null,
+                  currentModel: response.currentModel ?? null
+                },
+                sessions: updateSessionListModel(current.sessions, sessionId, response.currentModel ?? null)
+              }
+            : current
+        );
+      });
+    },
+    [runBusy, state.currentSession?.session.id]
+  );
+
   const restoreSession = useCallback(
     async (sessionId: string) => {
       await runBusy(async () => {
@@ -498,6 +523,7 @@ export function App() {
         resolvePermission,
         restoreSession,
         sendPrompt,
+        setSessionConfigOption,
         setActiveReview: (artifact) => setState((current) => ({ ...current, activeReview: artifact })),
         setCurrentWorkspace
       },
@@ -516,6 +542,7 @@ export function App() {
       restoreSession,
       selectedWorkspace,
       sendPrompt,
+      setSessionConfigOption,
       setCurrentWorkspace,
       state
     ]

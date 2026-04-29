@@ -22,7 +22,8 @@ use crate::{
     models::{
         permission_status, review_artifact_kind, role, status, tool_call_status,
         AgentSessionCapabilities, NewReviewArtifact, PermissionRequest, ReviewArtifact,
-        ReviewArtifactSummary, SessionContinuity, TimelineItem, ToolCallRow, UpsertToolCall,
+        ReviewArtifactSummary, SessionConfigOption, SessionConfigState, SessionContinuity,
+        SessionCurrentModel, TimelineItem, ToolCallRow, UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -150,11 +151,22 @@ pub enum RealtimeEvent {
         session_id: String,
         message: String,
     },
+    SessionConfigUpdated {
+        session_id: String,
+        config_options: Option<Vec<SessionConfigOption>>,
+        current_model: Option<SessionCurrentModel>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct PromptOutcome {
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewSessionOutcome {
+    pub session_id: String,
+    pub config_options: Option<Vec<SessionConfigOption>>,
 }
 
 #[derive(Debug)]
@@ -328,7 +340,7 @@ impl AgentRuntime {
             .ok_or_else(|| anyhow!("{} connection is not available", self.agent.title))
     }
 
-    pub async fn new_session(&self, cwd: String) -> anyhow::Result<String> {
+    pub async fn new_session(&self, cwd: String) -> anyhow::Result<NewSessionOutcome> {
         let peer = self.ensure_ready().await?;
         let result = peer
             .request(
@@ -345,8 +357,12 @@ impl AgentRuntime {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("session/new response did not include sessionId"))?
             .to_string();
+        let config_options = parse_config_options(result.get("configOptions"));
 
-        Ok(acp_session_id)
+        Ok(NewSessionOutcome {
+            session_id: acp_session_id,
+            config_options,
+        })
     }
 
     pub async fn register_session(&self, acp_session_id: String, local_session_id: String) {
@@ -403,7 +419,7 @@ impl AgentRuntime {
         acp_session_id: String,
         local_session_id: String,
         cwd: String,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Vec<SessionConfigOption>>> {
         let peer = self.ensure_ready().await?;
         if !self.session_capabilities().await.load_session {
             return Err(anyhow!(
@@ -444,10 +460,39 @@ impl AgentRuntime {
             .await
             .remove(&acp_session_id);
 
-        result?;
+        let result = result?;
+        let config_options = parse_config_options(result.get("configOptions"));
         self.register_session(acp_session_id, local_session_id)
             .await;
-        Ok(())
+        Ok(config_options)
+    }
+
+    pub async fn set_config_option(
+        &self,
+        acp_session_id: String,
+        config_id: String,
+        value: String,
+    ) -> anyhow::Result<SessionConfigState> {
+        let peer = self.ensure_ready().await?;
+        let result = peer
+            .request(
+                "session/set_config_option",
+                json!({
+                    "sessionId": acp_session_id,
+                    "configId": config_id,
+                    "value": value
+                }),
+            )
+            .await?;
+        let config_options =
+            parse_config_options(result.get("configOptions")).ok_or_else(|| {
+                anyhow!("session/set_config_option response did not include configOptions")
+            })?;
+        let current_model = crate::storage::derive_current_model(&config_options);
+        Ok(SessionConfigState {
+            config_options: Some(config_options),
+            current_model,
+        })
     }
 
     pub async fn prompt(
@@ -885,6 +930,23 @@ fn capability_field_enabled(value: Option<&Value>) -> bool {
     }
 }
 
+fn parse_config_options(value: Option<&Value>) -> Option<Vec<SessionConfigOption>> {
+    let Some(value) = value else {
+        return None;
+    };
+    if !value.is_array() {
+        tracing::warn!(?value, "ACP configOptions was not an array");
+        return None;
+    }
+    match serde_json::from_value::<Vec<SessionConfigOption>>(value.clone()) {
+        Ok(options) => Some(options),
+        Err(error) => {
+            tracing::warn!(?error, ?value, "failed to parse ACP configOptions");
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonRpcPeer {
     next_id: AtomicI64,
@@ -1287,6 +1349,38 @@ async fn handle_session_update(
                     Err(error) => {
                         tracing::error!(?error, ?update, "failed to persist review artifact");
                     }
+                }
+            }
+        }
+        "config_option_update" => {
+            let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned()
+            else {
+                tracing::debug!(
+                    acp_session_id,
+                    "config option update for unknown ACP session"
+                );
+                return;
+            };
+            let Some(config_options) = parse_config_options(update.get("configOptions")) else {
+                tracing::warn!(
+                    acp_session_id,
+                    "config option update did not include valid configOptions"
+                );
+                return;
+            };
+            match storage
+                .update_session_config_options(&local_session_id, Some(config_options))
+                .await
+            {
+                Ok(config_state) => {
+                    let _ = events_tx.send(RealtimeEvent::SessionConfigUpdated {
+                        session_id: local_session_id,
+                        config_options: config_state.config_options,
+                        current_model: config_state.current_model,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(?error, "failed to persist config option update");
                 }
             }
         }
@@ -2008,6 +2102,81 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn config_option_update_persists_and_broadcasts_model_projection() {
+        let storage = test_storage().await;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id.clone(),
+        )])));
+        let restore_session_map = Arc::new(RwLock::new(HashMap::new()));
+        let assistant_buffers = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = broadcast::channel(4);
+
+        handle_session_update(
+            json!({
+                "method": "session/update",
+                "params": {
+                    "sessionId": "acp-session",
+                    "update": {
+                        "sessionUpdate": "config_option_update",
+                        "configOptions": [
+                            {
+                                "id": "model",
+                                "name": "Model",
+                                "category": "model",
+                                "type": "select",
+                                "currentValue": "pro",
+                                "options": [
+                                    {"value": "fast", "name": "Fast model"},
+                                    {"value": "pro", "name": "Pro model"}
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }),
+            &events_tx,
+            &storage,
+            &session_map,
+            &restore_session_map,
+            &assistant_buffers,
+        )
+        .await;
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.current_model.as_ref().unwrap().value, "pro");
+        assert_eq!(
+            detail.current_model.as_ref().unwrap().name.as_deref(),
+            Some("Pro model")
+        );
+
+        let event = timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            RealtimeEvent::SessionConfigUpdated {
+                session_id,
+                current_model,
+                ..
+            } => {
+                assert_eq!(session_id, session.id);
+                assert_eq!(current_model.unwrap().value, "pro");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
     fn write_fake_acp(dir: &tempfile::TempDir) -> PathBuf {
         let script = dir.path().join("fake_acp.py");
         std::fs::write(
@@ -2652,7 +2821,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         runtime
             .register_session(acp_session_id.clone(), "local-session".to_string())
             .await;
@@ -2699,7 +2869,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         runtime
             .register_session(acp_session_id.clone(), "local-session".to_string())
             .await;
@@ -2852,7 +3023,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         let session = storage
             .create_session(&workspace.id, acp_session_id.clone())
             .await
@@ -2897,7 +3069,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         let session = storage
             .create_session(&workspace.id, acp_session_id.clone())
             .await
@@ -2956,7 +3129,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         let session = storage
             .create_session(&workspace.id, acp_session_id.clone())
             .await
@@ -3030,7 +3204,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         let session = storage
             .create_session(&workspace.id, acp_session_id.clone())
             .await
@@ -3099,7 +3274,8 @@ for line in sys.stdin:
             let acp_session_id = runtime
                 .new_session(dir.path().to_string_lossy().to_string())
                 .await
-                .unwrap();
+                .unwrap()
+                .session_id;
             let session = storage
                 .create_session(&workspace.id, acp_session_id.clone())
                 .await
@@ -3164,7 +3340,8 @@ for line in sys.stdin:
         let acp_session_id = runtime
             .new_session(dir.path().to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .session_id;
         let session = storage
             .create_session(&workspace.id, acp_session_id.clone())
             .await

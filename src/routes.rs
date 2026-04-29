@@ -27,7 +27,8 @@ use crate::{
         continuity_state, review_artifact_kind, role, status, CreateSessionRequest,
         CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message, PermissionRequest,
         PromptRequest, ResolvePermissionRequest, ReviewArtifact, ReviewArtifactSummary, Session,
-        SessionContinuity, SessionDetail, SessionListItem, TimelineItem, Workspace,
+        SessionConfigState, SessionContinuity, SessionDetail, SessionListItem,
+        SetSessionConfigOptionRequest, TimelineItem, Workspace,
     },
     storage::Storage,
 };
@@ -86,6 +87,10 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
         .route("/api/sessions/{session_id}/restore", post(restore_session))
+        .route(
+            "/api/sessions/{session_id}/config-options/{config_id}",
+            post(set_session_config_option),
+        )
         .route(
             "/api/sessions/{session_id}/review-artifacts",
             get(list_review_artifacts),
@@ -319,18 +324,20 @@ async fn create_session(
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
 
-    let acp_session_id = runtime
+    let new_session = runtime
         .new_session(workspace.path.clone())
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
+    let acp_session_id = new_session.session_id.clone();
 
     let session = state
         .storage
-        .create_session_for_agent(
+        .create_session_for_agent_with_config_options(
             &workspace.id,
             &agent_id,
             &runtime.agent().title,
             acp_session_id.clone(),
+            new_session.config_options,
         )
         .await
         .map_err(AppError::Other)?;
@@ -402,7 +409,13 @@ async fn restore_session(
         .load_session(external_session_id, session_id.clone(), workspace.path)
         .await
     {
-        Ok(()) => {
+        Ok(config_options) => {
+            if config_options.is_some() {
+                state
+                    .storage
+                    .update_session_config_options(&session_id, config_options)
+                    .await?;
+            }
             state
                 .storage
                 .mark_session_restore_succeeded(&session_id)
@@ -427,6 +440,97 @@ async fn restore_session(
             Err(AppError::Conflict(message))
         }
     }
+}
+
+async fn set_session_config_option(
+    State(state): State<AppState>,
+    Path((session_id, config_id)): Path<(String, String)>,
+    Json(payload): Json<SetSessionConfigOptionRequest>,
+) -> AppResult<Json<SessionConfigState>> {
+    let config_id = config_id.trim();
+    if config_id.is_empty() {
+        return Err(AppError::BadRequest(
+            "Configuration option id is required".to_string(),
+        ));
+    }
+    let value = payload.value.trim().to_string();
+    if value.is_empty() {
+        return Err(AppError::BadRequest(
+            "Configuration option value is required".to_string(),
+        ));
+    }
+
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+    let has_pending_permission = state
+        .storage
+        .pending_permission_for_session(&session_id)
+        .await?
+        .is_some();
+    if has_pending_permission || session.status == status::WAITING_APPROVAL {
+        return Err(AppError::Conflict(
+            "This session is waiting for approval. Resolve the pending approval before changing configuration."
+                .to_string(),
+        ));
+    }
+    if session.status == status::RUNNING {
+        return Err(AppError::Conflict(
+            "This session is already running. Wait for it to finish before changing configuration."
+                .to_string(),
+        ));
+    }
+
+    let continuity = state.session_continuity(&session).await?;
+    if !continuity.continuable {
+        return Err(AppError::Conflict(
+            continuity
+                .reason
+                .unwrap_or_else(|| view_only_reason(&session.agent_name)),
+        ));
+    }
+    let Some(acp_session_id) = session.acp_session_id.clone() else {
+        return Err(AppError::Conflict(
+            "Session is missing an ACP session id".to_string(),
+        ));
+    };
+
+    let current_state = state.storage.session_config_state(&session_id).await?;
+    if current_config_value(&current_state, config_id) == Some(value.as_str()) {
+        return Ok(Json(current_state));
+    }
+
+    let runtime = state.runtime_for_session_use(&session).await?;
+    let updated = runtime
+        .set_config_option(acp_session_id, config_id.to_string(), value)
+        .await
+        .map_err(|error| AppError::Conflict(error.to_string()))?;
+    let config_state = state
+        .storage
+        .update_session_config_options(&session_id, updated.config_options)
+        .await?;
+    let _ = state.events_tx.send(RealtimeEvent::SessionConfigUpdated {
+        session_id,
+        config_options: config_state.config_options.clone(),
+        current_model: config_state.current_model.clone(),
+    });
+
+    Ok(Json(config_state))
+}
+
+fn current_config_value<'a>(
+    config_state: &'a SessionConfigState,
+    config_id: &str,
+) -> Option<&'a str> {
+    config_state
+        .config_options
+        .as_ref()?
+        .iter()
+        .find(|option| option.id == config_id)?
+        .current_value
+        .as_deref()
 }
 
 async fn list_review_artifacts(
@@ -1113,9 +1217,26 @@ import json
 import sys
 
 agent = sys.argv[1]
+current_model = "fast"
 
 def send(message):
     print(json.dumps(message), flush=True)
+
+def config_options():
+    return [
+        {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": current_model,
+            "options": [
+                {"value": "fast", "name": "Fast model"},
+                {"value": "pro", "name": "Pro model"},
+                {"value": "ultra", "name": "Ultra model"}
+            ]
+        }
+    ]
 
 def prompt_text(message):
     chunks = message.get("params", {}).get("prompt", [])
@@ -1144,7 +1265,7 @@ for line in sys.stdin:
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": {"sessionId": "shared-session"}
+            "result": {"sessionId": "shared-session", "configOptions": config_options()}
         })
     elif method == "session/load":
         session_id = message.get("params", {}).get("sessionId", "shared-session")
@@ -1159,7 +1280,19 @@ for line in sys.stdin:
                 }
             }
         })
-        send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": session_id}})
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": session_id, "configOptions": config_options()}})
+    elif method == "session/set_config_option":
+        config_id = message.get("params", {}).get("configId")
+        value = message.get("params", {}).get("value")
+        if config_id != "model" or value not in ["fast", "pro", "ultra"]:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32602, "message": "invalid config option"}
+            })
+            continue
+        current_model = value
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"configOptions": config_options()}})
     elif method == "session/prompt":
         session_id = message.get("params", {}).get("sessionId", "shared-session")
         text = prompt_text(message).lower()
@@ -1754,6 +1887,301 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
+    async fn session_creation_returns_and_lists_model_config_projection() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"codex"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["configOptions"][0]["id"], "model");
+        assert_eq!(detail["currentModel"]["configId"], "model");
+        assert_eq!(detail["currentModel"]["value"], "fast");
+        assert_eq!(detail["currentModel"]["name"], "Fast model");
+
+        let list_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let body = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(list[0]["currentModel"]["name"], "Fast model");
+    }
+
+    #[tokio::test]
+    async fn config_option_route_switches_model_and_emits_realtime_update() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let mut events_rx = state.events_tx.subscribe();
+        let app = api_router(state.clone());
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"codex"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(create_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        let session_id = detail["session"]["id"].as_str().unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/config-options/model", session_id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"pro"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["currentModel"]["value"], "pro");
+        assert_eq!(
+            state
+                .storage
+                .session_detail(session_id)
+                .await
+                .unwrap()
+                .current_model
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Pro model")
+        );
+
+        let event = timeout(Duration::from_secs(1), async {
+            loop {
+                match events_rx.recv().await.unwrap() {
+                    RealtimeEvent::SessionConfigUpdated {
+                        session_id: event_session_id,
+                        current_model,
+                        ..
+                    } if event_session_id == session_id => break current_model.unwrap(),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(event.value, "pro");
+    }
+
+    #[tokio::test]
+    async fn config_option_route_rejects_invalid_states_without_losing_snapshot() {
+        let (state, _dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workspaces/{}/sessions", workspace.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"codex"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(create_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        let session_id = detail["session"]["id"].as_str().unwrap();
+
+        let empty_value_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/config-options/model", session_id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty_value_response.status(), StatusCode::BAD_REQUEST);
+
+        state
+            .storage
+            .update_session_status(session_id, status::RUNNING)
+            .await
+            .unwrap();
+        let running_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/config-options/model", session_id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"pro"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(running_response.status(), StatusCode::CONFLICT);
+
+        state
+            .storage
+            .update_session_status(session_id, status::IDLE)
+            .await
+            .unwrap();
+        let rejected_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/config-options/model", session_id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"missing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected_response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            state
+                .storage
+                .session_detail(session_id)
+                .await
+                .unwrap()
+                .current_model
+                .unwrap()
+                .value,
+            "fast"
+        );
+
+        state
+            .storage
+            .create_permission_request(NewPermissionRequest {
+                session_id: session_id.to_string(),
+                acp_session_id: "shared-session".to_string(),
+                acp_request_id: "config-waiting".to_string(),
+                tool_call_id: Some("tool-config-waiting".to_string()),
+                title: "Approve before model".to_string(),
+                kind: "execute".to_string(),
+                tool_call_json: serde_json::json!({"toolCallId": "tool-config-waiting"}),
+                options_json: serde_json::json!([
+                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}
+                ]),
+            })
+            .await
+            .unwrap();
+        let waiting_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/config-options/model", session_id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"pro"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(waiting_response.status(), StatusCode::CONFLICT);
+
+        let unregistered = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                "codex",
+                "Codex",
+                "unregistered-acp-session".to_string(),
+            )
+            .await
+            .unwrap();
+        let non_continuable_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/sessions/{}/config-options/model",
+                        unregistered.id
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"pro"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(non_continuable_response.status(), StatusCode::CONFLICT);
+
+        let missing_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/missing/config-options/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"pro"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn routes_prompt_restore_and_permission_by_session_agent() {
         let (state, _dir) = test_state_with_fake_agents().await;
         let workspace_dir = tempfile::tempdir().unwrap();
@@ -1848,6 +2276,18 @@ for line in sys.stdin:
         assert_eq!(response.status(), StatusCode::OK);
         wait_for_message_containing(&state.storage, &restore_session.id, "Restored by claude")
             .await;
+        assert_eq!(
+            state
+                .storage
+                .session_detail(&restore_session.id)
+                .await
+                .unwrap()
+                .current_model
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Fast model")
+        );
 
         let permission_body = serde_json::json!({"prompt": "needs permission"});
         let response = app

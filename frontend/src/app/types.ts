@@ -42,6 +42,7 @@ export type AppActions = {
   resolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
   restoreSession: (sessionId: string) => Promise<void>;
   sendPrompt: (prompt: string) => Promise<void>;
+  setSessionConfigOption: (configId: string, value: string) => Promise<void>;
   setActiveReview: (artifact: ReviewArtifact | null) => void;
   setCurrentWorkspace: (workspaceId: string | null) => void;
 };

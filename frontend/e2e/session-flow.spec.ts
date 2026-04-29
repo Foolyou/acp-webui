@@ -243,6 +243,45 @@ test("creates a Claude session when Claude is selected", async ({ page }) => {
   await expect(sessionLink).toContainText("Claude");
 });
 
+test("displays, switches, persists, and disables advertised model selector", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+
+  await startSession(page);
+  const modelSelect = page.getByLabel("Model");
+  await expect(modelSelect).toBeVisible();
+  await expect(modelSelect).toHaveValue(/fast|pro/);
+
+  await modelSelect.selectOption("pro");
+  await expect(modelSelect).toHaveValue("pro");
+  await expect(page.getByText("Higher capability")).toBeVisible();
+
+  const ids = sessionRouteIds(page);
+  await page.reload();
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await expect(page.getByLabel("Model")).toHaveValue("pro");
+
+  await openMenuAndClick(page, /Sessions/);
+  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  await expect(sessionLink).toContainText("Model: Pro model");
+  await sessionLink.click();
+
+  const runningSelect = page.getByLabel("Model");
+  await page.getByPlaceholder("Ask Codex...").fill("Create scroll stream while following.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(runningSelect).toBeDisabled();
+  await expect(page.getByText("Following stream line 40")).toBeVisible();
+
+  await page.getByPlaceholder("Ask Codex...").fill("Trigger approval flow.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
+  await expect(page.getByLabel("Model")).toBeDisabled();
+  await page.getByRole("button", { name: "Reject" }).click();
+  await expect(page.getByText("Approval result: reject-once")).toBeVisible();
+});
+
 test("keeps ready agents selectable when another agent has failed", async ({ page }) => {
   await page.addInitScript(() => {
     class MockSocket extends EventTarget {

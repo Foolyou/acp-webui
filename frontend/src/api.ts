@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   PermissionRequest,
   ReviewArtifact,
+  SessionConfigState,
   SessionListItem,
   SessionDetail,
   Workspace
@@ -67,6 +68,11 @@ export const api = {
   restoreSession: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${sessionId}/restore`, {
       method: "POST"
+    }),
+  setSessionConfigOption: (sessionId: string, configId: string, value: string) =>
+    request<SessionConfigState>(`/api/sessions/${sessionId}/config-options/${encodeURIComponent(configId)}`, {
+      method: "POST",
+      body: JSON.stringify({ value })
     }),
   prompt: (sessionId: string, prompt: string) =>
     request<{ message: ChatMessage }>(`/api/sessions/${sessionId}/prompt`, {

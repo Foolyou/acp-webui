@@ -13,8 +13,10 @@ use serde_json::Value;
 use crate::models::{
     continuity_state, permission_status, role, status, tool_call_status, InboxItem, Message,
     NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow, ReviewArtifact,
-    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionContinuity, SessionDetail,
-    SessionListItem, SessionListPermission, TimelineItem, ToolCallRow, UpsertToolCall, Workspace,
+    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
+    SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
+    SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
+    UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -228,6 +230,7 @@ impl Storage {
         .await
     }
 
+    #[cfg(test)]
     pub async fn create_session_for_agent(
         &self,
         workspace_id: &str,
@@ -235,8 +238,27 @@ impl Storage {
         agent_name: &str,
         acp_session_id: String,
     ) -> anyhow::Result<Session> {
+        self.create_session_for_agent_with_config_options(
+            workspace_id,
+            agent_id,
+            agent_name,
+            acp_session_id,
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_session_for_agent_with_config_options(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        agent_name: &str,
+        acp_session_id: String,
+        config_options: Option<Vec<SessionConfigOption>>,
+    ) -> anyhow::Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = now();
+        let config_state = session_config_state_from_options(config_options.as_ref())?;
 
         sqlx::query(
             r#"
@@ -248,11 +270,15 @@ impl Storage {
                 acp_session_id,
                 external_session_id,
                 continuation_state,
+                config_options_json,
+                current_model_config_id,
+                current_model_value,
+                current_model_name,
                 status,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
@@ -262,6 +288,25 @@ impl Storage {
         .bind(&acp_session_id)
         .bind(&acp_session_id)
         .bind(continuity_state::LIVE)
+        .bind(&config_state.config_options_json)
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .map(|model| &model.config_id),
+        )
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .map(|model| &model.value),
+        )
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .and_then(|model| model.name.as_ref()),
+        )
         .bind(status::IDLE)
         .bind(&now)
         .bind(&now)
@@ -357,6 +402,70 @@ impl Storage {
         Ok(now)
     }
 
+    pub async fn update_session_config_options(
+        &self,
+        id: &str,
+        config_options: Option<Vec<SessionConfigOption>>,
+    ) -> anyhow::Result<SessionConfigState> {
+        let now = now();
+        let config_state = session_config_state_from_options(config_options.as_ref())?;
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET config_options_json = ?,
+                current_model_config_id = ?,
+                current_model_value = ?,
+                current_model_name = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&config_state.config_options_json)
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .map(|model| &model.config_id),
+        )
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .map(|model| &model.value),
+        )
+        .bind(
+            config_state
+                .current_model
+                .as_ref()
+                .and_then(|model| model.name.as_ref()),
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(config_state.into_api_state())
+    }
+
+    pub async fn session_config_state(&self, id: &str) -> anyhow::Result<SessionConfigState> {
+        let row = sqlx::query_as::<_, SessionConfigStateRow>(
+            r#"
+            SELECT
+                config_options_json,
+                current_model_config_id,
+                current_model_value,
+                current_model_name
+            FROM sessions
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        row_to_session_config_state(row)
+    }
+
     pub async fn mark_session_restore_failed(&self, id: &str, message: &str) -> anyhow::Result<()> {
         sqlx::query(
             r#"
@@ -406,6 +515,9 @@ impl Storage {
                 s.status,
                 s.created_at AS session_created_at,
                 s.updated_at AS session_updated_at,
+                s.current_model_config_id,
+                s.current_model_value,
+                s.current_model_name,
                 w.id AS workspace_row_id,
                 w.name AS workspace_name,
                 w.path AS workspace_path,
@@ -610,6 +722,7 @@ impl Storage {
         let failure_message = self
             .latest_permission_failure_for_session(&session.id)
             .await?;
+        let config_state = self.session_config_state(&session.id).await?;
         session.status = normalize_session_status(session.status, pending_approval_count > 0);
         let continuable = continuity.continuable;
         let view_only_reason = continuity.reason.clone().filter(|_| !continuable);
@@ -617,6 +730,8 @@ impl Storage {
         Ok(SessionDetail {
             session,
             workspace,
+            config_options: config_state.config_options,
+            current_model: config_state.current_model,
             messages,
             review_artifacts,
             timeline,
@@ -1349,6 +1464,9 @@ struct SessionListItemRow {
     status: String,
     session_created_at: String,
     session_updated_at: String,
+    current_model_config_id: Option<String>,
+    current_model_value: Option<String>,
+    current_model_name: Option<String>,
     workspace_row_id: String,
     workspace_name: String,
     workspace_path: String,
@@ -1359,6 +1477,113 @@ struct SessionListItemRow {
     permission_kind: Option<String>,
     permission_created_at: Option<String>,
     pending_approval_count: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SessionConfigStateRow {
+    config_options_json: Option<String>,
+    current_model_config_id: Option<String>,
+    current_model_value: Option<String>,
+    current_model_name: Option<String>,
+}
+
+#[derive(Debug)]
+struct StoredSessionConfigState {
+    config_options_json: Option<String>,
+    current_model: Option<SessionCurrentModel>,
+}
+
+impl StoredSessionConfigState {
+    fn into_api_state(self) -> SessionConfigState {
+        SessionConfigState {
+            config_options: self
+                .config_options_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
+            current_model: self.current_model,
+        }
+    }
+}
+
+fn row_to_session_config_state(row: SessionConfigStateRow) -> anyhow::Result<SessionConfigState> {
+    let config_options = row
+        .config_options_json
+        .as_deref()
+        .map(serde_json::from_str::<Vec<SessionConfigOption>>)
+        .transpose()?;
+    Ok(SessionConfigState {
+        config_options,
+        current_model: match (row.current_model_config_id, row.current_model_value) {
+            (Some(config_id), Some(value)) => Some(SessionCurrentModel {
+                config_id,
+                value,
+                name: row.current_model_name,
+            }),
+            _ => None,
+        },
+    })
+}
+
+fn session_config_state_from_options(
+    config_options: Option<&Vec<SessionConfigOption>>,
+) -> anyhow::Result<StoredSessionConfigState> {
+    let config_options_json = config_options.map(serde_json::to_string).transpose()?;
+    let current_model = config_options.and_then(|options| derive_current_model(options));
+    Ok(StoredSessionConfigState {
+        config_options_json,
+        current_model,
+    })
+}
+
+pub fn derive_current_model(config_options: &[SessionConfigOption]) -> Option<SessionCurrentModel> {
+    let option = config_options
+        .iter()
+        .find(|option| is_select_model_category(option))
+        .or_else(|| {
+            config_options
+                .iter()
+                .find(|option| is_select_option(option) && option.id == "model")
+        })?;
+    let value = option.current_value.as_ref()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(SessionCurrentModel {
+        config_id: option.id.clone(),
+        value: value.to_string(),
+        name: select_value_name(option, value),
+    })
+}
+
+fn is_select_model_category(option: &SessionConfigOption) -> bool {
+    is_select_option(option) && option.category.as_deref() == Some("model")
+}
+
+fn is_select_option(option: &SessionConfigOption) -> bool {
+    option.option_type == "select"
+}
+
+fn select_value_name(option: &SessionConfigOption, value: &str) -> Option<String> {
+    let options = option.options.as_ref()?;
+    for item in options {
+        match item {
+            SessionConfigSelectOption::Value(candidate) if candidate.value == value => {
+                return Some(candidate.name.clone());
+            }
+            SessionConfigSelectOption::Group(group) => {
+                if let Some(candidate) = group
+                    .options
+                    .iter()
+                    .find(|candidate| candidate.value == value)
+                {
+                    return Some(candidate.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn now() -> String {
@@ -1483,6 +1708,14 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             created_at: row.workspace_created_at,
         },
         last_activity_at: row.session_updated_at,
+        current_model: match (row.current_model_config_id, row.current_model_value) {
+            (Some(config_id), Some(value)) => Some(SessionCurrentModel {
+                config_id,
+                value,
+                name: row.current_model_name,
+            }),
+            _ => None,
+        },
         pending_permission,
         queued_approval_count: queued_approval_count(row.pending_approval_count),
         review_artifact_count,
@@ -1662,6 +1895,38 @@ mod tests {
             .unwrap()
     }
 
+    fn model_config_options(value: &str) -> Vec<SessionConfigOption> {
+        serde_json::from_value(serde_json::json!([
+            {
+                "id": "mode",
+                "name": "Mode",
+                "category": "mode",
+                "type": "select",
+                "currentValue": "ask",
+                "options": [
+                    {"value": "ask", "name": "Ask"}
+                ]
+            },
+            {
+                "id": "agent_model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": value,
+                "options": [
+                    {
+                        "name": "Fast",
+                        "options": [
+                            {"value": "fast", "name": "Fast model"}
+                        ]
+                    },
+                    {"value": "pro", "name": "Pro model"}
+                ]
+            }
+        ]))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn stores_workspace_session_and_messages() {
         let storage = Storage::connect("sqlite::memory:").await.unwrap();
@@ -1692,6 +1957,87 @@ mod tests {
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+    }
+
+    #[test]
+    fn derives_current_model_from_model_category_before_model_id() {
+        let options = model_config_options("pro");
+        let model = derive_current_model(&options).unwrap();
+        assert_eq!(model.config_id, "agent_model");
+        assert_eq!(model.value, "pro");
+        assert_eq!(model.name.as_deref(), Some("Pro model"));
+    }
+
+    #[test]
+    fn derives_current_model_from_model_id_fallback() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "id": "model",
+                "name": "Model",
+                "type": "select",
+                "currentValue": "fallback",
+                "options": [
+                    {"value": "fallback", "name": "Fallback model"}
+                ]
+            }
+        ]))
+        .unwrap();
+        let model = derive_current_model(&options).unwrap();
+        assert_eq!(model.config_id, "model");
+        assert_eq!(model.name.as_deref(), Some("Fallback model"));
+    }
+
+    #[tokio::test]
+    async fn persists_session_config_options_and_model_projection() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+
+        let session = storage
+            .create_session_for_agent_with_config_options(
+                &workspace.id,
+                CODEX_AGENT_ID,
+                "Codex",
+                "acp-session-1".to_string(),
+                Some(model_config_options("pro")),
+            )
+            .await
+            .unwrap();
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.config_options.as_ref().unwrap().len(), 2);
+        assert_eq!(detail.current_model.as_ref().unwrap().value, "pro");
+        assert_eq!(
+            detail.current_model.as_ref().unwrap().name.as_deref(),
+            Some("Pro model")
+        );
+
+        let item = storage
+            .list_session_items()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.session.id == session.id)
+            .unwrap();
+        assert_eq!(
+            item.current_model.as_ref().unwrap().config_id,
+            "agent_model"
+        );
+        assert_eq!(item.current_model.as_ref().unwrap().value, "pro");
+
+        let updated = storage
+            .update_session_config_options(&session.id, Some(model_config_options("fast")))
+            .await
+            .unwrap();
+        assert_eq!(updated.current_model.as_ref().unwrap().value, "fast");
+        assert_eq!(
+            updated.current_model.as_ref().unwrap().name.as_deref(),
+            Some("Fast model")
+        );
     }
 
     #[tokio::test]

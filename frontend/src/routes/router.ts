@@ -25,6 +25,7 @@ export const placeholderContext: AppRouterContext = {
     resolvePermission: noopAsync,
     restoreSession: noopAsync,
     sendPrompt: noopAsync,
+    setSessionConfigOption: noopAsync,
     setActiveReview: () => {},
     setCurrentWorkspace: () => {}
   },

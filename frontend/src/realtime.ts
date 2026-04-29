@@ -73,6 +73,19 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
     case "session_restore_failed":
       return applySessionRestoreEvent(state, event.sessionId, restoreFailedContinuity(event.message));
 
+    case "session_config_updated":
+      if (state.currentSession?.session.id !== event.sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        currentSession: {
+          ...state.currentSession,
+          configOptions: event.configOptions ?? null,
+          currentModel: event.currentModel ?? null
+        }
+      };
+
     case "error":
       return { ...state, error: event.message };
 
