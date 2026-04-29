@@ -1408,7 +1408,7 @@ for line in sys.stdin:
             bind_port: 7635,
             work_dir: dir.path().to_path_buf(),
             database_url,
-            codex_acp_command: "codex-acp".to_string(),
+            codex_acp_command: "__acp_webui_test_missing_acp__".to_string(),
             codex_acp_args: vec![],
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),

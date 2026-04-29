@@ -673,7 +673,8 @@ impl AgentRuntime {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
-        let mut command = Command::new(&self.agent.command);
+        let launch_command = command_path_for_spawn(&self.agent.command);
+        let mut command = Command::new(&launch_command);
         command
             .args(&self.agent.args)
             .stdin(Stdio::piped())
@@ -684,7 +685,8 @@ impl AgentRuntime {
         let child = command.spawn().with_context(|| {
             format!(
                 "failed to launch `{}` with args {:?}",
-                self.agent.command, self.agent.args
+                launch_command.display(),
+                self.agent.args
             )
         })?;
 
@@ -2110,6 +2112,72 @@ fn queued_approval_count(pending_approval_count: i64) -> i64 {
     pending_approval_count.saturating_sub(1).max(0)
 }
 
+fn command_path_for_spawn(command: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        resolve_windows_path_command(command).unwrap_or_else(|| PathBuf::from(command))
+    }
+
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(command)
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_path_command(command: &str) -> Option<PathBuf> {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 || command_path.extension().is_some() {
+        return None;
+    }
+
+    let path = std::env::var_os("PATH")?;
+    let extensions = windows_executable_extensions();
+    for directory in std::env::split_paths(&path) {
+        for extension in &extensions {
+            let candidate = directory.join(format!("{command}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+
+        let candidate = directory.join(command);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn windows_executable_extensions() -> Vec<String> {
+    std::env::var_os("PATHEXT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(';')
+                .map(str::trim)
+                .filter(|extension| !extension.is_empty())
+                .filter(|extension| !extension.eq_ignore_ascii_case(".ps1"))
+                .map(|extension| {
+                    if extension.starts_with('.') {
+                        extension.to_string()
+                    } else {
+                        format!(".{extension}")
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|extensions| !extensions.is_empty())
+        .unwrap_or_else(|| {
+            [".COM", ".EXE", ".BAT", ".CMD"]
+                .iter()
+                .map(|extension| extension.to_string())
+                .collect()
+        })
+}
+
 fn tool_call_id(tool_call: &Value) -> Option<String> {
     tool_call
         .get("toolCallId")
@@ -2147,6 +2215,9 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+
+    #[cfg(windows)]
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn config_for_fake(script: PathBuf, mode: &str) -> Config {
         Config {
@@ -2229,6 +2300,33 @@ mod tests {
     #[cfg(windows)]
     fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_spawn_command_prefers_pathext_match_over_extensionless_shim() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("codex-acp"), b"node shim").unwrap();
+        std::fs::write(dir.path().join("codex-acp.cmd"), b"@echo off").unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        let previous_pathext = std::env::var_os("PATHEXT");
+        std::env::set_var("PATH", dir.path());
+        std::env::set_var("PATHEXT", ".exe;.cmd;.ps1");
+
+        let resolved = resolve_windows_path_command("codex-acp").unwrap();
+
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_pathext {
+            Some(value) => std::env::set_var("PATHEXT", value),
+            None => std::env::remove_var("PATHEXT"),
+        }
+
+        assert_eq!(resolved, dir.path().join("codex-acp.cmd"));
     }
 
     #[test]
