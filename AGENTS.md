@@ -22,3 +22,9 @@
 - When finalizing an implemented OpenSpec change, amend the related spec sync and archive movement into the implementation commit.
 - Commit product design updates separately from application code.
 - Commit repository workflow or agent guidance updates separately.
+
+## Hardcoded Paths
+
+- Hard rule: never commit user-specific hardcoded paths, usernames, home directories, workspace names, local IP addresses, secrets, or machine-specific absolute paths anywhere in code, tests, scripts, specs, docs, or repository guidance.
+- Use configuration, environment variables, CLI arguments, temporary directories, fixtures, or neutral placeholders instead.
+- Keep examples generic, such as `<project-path>` or `custom-state`; do not use real home-directory paths or workspace paths copied from a developer machine.
