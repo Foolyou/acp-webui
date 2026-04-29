@@ -170,7 +170,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
 
-  await page.getByPlaceholder("/home/user/project").fill(repoRoot);
+  await page.getByLabel("Workspace path").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
   await expect(agentCreateButton(page, "Codex")).toBeVisible();
 
@@ -679,7 +679,7 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
     await existing.click();
     return;
   }
-  await page.getByPlaceholder("/home/user/project").fill(repoRoot);
+  await page.getByLabel("Workspace path").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
   await expect(agentCreateButton(page, "Codex")).toBeVisible();
 }

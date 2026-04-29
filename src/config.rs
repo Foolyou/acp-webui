@@ -260,9 +260,13 @@ mod tests {
         }
     }
 
+    fn test_home() -> PathBuf {
+        PathBuf::from("test-home")
+    }
+
     #[test]
     fn default_work_dir_uses_hidden_directory_under_home() {
-        let home = PathBuf::from("/home/test-user");
+        let home = test_home();
         let config = Config::from_raw_with_home(raw_config(), &home);
 
         assert_eq!(config.work_dir, home.join(DEFAULT_WORK_DIR_NAME));
@@ -274,7 +278,7 @@ mod tests {
 
     #[test]
     fn default_database_is_independent_of_current_directory() {
-        let home = PathBuf::from("/home/test-user");
+        let home = test_home();
         let first = Config::from_raw_with_home(raw_config(), &home);
         let second = Config::from_raw_with_home(raw_config(), &home);
 
@@ -284,24 +288,24 @@ mod tests {
     #[test]
     fn work_dir_override_changes_default_database_path() {
         let mut raw = raw_config();
-        raw.work_dir = Some(PathBuf::from("/tmp/acp-webui"));
+        raw.work_dir = Some(PathBuf::from("custom-state"));
 
-        let config = Config::from_raw_with_home(raw, Path::new("/home/test-user"));
+        let config = Config::from_raw_with_home(raw, &test_home());
 
-        assert_eq!(config.work_dir, PathBuf::from("/tmp/acp-webui"));
+        assert_eq!(config.work_dir, PathBuf::from("custom-state"));
         assert_eq!(
             config.database_url,
-            default_database_url(Path::new("/tmp/acp-webui"))
+            default_database_url(Path::new("custom-state"))
         );
     }
 
     #[test]
     fn explicit_database_url_takes_precedence() {
         let mut raw = raw_config();
-        raw.work_dir = Some(PathBuf::from("/tmp/acp-webui"));
+        raw.work_dir = Some(PathBuf::from("custom-state"));
         raw.database_url = Some("sqlite::memory:".to_string());
 
-        let config = Config::from_raw_with_home(raw, Path::new("/home/test-user"));
+        let config = Config::from_raw_with_home(raw, &test_home());
 
         assert_eq!(config.database_url, "sqlite::memory:");
     }
@@ -355,7 +359,7 @@ mod tests {
 
     #[test]
     fn agent_configs_include_codex_and_claude_by_default() {
-        let home = PathBuf::from("/home/test-user");
+        let home = test_home();
         let config = Config::from_raw_with_home(raw_config(), &home);
         let agents = config.agent_configs();
 

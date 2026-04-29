@@ -22,10 +22,11 @@ export function WorkspaceForm({
   return (
     <form className="inline-form" onSubmit={onSubmit}>
       <input
+        aria-label="Workspace path"
         autoComplete="off"
         name="path"
         onChange={(event) => setPath(event.target.value)}
-        placeholder="/home/user/project"
+        placeholder="Project directory path"
         value={path}
       />
       <Button className="primary" isDisabled={busy} type="submit">
