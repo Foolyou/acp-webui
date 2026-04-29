@@ -60,7 +60,7 @@ export function SessionPane({
       : "Restore";
   const modelOption = modelConfigOption(currentSession.configOptions);
   const modelValues = selectValues(modelOption);
-  const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentStatus);
+  const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentConnection);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const programmaticScrollUntilRef = useRef(0);

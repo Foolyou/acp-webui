@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { applySessionListRealtime, sessionDetailToListItem } from "./sessionList";
 import { applyRealtimeEvent } from "../realtime";
 import { modelConfigOption, modelSwitchDisabledReason, selectValues } from "./sessionConfig";
-import type { AgentRuntimeStatus, SessionDetail } from "../types";
+import type { ConnectionStatus, SessionDetail } from "../types";
 
 const continuity = {
   state: "live",
@@ -74,22 +74,8 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
   };
 }
 
-function agent(state: string): AgentRuntimeStatus {
-  return {
-    id: "codex",
-    title: "Codex",
-    enabled: true,
-    status: { state, message: state === "ready" ? null : "Unavailable" },
-    permissionModes: [
-      {
-        id: "manual",
-        label: "Manual",
-        description: "Ask first",
-        riskLevel: "low",
-        status: { state, message: state === "ready" ? null : "Unavailable" }
-      }
-    ]
-  };
+function connection(state: string): ConnectionStatus {
+  return { state, message: state === "ready" ? null : "Unavailable" };
 }
 
 describe("session config helpers", () => {
@@ -100,8 +86,8 @@ describe("session config helpers", () => {
   });
 
   test("reports model switching disabled states", () => {
-    expect(modelSwitchDisabledReason(detail(), agent("ready"))).toBeNull();
-    expect(modelSwitchDisabledReason(detail({ session: { ...detail().session, status: "running" } }), agent("ready"))).toContain("running");
+    expect(modelSwitchDisabledReason(detail(), connection("ready"))).toBeNull();
+    expect(modelSwitchDisabledReason(detail({ session: { ...detail().session, status: "running" } }), connection("ready"))).toContain("running");
     expect(
       modelSwitchDisabledReason(
         detail({
@@ -117,13 +103,13 @@ describe("session config helpers", () => {
             createdAt: "2026-04-29T00:00:00.000Z"
           }
         }),
-        agent("ready")
+        connection("ready")
       )
     ).toContain("approval");
     expect(
-      modelSwitchDisabledReason(detail({ continuable: false, viewOnlyReason: "Restore first" }), agent("ready"))
+      modelSwitchDisabledReason(detail({ continuable: false, viewOnlyReason: "Restore first" }), connection("ready"))
     ).toBe("Restore first");
-    expect(modelSwitchDisabledReason(detail(), agent("failed"))).toBe("Unavailable");
+    expect(modelSwitchDisabledReason(detail(), connection("failed"))).toBe("Unavailable");
   });
 
   test("applies config realtime updates to current session and session list only", () => {

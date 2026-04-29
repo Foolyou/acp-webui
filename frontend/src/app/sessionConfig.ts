@@ -1,4 +1,4 @@
-import type { AgentRuntimeStatus, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectValue, SessionDetail } from "../types";
+import type { ConnectionStatus, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectValue, SessionDetail } from "../types";
 
 export function modelConfigOption(configOptions?: SessionConfigOption[] | null): SessionConfigOption | null {
   const options = configOptions ?? [];
@@ -26,7 +26,7 @@ export function currentModelLabel(option: SessionConfigOption | null | undefined
 
 export function modelSwitchDisabledReason(
   session: SessionDetail,
-  agentStatus: AgentRuntimeStatus | null
+  agentConnection: ConnectionStatus | null
 ): string | null {
   if (session.session.status === "running") {
     return "Model switching is disabled while the session is running.";
@@ -37,8 +37,8 @@ export function modelSwitchDisabledReason(
   if (!session.continuable) {
     return session.viewOnlyReason ?? session.continuity.reason ?? "Restore this session before changing models.";
   }
-  if (agentStatus && agentStatus.status.state !== "ready") {
-    return agentStatus.status.message ?? `${session.session.agentName} is ${agentStatus.status.state}.`;
+  if (agentConnection && agentConnection.state !== "ready") {
+    return agentConnection.message ?? `${session.session.agentName} is ${agentConnection.state}.`;
   }
   return null;
 }
@@ -50,4 +50,3 @@ function isSelectOption(option: SessionConfigOption): boolean {
 function isOptionGroup(item: SessionConfigSelectOption): item is Extract<SessionConfigSelectOption, { options: SessionConfigSelectValue[] }> {
   return Array.isArray((item as { options?: unknown }).options);
 }
-
