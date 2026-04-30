@@ -297,7 +297,12 @@ export function SessionPane({
           </div>
         ) : null}
         {currentSession.timeline.map((item) => (
-          <TimelineRow item={item} key={`${item.kind}-${item.id}`} onOpenReviewArtifact={onOpenReviewArtifact} />
+          <TimelineRow
+            item={item}
+            key={`${item.kind}-${item.id}`}
+            reviewArtifacts={currentSession.reviewArtifacts}
+            onOpenReviewArtifact={onOpenReviewArtifact}
+          />
         ))}
         {running && !liveAssistant ? <RunningSkeleton agentName={agentName} waitingApproval={waitingApproval} /> : null}
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
@@ -476,16 +481,18 @@ function ModelSelector({
 
 function TimelineRow({
   item,
+  reviewArtifacts,
   onOpenReviewArtifact
 }: {
   item: TimelineItem;
+  reviewArtifacts: ReviewArtifactSummary[];
   onOpenReviewArtifact: (artifactId: string) => void;
 }) {
   switch (item.kind) {
     case "message":
       return <MessageBubble message={timelineMessage(item)} />;
     case "tool_call":
-      return <ToolCallRow item={item} onOpenReviewArtifact={onOpenReviewArtifact} />;
+      return <ToolCallRow item={item} reviewArtifacts={reviewArtifacts} onOpenReviewArtifact={onOpenReviewArtifact} />;
     case "review_artifact":
       return (
         <ReviewArtifactCard
@@ -514,26 +521,34 @@ function TimelineRow({
 
 function ToolCallRow({
   item,
+  reviewArtifacts,
   onOpenReviewArtifact
 }: {
   item: Extract<TimelineItem, { kind: "tool_call" }>;
+  reviewArtifacts: ReviewArtifactSummary[];
   onOpenReviewArtifact: (artifactId: string) => void;
 }) {
-  const display = toolCallDisplay(item);
+  const [outputExpanded, setOutputExpanded] = useState(false);
+  const display = toolCallDisplay(item, reviewArtifacts);
+  const showOutputTail = Boolean(display.outputTail) && (outputExpanded || item.status === "failed");
+  const artifactActions = display.evidenceActions.filter(
+    (action) => action.kind !== "diagnostics" && action.kind !== "output"
+  );
+  const hasOutputAction = display.evidenceActions.some((action) => action.kind === "output");
 
   return (
-    <details className={`tool-row ${item.status}`}>
-      <summary>
+    <article className={`tool-row ${display.kind} ${item.status}`}>
+      <div className="tool-row-main">
         <span className="tool-action">{display.actionLabel}</span>
         <span className="tool-heading">
           <strong>{display.subject}</strong>
-          <span>{display.summary}</span>
+          <span>{display.result}</span>
         </span>
-        <span className={`tool-status ${display.status}`}>{display.status}</span>
-      </summary>
-      {display.details.length ? (
+        <span className={`tool-status ${display.status}`}>{display.statusLabel}</span>
+      </div>
+      {display.metadata.length ? (
         <dl className="tool-details">
-          {display.details.map((detail) => (
+          {display.metadata.map((detail) => (
             <div key={`${detail.label}-${detail.value}`}>
               <dt>{detail.label}</dt>
               <dd>{detail.value}</dd>
@@ -541,21 +556,30 @@ function ToolCallRow({
           ))}
         </dl>
       ) : null}
-      {display.outputPreview ? <pre className="tool-output">{display.outputPreview}</pre> : null}
-      {item.reviewArtifactIds.length ? (
-        <div className="tool-links">
-          {item.reviewArtifactIds.map((artifactId) => (
-            <Button className="secondary small" key={artifactId} onPress={() => onOpenReviewArtifact(artifactId)}>
-              Open artifact
-            </Button>
-          ))}
-        </div>
-      ) : null}
-      <details className="raw-details">
-        <summary>Raw payload</summary>
-        <pre className="review-pre">{JSON.stringify({ input: display.rawInput, output: display.rawOutput }, null, 2)}</pre>
-      </details>
-    </details>
+      {showOutputTail && display.outputTail ? <pre className="tool-output">{display.outputTail}</pre> : null}
+      <div className="tool-links">
+        {hasOutputAction ? (
+          <Button className="secondary small" onPress={() => setOutputExpanded((current) => !current)}>
+            {outputExpanded ? "Hide output" : "Output"}
+          </Button>
+        ) : null}
+        {artifactActions.map((action) => (
+          <Button className="secondary small" key={action.id} onPress={() => onOpenReviewArtifact(action.id)}>
+            {action.label}
+          </Button>
+        ))}
+        <details className="tool-diagnostics raw-details">
+          <summary>Diagnostics</summary>
+          <pre className="review-pre">
+            {JSON.stringify(
+              { input: display.diagnostics.rawInput, output: display.diagnostics.rawOutput },
+              null,
+              2
+            )}
+          </pre>
+        </details>
+      </div>
+    </article>
   );
 }
 

@@ -991,7 +991,6 @@ pre {
 
 .message,
 .review-card,
-.tool-row,
 .timeline-event {
   display: grid;
   gap: 0.35rem;
@@ -1001,6 +1000,22 @@ pre {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   padding: 0.75rem;
+}
+
+.tool-row {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(35, 38, 39, 0.1);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.54);
+  padding: 0.52rem 0.6rem;
+}
+
+.tool-row.failed {
+  border-color: rgba(155, 53, 45, 0.28);
+  background: var(--color-danger-soft);
 }
 
 .message.user {
@@ -1192,13 +1207,12 @@ pre {
   overflow-wrap: anywhere;
 }
 
-.tool-row summary {
+.tool-row-main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.55rem;
   min-width: 0;
-  cursor: pointer;
 }
 
 .tool-action {
@@ -1215,7 +1229,9 @@ pre {
 
 .tool-heading strong,
 .tool-heading span {
+  min-width: 0;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tool-heading span {
@@ -1231,6 +1247,7 @@ pre {
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .tool-status.completed {
@@ -1242,15 +1259,16 @@ pre {
 }
 
 .tool-details {
-  display: grid;
-  gap: 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem 0.45rem;
   margin: 0;
 }
 
 .tool-details div {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: 0.5rem;
+  display: inline-flex;
+  gap: 0.28rem;
+  min-width: 0;
 }
 
 .tool-details dt,
@@ -1261,9 +1279,14 @@ pre {
 
 .tool-details dt {
   color: var(--color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.tool-details dd {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
 }
 
 .tool-output {
@@ -1277,12 +1300,36 @@ pre {
   color: var(--color-text);
   font-size: 0.84rem;
   line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .tool-links {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.tool-diagnostics {
+  flex: 1 1 100%;
+}
+
+.tool-diagnostics > summary {
+  width: fit-content;
+  min-height: 34px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 0.42rem 0.65rem;
+  color: var(--color-text);
+  font-size: 0.84rem;
+  list-style-position: inside;
+}
+
+.tool-diagnostics .review-pre {
+  margin-top: 0.45rem;
 }
 
 .composer-wrap {

@@ -600,7 +600,7 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
 
   await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
   await expect(page.getByText("Long timeline message 180")).toBeVisible();
-  await expect(page.locator("details.tool-row").first()).toBeVisible();
+  await expect(page.locator(".tool-row").first()).toBeVisible();
   await expect(page.locator(".review-card").first()).toBeVisible();
   await expectRedesignedSessionLayout(page, "mobile");
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -679,6 +679,260 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
   expect(metrics.timelineDisplay).not.toBe("none");
   expect(metrics.msPerChar).toBeLessThan(75);
   expect(metrics.p95InputGapMs).toBeLessThan(150);
+});
+
+test("renders compact mobile tool activity rows with evidence and diagnostics", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+
+  const workspace = {
+    id: "tool-activity-workspace",
+    name: "Tool activity workspace",
+    path: repoRoot,
+    createdAt: new Date().toISOString()
+  };
+  const session = {
+    id: "tool-activity-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    permissionMode: "manual",
+    acpSessionId: "tool-activity-acp-session",
+    externalSessionId: "tool-activity-acp-session",
+    status: "idle",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const continuity = {
+    state: "live",
+    continuable: true,
+    restorable: false,
+    restoring: false,
+    reason: null,
+    failureMessage: null,
+    restoreStartedAt: null,
+    restoreCompletedAt: null
+  };
+  const reviewArtifacts = [
+    {
+      id: "diff-evidence",
+      sessionId: session.id,
+      toolCallId: "tool-diff",
+      kind: "diff",
+      title: "Workspace diff evidence",
+      summary: "Updated one frontend file.",
+      source: "tool activity fixture",
+      createdAt: new Date().toISOString()
+    },
+    {
+      id: "markdown-evidence",
+      sessionId: session.id,
+      toolCallId: "tool-markdown",
+      kind: "markdown",
+      title: "Markdown evidence",
+      summary: "Generated a compact report.",
+      source: "tool activity fixture",
+      createdAt: new Date().toISOString()
+    }
+  ];
+  const longCommand =
+    "npm run build -- --filter frontend --workspace acp-webui --long-flag-with-a-value=abcdefghijklmnopqrstuvwxyz0123456789";
+  const timeline: TimelineItem[] = [
+    {
+      kind: "tool_call",
+      id: "tool-command",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:00.000Z",
+      status: "completed",
+      toolCallId: "tool-command",
+      toolKind: "execute",
+      title: "Run frontend build",
+      summary: "Build completed.",
+      input: { command: longCommand, cwd: repoRoot },
+      output: { stdout: "build line 1\nbuild line 2\nbuild line 3" },
+      reviewArtifactIds: []
+    },
+    {
+      kind: "tool_call",
+      id: "tool-failed",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:01.000Z",
+      status: "failed",
+      toolCallId: "tool-failed",
+      toolKind: "execute",
+      title: "Run failing tests",
+      summary: "Command failed.",
+      input: { command: "npm test -- --run failing-spec" },
+      output: {
+        stderr:
+          "failure line 1\nfailure line 2\nfailure line 3\nfailure line 4\nfailure line 5\nfailure line 6\nfailure line 7"
+      },
+      reviewArtifactIds: []
+    },
+    {
+      kind: "tool_call",
+      id: "tool-diff",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:02.000Z",
+      status: "completed",
+      toolCallId: "tool-diff",
+      toolKind: "apply_patch",
+      title: "Apply patch",
+      summary: "Patched session UI.",
+      input: { path: "frontend/src/features/sessions/SessionPane.tsx" },
+      output: null,
+      reviewArtifactIds: ["diff-evidence"]
+    },
+    {
+      kind: "tool_call",
+      id: "tool-markdown",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:03.000Z",
+      status: "completed",
+      toolCallId: "tool-markdown",
+      toolKind: "markdown",
+      title: "Render Markdown evidence",
+      summary: "Markdown artifact emitted.",
+      input: { path: "doc/report.md" },
+      output: null,
+      reviewArtifactIds: ["markdown-evidence"]
+    },
+    {
+      kind: "tool_call",
+      id: "tool-mcp",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:04.000Z",
+      status: "completed",
+      toolCallId: "tool-mcp",
+      toolKind: "mcp_tool_call",
+      title: "Fetch pull request",
+      summary: "Fetched PR metadata.",
+      input: { server: "github", tool: "fetch_pr" },
+      output: null,
+      reviewArtifactIds: []
+    },
+    {
+      kind: "tool_call",
+      id: "tool-unknown",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:05.000Z",
+      status: "completed",
+      toolCallId: "tool-unknown",
+      toolKind: "custom_tool",
+      title: "Do custom work",
+      summary: "Custom tool completed.",
+      input: { payload: { opaque: true } },
+      output: { text: "opaque output" },
+      reviewArtifactIds: []
+    },
+    {
+      kind: "review_artifact",
+      id: "diff-evidence",
+      sessionId: session.id,
+      timestamp: "2026-04-30T00:00:06.000Z",
+      status: "completed",
+      toolCallId: "tool-diff",
+      artifactKind: "diff",
+      title: "Workspace diff evidence",
+      summary: "Updated one frontend file.",
+      source: "tool activity fixture"
+    }
+  ];
+  const detail: SessionDetail = {
+    session,
+    workspace,
+    configOptions: [],
+    currentModel: null,
+    messages: [],
+    reviewArtifacts,
+    timeline,
+    pendingPermission: null,
+    pendingPermissions: [],
+    pendingApprovalCount: 0,
+    queuedApprovalCount: 0,
+    failureMessage: null,
+    continuity,
+    continuable: true,
+    viewOnlyReason: null
+  };
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+        body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "test-client" })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: null },
+        agents: [{ id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } }],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([workspace]) });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route("**/api/skills", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route(`**/api/sessions/${session.id}`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
+  });
+  await page.route(`**/api/sessions/${session.id}/review-artifacts/diff-evidence`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        ...reviewArtifacts[0],
+        payload:
+          "diff --git a/frontend/src/features/sessions/SessionPane.tsx b/frontend/src/features/sessions/SessionPane.tsx\n@@ -1 +1 @@\n-tool\n+activity"
+      })
+    });
+  });
+  await page.route(`**/api/sessions/${session.id}/review-artifacts/markdown-evidence`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({ ...reviewArtifacts[1], payload: "# Tool Activity\n\n- compact evidence" })
+    });
+  });
+
+  await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
+  await expect(page.locator(".tool-row")).toHaveCount(6);
+  await expect(page.locator(".tool-row.command").first()).toContainText("Ran");
+  await expect(page.locator(".tool-row.command").first()).toContainText("--long-flag-with-a-value");
+  await expect(page.locator(".tool-row.failed")).toContainText("failed");
+  await expect(page.locator(".tool-row.failed .tool-output")).toContainText("failure line 7");
+  await expect(page.locator(".tool-row.mcp")).toContainText("github / fetch_pr");
+  await expect(page.locator(".tool-row.generic")).toContainText("Do custom work");
+  await expectPageFitsViewport(page);
+
+  await page.locator(".tool-row.command").first().getByRole("button", { name: "Output" }).click();
+  await expect(page.locator(".tool-row.command").first().locator(".tool-output")).toContainText("build line 3");
+  await page.locator(".tool-row.command").first().getByText("Diagnostics").click();
+  await expect(page.locator(".tool-row.command").first().locator(".review-pre")).toContainText(longCommand);
+
+  await page.locator(".tool-row.file_change").getByRole("button", { name: "Diff" }).click();
+  const diffDialog = page.getByRole("dialog", { name: "Review artifact" });
+  await expect(diffDialog.getByRole("heading", { name: "Workspace diff evidence" })).toBeVisible();
+  await expect(diffDialog.locator(".review-pre.diff")).toContainText("SessionPane.tsx");
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(diffDialog).toBeHidden();
+
+  await page.locator(".tool-row.file_read", { hasText: "doc/report.md" }).getByRole("button", { name: "Markdown" }).click();
+  const markdownDialog = page.getByRole("dialog", { name: "Review artifact" });
+  await expect(markdownDialog.getByRole("heading", { name: "Markdown evidence" })).toBeVisible();
+  await expect(markdownDialog.locator(".markdown-preview h1", { hasText: "Tool Activity" })).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await expect(page.locator(".review-card", { hasText: "Workspace diff evidence" })).toBeVisible();
 });
 
 test("restores a persisted session after backend restart and sends a follow-up prompt", async ({ page }) => {
@@ -780,7 +1034,7 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
   await page.getByPlaceholder("Ask Codex...").fill("Trigger markdown artifact.");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.locator("details.tool-row summary", { hasText: "Render Markdown evidence" })).toBeVisible();
+  await expect(page.locator(".tool-row", { hasText: "Render Markdown evidence" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Render Markdown evidence/ })).toBeVisible();
   await page.getByRole("button", { name: /Render Markdown evidence/ }).click();
 
@@ -972,9 +1226,9 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
-  await expect(page.locator("details.tool-row")).toHaveCount(1);
-  await expect(page.locator("details.tool-row > summary")).toContainText("Ran");
-  await expect(page.locator("details.tool-row > summary")).toContainText("git diff -- README.md");
+  await expect(page.locator(".tool-row")).toHaveCount(1);
+  await expect(page.locator(".tool-row-main")).toContainText("Ran");
+  await expect(page.locator(".tool-row-main")).toContainText("git diff -- README.md");
   const ids = sessionRouteIds(page);
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");

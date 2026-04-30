@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { TimelineItem } from "../types";
+import type { ReviewArtifactSummary, TimelineItem } from "../types";
 import { toolCallDisplay } from "./toolDisplay";
 
 function toolCall(overrides: Partial<Extract<TimelineItem, { kind: "tool_call" }>>) {
@@ -20,8 +20,22 @@ function toolCall(overrides: Partial<Extract<TimelineItem, { kind: "tool_call" }
   } satisfies Extract<TimelineItem, { kind: "tool_call" }>;
 }
 
+function artifact(overrides: Partial<ReviewArtifactSummary>) {
+  return {
+    id: "artifact-1",
+    sessionId: "session-1",
+    toolCallId: "acp-tool-1",
+    kind: "diff",
+    title: "Workspace diff",
+    summary: "Diff evidence",
+    source: "fixture",
+    createdAt: "2026-04-28T00:00:00Z",
+    ...overrides
+  } satisfies ReviewArtifactSummary;
+}
+
 describe("toolCallDisplay", () => {
-  test("renders shell commands as ran activity", () => {
+  test("renders shell commands as command activity", () => {
     const display = toolCallDisplay(
       toolCall({
         input: {
@@ -31,9 +45,11 @@ describe("toolCallDisplay", () => {
       })
     );
 
+    expect(display.kind).toBe("command");
     expect(display.actionLabel).toBe("Ran");
     expect(display.subject).toBe("npm run build");
-    expect(display.details).toContainEqual({ label: "Command", value: "npm run build" });
+    expect(display.metadata).toContainEqual({ label: "Command", value: "npm run build" });
+    expect(display.evidenceActions.at(-1)).toMatchObject({ kind: "diagnostics", label: "Diagnostics" });
   });
 
   test("renders file reads with path subjects", () => {
@@ -45,11 +61,12 @@ describe("toolCallDisplay", () => {
       })
     );
 
+    expect(display.kind).toBe("file_read");
     expect(display.actionLabel).toBe("Read");
     expect(display.subject).toBe("frontend/src/App.tsx");
   });
 
-  test("renders edits with patch subjects", () => {
+  test("renders edits with file change subjects", () => {
     const display = toolCallDisplay(
       toolCall({
         toolKind: "apply_patch",
@@ -58,7 +75,8 @@ describe("toolCallDisplay", () => {
       })
     );
 
-    expect(display.actionLabel).toBe("Edited");
+    expect(display.kind).toBe("file_change");
+    expect(display.actionLabel).toBe("Changed");
     expect(display.subject).toBe("frontend/src/style.css");
   });
 
@@ -71,21 +89,9 @@ describe("toolCallDisplay", () => {
       })
     );
 
+    expect(display.kind).toBe("search");
     expect(display.actionLabel).toBe("Searched");
     expect(display.subject).toBe("MarkdownContent");
-  });
-
-  test("renders list operations with directory subjects", () => {
-    const display = toolCallDisplay(
-      toolCall({
-        toolKind: "list_directory",
-        title: "List directory",
-        input: { directory: "frontend/src" }
-      })
-    );
-
-    expect(display.actionLabel).toBe("Listed");
-    expect(display.subject).toBe("frontend/src");
   });
 
   test("renders browser operations with URL subjects", () => {
@@ -93,15 +99,57 @@ describe("toolCallDisplay", () => {
       toolCall({
         toolKind: "browser_navigate",
         title: "Navigate browser",
-        input: { url: "http://127.0.0.1:7635" }
+        input: { url: "https://example.test/session" }
       })
     );
 
+    expect(display.kind).toBe("browser");
     expect(display.actionLabel).toBe("Browsed");
-    expect(display.subject).toBe("http://127.0.0.1:7635");
+    expect(display.subject).toBe("https://example.test/session");
   });
 
-  test("falls back to existing kind, title, summary, and raw payloads", () => {
+  test("renders MCP operations with server and tool subjects", () => {
+    const display = toolCallDisplay(
+      toolCall({
+        toolKind: "mcp_tool_call",
+        title: "Call GitHub",
+        input: { server: "github", tool: "fetch_pr" }
+      })
+    );
+
+    expect(display.kind).toBe("mcp");
+    expect(display.actionLabel).toBe("Called");
+    expect(display.subject).toBe("github / fetch_pr");
+    expect(display.metadata).toContainEqual({ label: "Server", value: "github" });
+  });
+
+  test("renders failed command output tails", () => {
+    const display = toolCallDisplay(
+      toolCall({
+        status: "failed",
+        summary: "Command failed",
+        input: { command: "npm test" },
+        output: { stderr: "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7" }
+      })
+    );
+
+    expect(display.kind).toBe("command");
+    expect(display.statusLabel).toBe("failed");
+    expect(display.outputTail).toBe("line 2\nline 3\nline 4\nline 5\nline 6\nline 7");
+    expect(display.evidenceActions[0]).toMatchObject({ kind: "output", label: "Output" });
+  });
+
+  test("maps linked review artifacts to typed evidence actions", () => {
+    const display = toolCallDisplay(
+      toolCall({ reviewArtifactIds: ["artifact-1", "artifact-2"] }),
+      [artifact({ id: "artifact-1", kind: "diff" }), artifact({ id: "artifact-2", kind: "markdown" })]
+    );
+
+    expect(display.evidenceActions).toContainEqual({ id: "artifact-1", kind: "diff", label: "Diff" });
+    expect(display.evidenceActions).toContainEqual({ id: "artifact-2", kind: "markdown", label: "Markdown" });
+  });
+
+  test("falls back to generic activity and diagnostics", () => {
     const input = { payload: { opaque: true } };
     const output = { text: "opaque output" };
     const display = toolCallDisplay(
@@ -114,11 +162,12 @@ describe("toolCallDisplay", () => {
       })
     );
 
+    expect(display.kind).toBe("generic");
     expect(display.actionLabel).toBe("Custom tool");
     expect(display.subject).toBe("Do custom work");
-    expect(display.summary).toBe("custom_tool completed");
-    expect(display.outputPreview).toBe("opaque output");
-    expect(display.rawInput).toBe(input);
-    expect(display.rawOutput).toBe(output);
+    expect(display.result).toBe("custom_tool completed");
+    expect(display.outputTail).toBe("opaque output");
+    expect(display.diagnostics.rawInput).toBe(input);
+    expect(display.diagnostics.rawOutput).toBe(output);
   });
 });
