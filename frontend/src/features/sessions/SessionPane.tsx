@@ -6,7 +6,6 @@ import { api } from "../../api";
 import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
-import { PageHeader } from "../../components/common";
 import type { AgentRuntimeStatus, ChatMessage, PermissionModeId, ReviewArtifactSummary, SessionDetail, SkillSummary, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
 import {
@@ -359,37 +358,30 @@ function SessionContextHeader({
   permissionModes: ReturnType<typeof fallbackPermissionModes>;
   sessionSelectOptions: NonNullable<SessionDetail["configOptions"]>;
 }) {
+  const [infoExpandedState, setInfoExpandedState] = useState({
+    sessionId: currentSession.session.id,
+    value: false
+  });
+  const infoExpanded = infoExpandedState.sessionId === currentSession.session.id ? infoExpandedState.value : false;
+
+  function toggleInfoExpanded() {
+    setInfoExpandedState((current) => ({
+      sessionId: currentSession.session.id,
+      value: current.sessionId === currentSession.session.id ? !current.value : true
+    }));
+  }
+
   return (
-    <div className="session-toolbar">
-      <div className="session-heading-stack">
+    <div className={`session-toolbar ${infoExpanded ? "expanded" : "collapsed"}`}>
+      <div className="session-toolbar-summary">
         <Link
           className="secondary small session-list-link"
           params={{ workspaceId: currentSession.workspace.id }}
           to="/workspaces/$workspaceId/sessions"
         >
-          Back to sessions
+          Sessions
         </Link>
-        <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
-      </div>
-      <div className="session-context-controls">
-        {sessionSelectOptions.length ? (
-          <div className="session-config-controls">
-            {sessionSelectOptions.map((option) => (
-              <ModelSelector
-                busy={busy}
-                disabledReason={modelDisabledReason}
-                key={option.id}
-                option={option}
-                values={selectValues(option)}
-                onSetSessionConfigOption={onSetSessionConfigOption}
-              />
-            ))}
-          </div>
-        ) : null}
-        <div className="section-actions">
-          <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
-            Diff
-          </Button>
+        <div className="session-summary-badges">
           <span className={`badge ${agentConnectionState}`}>{agentName}</span>
           <span
             className={`permission-mode-badge ${permissionModeClass(permissionMode)}`}
@@ -397,9 +389,46 @@ function SessionContextHeader({
           >
             {permissionModeLabel(permissionMode, permissionModes)}
           </span>
-          <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
         </div>
+        <Button
+          aria-label={infoExpanded ? "Hide session info" : "Show session info"}
+          aria-expanded={infoExpanded}
+          className="icon-button session-info-toggle"
+          type="button"
+          onPress={toggleInfoExpanded}
+        >
+          <span aria-hidden="true">{infoExpanded ? "▴" : "▾"}</span>
+        </Button>
       </div>
+
+      {infoExpanded ? (
+        <div className="session-context-controls">
+          <div className="session-expanded-context">
+            <span>{currentSession.workspace.name}</span>
+            <strong>{agentName} Session</strong>
+            <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
+          </div>
+          {sessionSelectOptions.length ? (
+            <div className="session-config-controls">
+              {sessionSelectOptions.map((option) => (
+                <ModelSelector
+                  busy={busy}
+                  disabledReason={modelDisabledReason}
+                  key={option.id}
+                  option={option}
+                  values={selectValues(option)}
+                  onSetSessionConfigOption={onSetSessionConfigOption}
+                />
+              ))}
+            </div>
+          ) : null}
+          <div className="section-actions">
+            <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
+              Diff
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

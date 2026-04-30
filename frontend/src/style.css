@@ -281,13 +281,70 @@ pre {
   backdrop-filter: blur(14px);
 }
 
-.session-heading-stack {
+.session-toolbar-summary {
   display: flex;
-  flex: 1 1 15rem;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.55rem;
+  justify-content: flex-start;
+  gap: 0.45rem 0.55rem;
+  width: 100%;
   min-width: 0;
+}
+
+.session-expanded-context {
+  display: grid;
+  flex: 1 1 12rem;
+  gap: 0.04rem;
+  min-width: 0;
+}
+
+.session-expanded-context span:not(.badge) {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.session-expanded-context strong {
+  overflow: hidden;
+  font-size: 0.94rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-expanded-context .badge {
+  justify-self: start;
+  margin-top: 0.22rem;
+}
+
+.session-summary-badges {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.session-info-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+}
+
+.session-toolbar.expanded {
+  display: grid;
+  gap: 0.55rem;
 }
 
 .session-list-link {
@@ -1588,10 +1645,6 @@ pre {
   .mobile-nav-modal .modal-body,
   .mobile-nav-modal .modal-dialog {
     min-height: 0;
-  }
-
-  .session-toolbar .page-header {
-    flex: 1 1 100%;
   }
 
   .session-context-controls {
