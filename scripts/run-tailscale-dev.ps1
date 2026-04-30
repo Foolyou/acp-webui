@@ -27,6 +27,7 @@ param(
     [string[]]$CodexAcpArgs = @(),
     [string]$ClaudeAcpCommand = "npx",
     [string[]]$ClaudeAcpArgs = @(),
+    [string]$ClaudeCodeExecutable,
     [string[]]$TrustedClients = @()
 )
 
@@ -350,6 +351,36 @@ function Resolve-StartProcessCommand {
     return $Source
 }
 
+function Resolve-ClaudeCodeExecutable {
+    param(
+        [string]$RequestedExecutable
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedExecutable)) {
+        $Candidate = $RequestedExecutable.Trim()
+        if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+            throw "ClaudeCodeExecutable does not point to an accessible file."
+        }
+        return $Candidate
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_CODE_EXECUTABLE)) {
+        return $null
+    }
+
+    $ClaudeCommand = Get-Command "claude" -ErrorAction SilentlyContinue
+    if ($null -eq $ClaudeCommand -or [string]::IsNullOrWhiteSpace($ClaudeCommand.Source)) {
+        return $null
+    }
+
+    $Source = $ClaudeCommand.Source
+    if (Test-Path -LiteralPath $Source -PathType Leaf) {
+        return $Source
+    }
+
+    return $null
+}
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $BindHost = Get-TailscaleIPv4 $TailscaleIp
@@ -357,6 +388,7 @@ $BackendUrl = "http://$BindHost`:$BackendPort"
 $FrontendUrl = "http://$BindHost`:$FrontendPort"
 $CargoCommand = Resolve-StartProcessCommand "cargo"
 $NpmCommand = Resolve-StartProcessCommand "npm"
+$ResolvedClaudeCodeExecutable = Resolve-ClaudeCodeExecutable $ClaudeCodeExecutable
 
 Write-Host "Tailscale bind address: $BindHost"
 Write-Host "Restarting dev services..."
@@ -416,14 +448,23 @@ Write-Host ("  " + (Format-CommandForDisplay $CargoCommand $BackendArgs))
 Write-Host "Frontend command:"
 Write-Host ("  ACP_WEBUI_BACKEND_URL=$BackendUrl " + (Format-CommandForDisplay $NpmCommand $FrontendArgs))
 
-$BackendProcess = Start-Process `
-    -FilePath $CargoCommand `
-    -ArgumentList $BackendArgs `
-    -WorkingDirectory $RepoRoot `
-    -RedirectStandardOutput $BackendOut `
-    -RedirectStandardError $BackendErr `
-    -WindowStyle Hidden `
-    -PassThru
+$PreviousClaudeCodeExecutable = $env:CLAUDE_CODE_EXECUTABLE
+if (-not [string]::IsNullOrWhiteSpace($ResolvedClaudeCodeExecutable)) {
+    $env:CLAUDE_CODE_EXECUTABLE = $ResolvedClaudeCodeExecutable
+    Write-Host "Claude Code executable: PATH"
+}
+try {
+    $BackendProcess = Start-Process `
+        -FilePath $CargoCommand `
+        -ArgumentList $BackendArgs `
+        -WorkingDirectory $RepoRoot `
+        -RedirectStandardOutput $BackendOut `
+        -RedirectStandardError $BackendErr `
+        -WindowStyle Hidden `
+        -PassThru
+} finally {
+    $env:CLAUDE_CODE_EXECUTABLE = $PreviousClaudeCodeExecutable
+}
 
 $PreviousBackendUrl = $env:ACP_WEBUI_BACKEND_URL
 $env:ACP_WEBUI_BACKEND_URL = $BackendUrl

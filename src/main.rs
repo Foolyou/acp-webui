@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod error;
 mod models;
+mod paths;
 mod routes;
 mod storage;
 

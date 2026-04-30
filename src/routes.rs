@@ -418,8 +418,9 @@ async fn create_session(
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
 
+    let workspace_path = crate::paths::native_path_string(&workspace.path);
     let new_session = runtime
-        .new_session(workspace.path.clone())
+        .new_session(workspace_path)
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
     let acp_session_id = new_session.session_id.clone();
@@ -465,6 +466,7 @@ async fn restore_session(
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
     let workspace = state.storage.get_workspace(&session.workspace_id).await?;
+    let workspace_path = crate::paths::native_path_string(&workspace.path);
     let runtime = state.runtime_for_session_use(&session).await?;
     let continuity = state.session_continuity(&session).await?;
 
@@ -503,8 +505,51 @@ async fn restore_session(
         session_id: session_id.clone(),
     });
 
+    if continuity.state == continuity_state::RESTORE_FAILED
+        && !state.storage.session_has_activity(&session_id).await?
+    {
+        let new_session = match runtime.new_session(workspace_path.clone()).await {
+            Ok(new_session) => new_session,
+            Err(error) => {
+                let message = format!("Failed to restart empty session: {error}");
+                state
+                    .storage
+                    .mark_session_restore_failed(&session_id, &message)
+                    .await?;
+                let _ = state.events_tx.send(RealtimeEvent::SessionRestoreFailed {
+                    session_id: session_id.clone(),
+                    message: message.clone(),
+                });
+                return Err(AppError::Conflict(message));
+            }
+        };
+        state
+            .storage
+            .update_session_agent_session_id(&session_id, &new_session.session_id)
+            .await?;
+        if new_session.config_options.is_some() {
+            state
+                .storage
+                .update_session_config_options(&session_id, new_session.config_options)
+                .await?;
+        }
+        runtime
+            .register_session(new_session.session_id, session_id.clone())
+            .await;
+        state
+            .storage
+            .mark_session_restore_succeeded(&session_id)
+            .await?;
+        let _ = state
+            .events_tx
+            .send(RealtimeEvent::SessionRestoreSucceeded {
+                session_id: session_id.clone(),
+            });
+        return Ok(Json(state.session_detail(&session_id).await?));
+    }
+
     match runtime
-        .load_session(external_session_id, session_id.clone(), workspace.path)
+        .load_session(external_session_id, session_id.clone(), workspace_path)
         .await
     {
         Ok(config_options) => {
@@ -2650,11 +2695,7 @@ for line in sys.stdin:
         let created: Value = serde_json::from_slice(&created_body).unwrap();
         assert_eq!(
             created["path"].as_str().unwrap(),
-            workspace_dir
-                .path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
+            crate::paths::native_path_string(workspace_dir.path().canonicalize().unwrap())
         );
 
         let response = app
@@ -3373,6 +3414,68 @@ for line in sys.stdin:
             .as_deref()
             .unwrap()
             .contains("not available"));
+    }
+
+    #[tokio::test]
+    async fn restore_failed_empty_session_restarts_without_replaying_history() {
+        let (state, _db_dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                CLAUDE_AGENT_ID,
+                "Claude",
+                "stale-claude-session".to_string(),
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .mark_session_restore_failed(
+                &session.id,
+                "Failed to restore session: JSON-RPC error -32603: Internal error",
+            )
+            .await
+            .unwrap();
+        let app = api_router(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/restore", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let restored = state.storage.get_session(&session.id).await.unwrap();
+        assert_eq!(restored.acp_session_id.as_deref(), Some("shared-session"));
+        assert!(
+            state
+                .agents
+                .runtime(CLAUDE_AGENT_ID)
+                .await
+                .unwrap()
+                .has_registered_session(Some("shared-session"))
+                .await
+        );
+        assert!(state
+            .storage
+            .list_messages(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+        let detail = state.session_detail(&session.id).await.unwrap();
+        assert!(detail.continuity.continuable);
     }
 
     #[tokio::test]

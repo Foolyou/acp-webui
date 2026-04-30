@@ -143,7 +143,7 @@ impl Storage {
         anyhow::ensure!(metadata.is_dir(), "workspace path must be a directory");
 
         let id = Uuid::new_v4().to_string();
-        let path = canonical.to_string_lossy().to_string();
+        let path = crate::paths::native_path_string(&canonical);
         let name = name.unwrap_or_else(|| {
             canonical
                 .file_name()
@@ -540,6 +540,52 @@ impl Storage {
         )
         .bind(continuity_state::RESTORE_FAILED)
         .bind(message)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn session_has_activity(&self, id: &str) -> anyhow::Result<bool> {
+        let has_activity = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT CASE WHEN
+                EXISTS(SELECT 1 FROM messages WHERE session_id = ?)
+                OR EXISTS(SELECT 1 FROM tool_calls WHERE session_id = ?)
+                OR EXISTS(SELECT 1 FROM permission_requests WHERE session_id = ?)
+                OR EXISTS(SELECT 1 FROM review_artifacts WHERE session_id = ?)
+            THEN 1 ELSE 0 END
+            "#,
+        )
+        .bind(id)
+        .bind(id)
+        .bind(id)
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(has_activity != 0)
+    }
+
+    pub async fn update_session_agent_session_id(
+        &self,
+        id: &str,
+        acp_session_id: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET
+                acp_session_id = ?,
+                external_session_id = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(acp_session_id)
+        .bind(acp_session_id)
         .bind(now())
         .bind(id)
         .execute(&self.pool)

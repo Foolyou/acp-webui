@@ -1164,11 +1164,21 @@ type PendingResult = Result<Value, JsonRpcError>;
 struct JsonRpcError {
     code: i64,
     message: String,
+    data: Option<Value>,
 }
 
 impl std::fmt::Display for JsonRpcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "JSON-RPC error {}: {}", self.code, self.message)
+        write!(formatter, "JSON-RPC error {}: {}", self.code, self.message)?;
+        if let Some(details) = self
+            .data
+            .as_ref()
+            .and_then(|data| data.get("details"))
+            .and_then(Value::as_str)
+        {
+            write!(formatter, " ({details})")?;
+        }
+        Ok(())
     }
 }
 
@@ -1394,6 +1404,7 @@ async fn fail_pending_requests(
         let _ = reply_tx.send(Err(JsonRpcError {
             code: -32000,
             message: message.clone(),
+            data: None,
         }));
     }
 }
@@ -1482,6 +1493,7 @@ async fn handle_response(
             serde_json::from_value::<JsonRpcError>(error.clone()).unwrap_or(JsonRpcError {
                 code: -32000,
                 message: error.to_string(),
+                data: None,
             });
         Err(parsed)
     } else {
@@ -2341,6 +2353,21 @@ mod tests {
 
     #[cfg(windows)]
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn json_rpc_error_display_includes_details_data() {
+        let error: JsonRpcError = serde_json::from_value(json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {"details": "spawn EFTYPE"}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            error.to_string(),
+            "JSON-RPC error -32603: Internal error (spawn EFTYPE)"
+        );
+    }
 
     fn config_for_fake(script: PathBuf, mode: &str) -> Config {
         Config {
