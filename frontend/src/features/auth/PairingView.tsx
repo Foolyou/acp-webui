@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Button } from "react-aria-components";
+import { FullscreenButton } from "../../components/FullscreenButton";
 import type { AuthStatus } from "../../types";
 
 export function PairingView({
@@ -33,8 +34,13 @@ export function PairingView({
   return (
     <main className="pairing-shell">
       <section className="pairing-panel">
-        <p className="eyebrow">ACP Web UI</p>
-        <h1>Pair this browser</h1>
+        <div className="pairing-panel-head">
+          <div>
+            <p className="eyebrow">ACP Web UI</p>
+            <h1>Pair this browser</h1>
+          </div>
+          <FullscreenButton />
+        </div>
         <p className="muted">Enter the pairing token shown in the backend terminal.</p>
         {auth?.clientIp ? <p className="muted">Client: {auth.clientIp}</p> : null}
         <form className="pairing-form" onSubmit={onSubmit}>

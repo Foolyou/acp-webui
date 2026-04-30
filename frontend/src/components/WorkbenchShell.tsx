@@ -5,6 +5,7 @@ import { useAppContext } from "../app/context";
 import { ApprovalSheet } from "../features/approvals/ApprovalSheet";
 import { ReviewOverlay } from "../features/reviews/ReviewOverlay";
 import { BrandBlock } from "./common";
+import { FullscreenButton } from "./FullscreenButton";
 import { StatusDot } from "./status";
 import { WorkbenchNav } from "./WorkbenchNav";
 
@@ -21,6 +22,9 @@ export function WorkbenchShell() {
       <aside className="sidebar" aria-label="Primary">
         <BrandBlock />
         <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
+        <div className="shell-controls">
+          <FullscreenButton />
+        </div>
       </aside>
 
       <section className="workbench">
@@ -34,9 +38,12 @@ export function WorkbenchShell() {
             <p className="eyebrow">ACP Web UI</p>
             <h1>{selectedWorkspace?.name ?? "Agent Session"}</h1>
           </div>
-          <div className="mobile-status">
-            <StatusDot stateText={mobileStatus} />
-            <span>{mobileStatus}</span>
+          <div className="mobile-topbar-actions">
+            <div className="mobile-status">
+              <StatusDot stateText={mobileStatus} />
+              <span>{mobileStatus}</span>
+            </div>
+            <FullscreenButton />
           </div>
         </header>
 

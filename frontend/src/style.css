@@ -70,6 +70,20 @@ body {
   font-size: 1.75rem;
 }
 
+.pairing-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.pairing-panel-head > div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
 .pairing-form {
   display: grid;
   gap: 12px;
@@ -113,6 +127,16 @@ textarea:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 input,
@@ -891,6 +915,124 @@ pre {
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.mobile-topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.shell-controls {
+  display: grid;
+  align-items: end;
+}
+
+.fullscreen-toggle {
+  position: relative;
+  display: grid;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0;
+  place-items: center;
+}
+
+.fullscreen-toggle.active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.fullscreen-toggle[data-disabled] {
+  opacity: 0.58;
+}
+
+.fullscreen-toggle::after {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.4rem);
+  z-index: 3;
+  width: max-content;
+  max-width: 12rem;
+  transform: translateY(0.15rem);
+  opacity: 0;
+  pointer-events: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-strong);
+  color: #fff;
+  content: attr(data-tooltip);
+  padding: 0.28rem 0.42rem;
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.2;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.fullscreen-toggle:hover::after,
+.fullscreen-toggle:focus-visible::after {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.fullscreen-corner {
+  position: absolute;
+  width: 0.58rem;
+  height: 0.58rem;
+  border-color: currentColor;
+}
+
+.fullscreen-corner.top-left {
+  top: 0.7rem;
+  left: 0.7rem;
+  border-top: 2px solid;
+  border-left: 2px solid;
+}
+
+.fullscreen-corner.top-right {
+  top: 0.7rem;
+  right: 0.7rem;
+  border-top: 2px solid;
+  border-right: 2px solid;
+}
+
+.fullscreen-corner.bottom-left {
+  bottom: 0.7rem;
+  left: 0.7rem;
+  border-bottom: 2px solid;
+  border-left: 2px solid;
+}
+
+.fullscreen-corner.bottom-right {
+  right: 0.7rem;
+  bottom: 0.7rem;
+  border-right: 2px solid;
+  border-bottom: 2px solid;
+}
+
+.fullscreen-toggle.active .fullscreen-corner.top-left {
+  top: 0.55rem;
+  left: 0.55rem;
+}
+
+.fullscreen-toggle.active .fullscreen-corner.top-right {
+  top: 0.55rem;
+  right: 0.55rem;
+}
+
+.fullscreen-toggle.active .fullscreen-corner.bottom-left {
+  bottom: 0.55rem;
+  left: 0.55rem;
+}
+
+.fullscreen-toggle.active .fullscreen-corner.bottom-right {
+  right: 0.55rem;
+  bottom: 0.55rem;
 }
 
 .status-dot.ready,
@@ -1832,6 +1974,12 @@ pre {
   .mobile-nav-modal .modal-body,
   .mobile-nav-modal .modal-dialog {
     min-height: 0;
+  }
+
+  .fullscreen-toggle::after {
+    top: calc(100% + 0.4rem);
+    right: 0;
+    bottom: auto;
   }
 
   .session-context-controls {
