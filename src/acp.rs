@@ -18,12 +18,13 @@ use tokio::{
 };
 
 use crate::{
-    config::{AgentConfig, Config, CODEX_AGENT_ID},
+    config::{AgentConfig, Config, ResolvedAgentLaunchProfile, CODEX_AGENT_ID},
     models::{
         permission_mode, permission_status, review_artifact_kind, role, status, tool_call_status,
-        AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact, PermissionRequest,
-        ReviewArtifact, ReviewArtifactSummary, SessionConfigOption, SessionConfigState,
-        SessionContinuity, SessionCurrentModel, TimelineItem, ToolCallRow, UpsertToolCall,
+        AgentControl, AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact,
+        PermissionRequest, ReviewArtifact, ReviewArtifactSummary, SessionConfigOption,
+        SessionConfigState, SessionContinuity, SessionCurrentModel, TimelineItem, ToolCallRow,
+        UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -88,10 +89,12 @@ impl ConnectionStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatus {
     pub id: String,
+    pub provider_id: String,
     pub title: String,
     pub enabled: bool,
     pub status: ConnectionStatus,
     pub permission_modes: Vec<AgentPermissionModeStatus>,
+    pub launch_controls: Vec<AgentControl>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -753,14 +756,14 @@ struct AgentRuntimeEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AgentRuntimeKey {
     agent_id: String,
-    permission_mode: String,
+    launch_profile_key: String,
 }
 
 impl AgentRuntimeKey {
-    fn new(agent_id: impl Into<String>, permission_mode: impl Into<String>) -> Self {
+    fn new(agent_id: impl Into<String>, launch_profile_key: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.into(),
-            permission_mode: permission_mode.into(),
+            launch_profile_key: launch_profile_key.into(),
         }
     }
 }
@@ -786,12 +789,12 @@ impl AgentRuntimeManager {
         let mut order = Vec::new();
         for agent in config.agent_configs() {
             order.push(agent.id.clone());
-            for mode in &agent.permission_modes {
+            for profile in &agent.launch_profiles {
                 let runtime_config = agent
-                    .runtime_config_for_permission_mode(&mode.id)
-                    .expect("built-in permission mode mapping is valid");
+                    .runtime_config_for_permission_mode(&profile.key)
+                    .expect("built-in launch profile mapping is valid");
                 entries.insert(
-                    AgentRuntimeKey::new(&agent.id, &mode.id),
+                    AgentRuntimeKey::new(&agent.id, &profile.key),
                     AgentRuntimeEntry {
                         config: runtime_config,
                         runtime: RwLock::new(None),
@@ -824,20 +827,20 @@ impl AgentRuntimeManager {
         let mut order = Vec::new();
         for agent in config.agent_configs() {
             order.push(agent.id.clone());
-            for mode in &agent.permission_modes {
+            for profile in &agent.launch_profiles {
                 let runtime = statuses
-                    .get(&format!("{}:{}", agent.id, mode.id))
+                    .get(&format!("{}:{}", agent.id, profile.key))
                     .or_else(|| {
-                        (mode.id == permission_mode::MANUAL)
+                        (profile.permission_mode == permission_mode::MANUAL)
                             .then(|| statuses.get(&agent.id))
                             .flatten()
                     })
                     .cloned();
                 let runtime_config = agent
-                    .runtime_config_for_permission_mode(&mode.id)
-                    .expect("built-in permission mode mapping is valid");
+                    .runtime_config_for_permission_mode(&profile.key)
+                    .expect("built-in launch profile mapping is valid");
                 entries.insert(
-                    AgentRuntimeKey::new(&agent.id, &mode.id),
+                    AgentRuntimeKey::new(&agent.id, &profile.key),
                     AgentRuntimeEntry {
                         runtime: RwLock::new(runtime),
                         start_lock: Mutex::new(()),
@@ -901,20 +904,56 @@ impl AgentRuntimeManager {
         Ok(mode.to_string())
     }
 
+    pub fn resolve_launch_profile(
+        &self,
+        agent_id: &str,
+        requested_permission_mode: Option<&str>,
+        values: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> anyhow::Result<ResolvedAgentLaunchProfile> {
+        let agent = self
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        agent.resolve_launch_profile(requested_permission_mode, values)
+    }
+
     #[cfg(test)]
     pub async fn runtime(&self, agent_id: &str) -> anyhow::Result<Arc<AgentRuntime>> {
         self.runtime_for_permission_mode(agent_id, permission_mode::MANUAL)
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn runtime_for_permission_mode(
         &self,
         agent_id: &str,
         permission_mode: &str,
     ) -> anyhow::Result<Arc<AgentRuntime>> {
-        let key = AgentRuntimeKey::new(agent_id, permission_mode);
+        let key = self.runtime_key_for_permission_mode(agent_id, permission_mode)?;
         let entry = self.entries.get(&key).ok_or_else(|| {
             anyhow!("Unknown agent id `{agent_id}` or permission mode `{permission_mode}`")
+        })?;
+        if !entry.config.enabled {
+            return Err(anyhow!("{} is disabled", entry.config.title));
+        }
+        entry
+            .runtime
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow!("{} runtime has not started", entry.config.title))
+    }
+
+    pub async fn runtime_for_launch_profile(
+        &self,
+        agent_id: &str,
+        launch_profile_key: &str,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
+        let key = self
+            .entry_key_for_launch_profile(agent_id, launch_profile_key)
+            .or_else(|_| self.runtime_key_for_permission_mode(agent_id, launch_profile_key))?;
+        let entry = self.entries.get(&key).ok_or_else(|| {
+            anyhow!("Unknown agent id `{agent_id}` or launch profile `{launch_profile_key}`")
         })?;
         if !entry.config.enabled {
             return Err(anyhow!("{} is disabled", entry.config.title));
@@ -933,14 +972,53 @@ impl AgentRuntimeManager {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn runtime_for_permission_mode_use(
         &self,
         agent_id: &str,
         permission_mode: &str,
     ) -> anyhow::Result<Arc<AgentRuntime>> {
-        let key = AgentRuntimeKey::new(agent_id, permission_mode);
+        let key = self.runtime_key_for_permission_mode(agent_id, permission_mode)?;
+        self.runtime_for_key_use(key, permission_mode.to_string())
+            .await
+    }
+
+    pub async fn runtime_for_launch_profile_use(
+        &self,
+        agent_id: &str,
+        profile: &ResolvedAgentLaunchProfile,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
+        self.runtime_for_key_use(
+            AgentRuntimeKey::new(agent_id, &profile.key),
+            profile.permission_mode.clone(),
+        )
+        .await
+    }
+
+    pub async fn runtime_for_launch_profile_key_use(
+        &self,
+        agent_id: &str,
+        launch_profile_key: &str,
+        permission_mode: &str,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
+        let key = self
+            .entry_key_for_launch_profile(agent_id, launch_profile_key)
+            .or_else(|_| self.runtime_key_for_permission_mode(agent_id, permission_mode))?;
+        self.runtime_for_key_use(key, permission_mode.to_string())
+            .await
+    }
+
+    async fn runtime_for_key_use(
+        &self,
+        key: AgentRuntimeKey,
+        permission_mode: String,
+    ) -> anyhow::Result<Arc<AgentRuntime>> {
         let entry = self.entries.get(&key).ok_or_else(|| {
-            anyhow!("Unknown agent id `{agent_id}` or permission mode `{permission_mode}`")
+            anyhow!(
+                "Unknown agent id `{}` or launch profile `{}`",
+                key.agent_id,
+                key.launch_profile_key
+            )
         })?;
         if !entry.config.enabled {
             return Err(anyhow!("{} is disabled", entry.config.title));
@@ -972,7 +1050,7 @@ impl AgentRuntimeManager {
 
         let runtime = AgentRuntime::starting_for_agent(
             entry.config.clone(),
-            permission_mode.to_string(),
+            permission_mode,
             self.storage.clone(),
             self.events_tx.clone(),
         );
@@ -1003,10 +1081,12 @@ impl AgentRuntimeManager {
             }
             statuses.push(AgentRuntimeStatus {
                 id: agent.id.clone(),
+                provider_id: agent.provider_id.clone(),
                 title: agent.title.clone(),
                 enabled: agent.enabled,
                 status,
                 permission_modes,
+                launch_controls: agent.launch_controls.clone(),
             });
         }
         statuses
@@ -1021,7 +1101,15 @@ impl AgentRuntimeManager {
     }
 
     async fn status_for_mode(&self, agent: &AgentConfig, mode: &str) -> ConnectionStatus {
-        let key = AgentRuntimeKey::new(&agent.id, mode);
+        let key = match agent.default_launch_profile_key_for_permission_mode(mode) {
+            Some(profile_key) => AgentRuntimeKey::new(&agent.id, profile_key),
+            None => {
+                return ConnectionStatus::failed(format!(
+                    "{} permission mode `{mode}` is not available",
+                    agent.title
+                ));
+            }
+        };
         match self.entries.get(&key) {
             Some(entry) => match entry.runtime.read().await.clone() {
                 Some(runtime) => runtime.status().await,
@@ -1031,6 +1119,41 @@ impl AgentRuntimeManager {
                 "{} permission mode `{mode}` is not available",
                 agent.title
             )),
+        }
+    }
+
+    fn runtime_key_for_permission_mode(
+        &self,
+        agent_id: &str,
+        permission_mode: &str,
+    ) -> anyhow::Result<AgentRuntimeKey> {
+        let agent = self
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| anyhow!("Unknown agent id `{agent_id}`"))?;
+        let profile_key = agent
+            .default_launch_profile_key_for_permission_mode(permission_mode)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{} permission mode `{permission_mode}` is not available",
+                    agent.title
+                )
+            })?;
+        Ok(AgentRuntimeKey::new(agent_id, profile_key))
+    }
+
+    fn entry_key_for_launch_profile(
+        &self,
+        agent_id: &str,
+        launch_profile_key: &str,
+    ) -> anyhow::Result<AgentRuntimeKey> {
+        let key = AgentRuntimeKey::new(agent_id, launch_profile_key);
+        if self.entries.contains_key(&key) {
+            Ok(key)
+        } else {
+            Err(anyhow!(
+                "Unknown agent id `{agent_id}` or launch profile `{launch_profile_key}`"
+            ))
         }
     }
 }
@@ -2235,6 +2358,9 @@ mod tests {
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
@@ -2253,6 +2379,9 @@ mod tests {
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,

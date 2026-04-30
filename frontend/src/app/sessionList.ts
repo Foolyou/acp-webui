@@ -12,6 +12,7 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
     workspace: detail.workspace,
     lastActivityAt: detail.session.updatedAt,
     currentModel: detail.currentModel ?? null,
+    launchControlSummary: detail.launchControlSummary ?? [],
     pendingPermission: detail.pendingPermission
       ? {
           id: detail.pendingPermission.id,

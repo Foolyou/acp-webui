@@ -9,7 +9,7 @@ This slice connects a Rust local daemon to ACP agents over stdio. Users can crea
 - Codex through `codex-acp`
 - Optional Claude support through `@agentclientprotocol/claude-agent-acp`
 - Local workspaces
-- Session creation with per-session agent and permission mode selection
+- Session creation with per-agent launch controls, including permission mode compatibility
 - Sessions list for reopening persisted sessions
 - ACP-first session continuation through verified `session/load` support when the connected agent advertises it
 - Text prompts and text replies
@@ -20,13 +20,16 @@ This slice connects a Rust local daemon to ACP agents over stdio. Users can crea
 - Pairing token access control for non-trusted browsers
 - Trusted client IP/CIDR allowlist for deliberate local bypass
 - SQLite persistence
-- Per-agent runtime status and WebSocket live updates
+- Per-agent runtime status, launch profile status, and WebSocket live updates
+- Prompt composer `$skill` autocomplete from discovered local Codex skills
 
 Not included yet: dedicated terminal stream capture, ACP-provided Markdown/diff artifact normalization beyond available tool-call evidence, remembered local allow/reject policy rules, arbitrary custom-agent settings UI, private agent transcript parsing, in-app Claude authentication, or durable restoration of in-flight approval responders after backend restart.
 
 Persisted sessions remain reviewable after browser refresh or backend restart. Prompt submission is enabled only when the backend has live ACP runtime context or the user successfully restores an eligible session through a verified agent capability. ACP Web UI currently implements `session/load`; `session/resume` is detected as a separate agent capability but is not enabled as a continuation path in this version.
 
-Codex sessions can be created in `manual`, `full_auto`, or `yolo` permission modes. `manual` preserves the approval-managed ACP flow, `full_auto` uses sandboxed automatic execution, and `yolo` bypasses approvals and sandboxing for that session. Claude currently exposes only `manual` until an adapter-specific mapping is verified.
+Agent controls are split into two scopes. Launch controls are provider-adapter fallbacks that affect the ACP runtime process used for a new session, so they are persisted as a display-safe launch profile snapshot and cannot be changed after the session is created. ACP session controls come from the agent's `configOptions` and can be changed from the composer while a session is idle and live.
+
+Codex sessions can be created in `manual`, `full_auto`, or `yolo` permission modes. `manual` preserves the approval-managed ACP flow, `full_auto` uses sandboxed automatic execution, and `yolo` bypasses approvals and sandboxing for that session. Codex also exposes launch-time reasoning and fast response controls as adapter fallbacks when ACP does not advertise equivalent session controls. Claude currently exposes only verified manual launch behavior until adapter-specific effort or speed mappings are confirmed. OpenCode is represented as a disabled provider definition by default; enable it with an ACP command once an adapter is available.
 
 `allow_always` and `reject_always` ACP options are shown and selectable when an agent provides them. ACP Web UI forwards the selected option id to the agent; it does not add its own remembered local policy engine.
 

@@ -8,6 +8,7 @@ import type {
   SessionConfigState,
   SessionListItem,
   SessionDetail,
+  SkillSummary,
   Workspace
 } from "./types";
 
@@ -58,17 +59,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path })
     }),
-  createSession: (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) =>
+  createSession: (
+    workspaceId: string,
+    agentId?: string,
+    permissionMode?: PermissionModeId,
+    launchControlValues?: Record<string, string>
+  ) =>
     request<SessionDetail>(`/api/workspaces/${workspaceId}/sessions`, {
       method: "POST",
       body:
-        agentId || permissionMode
+        agentId || permissionMode || launchControlValues
           ? JSON.stringify({
               ...(agentId ? { agentId } : {}),
-              ...(permissionMode ? { permissionMode } : {})
+              ...(permissionMode ? { permissionMode } : {}),
+              ...(launchControlValues ? { launchControlValues } : {})
             })
           : undefined
     }),
+  skills: () => request<SkillSummary[]>("/api/skills"),
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),

@@ -35,7 +35,12 @@ export type UiState = {
 
 export type AppActions = {
   cancelApproval: () => Promise<void>;
-  createSession: (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) => Promise<void>;
+  createSession: (
+    workspaceId: string,
+    agentId?: string,
+    permissionMode?: PermissionModeId,
+    launchControlValues?: Record<string, string>
+  ) => Promise<void>;
   createWorkspace: (path: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessionList: (workspaceId?: string | null) => Promise<void>;

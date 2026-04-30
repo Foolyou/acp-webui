@@ -11,12 +11,12 @@ use uuid::Uuid;
 use serde_json::Value;
 
 use crate::models::{
-    continuity_state, permission_status, role, status, tool_call_status, InboxItem, Message,
-    NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow, ReviewArtifact,
-    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
-    SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
-    SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
-    UpsertToolCall, Workspace,
+    continuity_state, permission_status, role, status, tool_call_status, AgentControlSelection,
+    InboxItem, Message, NewReviewArtifact, PermissionOption, PermissionRequest,
+    PermissionRequestRow, ReviewArtifact, ReviewArtifactRow, ReviewArtifactSummary, Session,
+    SessionConfigOption, SessionConfigSelectOption, SessionConfigState, SessionContinuity,
+    SessionCurrentModel, SessionDetail, SessionListItem, SessionListPermission, TimelineItem,
+    ToolCallRow, UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -268,6 +268,7 @@ impl Storage {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn create_session_for_agent_with_permission_mode_and_config_options(
         &self,
         workspace_id: &str,
@@ -277,9 +278,37 @@ impl Storage {
         permission_mode: &str,
         config_options: Option<Vec<SessionConfigOption>>,
     ) -> anyhow::Result<Session> {
+        let summary = permission_launch_control_summary(permission_mode);
+        self.create_session_for_agent_with_launch_profile_and_config_options(
+            workspace_id,
+            agent_id,
+            agent_name,
+            acp_session_id,
+            permission_mode,
+            permission_mode,
+            permission_mode,
+            summary,
+            config_options,
+        )
+        .await
+    }
+
+    pub async fn create_session_for_agent_with_launch_profile_and_config_options(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        agent_name: &str,
+        acp_session_id: String,
+        permission_mode: &str,
+        launch_profile_id: &str,
+        launch_profile_key: &str,
+        launch_control_summary: Vec<AgentControlSelection>,
+        config_options: Option<Vec<SessionConfigOption>>,
+    ) -> anyhow::Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = now();
         let config_state = session_config_state_from_options(config_options.as_ref())?;
+        let launch_control_summary_json = serde_json::to_string(&launch_control_summary)?;
 
         sqlx::query(
             r#"
@@ -289,6 +318,9 @@ impl Storage {
                 agent_id,
                 agent_name,
                 permission_mode,
+                launch_profile_id,
+                launch_profile_key,
+                launch_control_summary_json,
                 acp_session_id,
                 external_session_id,
                 continuation_state,
@@ -300,7 +332,7 @@ impl Storage {
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
@@ -308,6 +340,9 @@ impl Storage {
         .bind(agent_id)
         .bind(agent_name)
         .bind(permission_mode)
+        .bind(launch_profile_id)
+        .bind(launch_profile_key)
+        .bind(&launch_control_summary_json)
         .bind(&acp_session_id)
         .bind(&acp_session_id)
         .bind(continuity_state::LIVE)
@@ -348,6 +383,8 @@ impl Storage {
                 agent_id,
                 agent_name,
                 permission_mode,
+                launch_profile_id,
+                launch_profile_key,
                 acp_session_id,
                 external_session_id,
                 status,
@@ -535,6 +572,9 @@ impl Storage {
                 s.agent_id,
                 s.agent_name,
                 s.permission_mode,
+                s.launch_profile_id,
+                s.launch_profile_key,
+                s.launch_control_summary_json,
                 s.acp_session_id,
                 s.external_session_id,
                 s.status,
@@ -748,6 +788,7 @@ impl Storage {
             .latest_permission_failure_for_session(&session.id)
             .await?;
         let config_state = self.session_config_state(&session.id).await?;
+        let launch_control_summary = self.launch_control_summary(&session.id).await?;
         session.status = normalize_session_status(session.status, pending_approval_count > 0);
         let continuable = continuity.continuable;
         let view_only_reason = continuity.reason.clone().filter(|_| !continuable);
@@ -757,6 +798,7 @@ impl Storage {
             workspace,
             config_options: config_state.config_options,
             current_model: config_state.current_model,
+            launch_control_summary,
             messages,
             review_artifacts,
             timeline,
@@ -769,6 +811,24 @@ impl Storage {
             continuable,
             view_only_reason,
         })
+    }
+
+    pub async fn launch_control_summary(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<AgentControlSelection>> {
+        let json: String = sqlx::query_scalar(
+            r#"
+            SELECT launch_control_summary_json
+            FROM sessions
+            WHERE id = ?
+            "#,
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        parse_launch_control_summary(&json)
     }
 
     pub async fn list_tool_calls(&self, session_id: &str) -> anyhow::Result<Vec<ToolCallRow>> {
@@ -1485,6 +1545,9 @@ struct SessionListItemRow {
     agent_id: String,
     agent_name: String,
     permission_mode: String,
+    launch_profile_id: String,
+    launch_profile_key: String,
+    launch_control_summary_json: String,
     acp_session_id: Option<String>,
     external_session_id: Option<String>,
     status: String,
@@ -1612,6 +1675,28 @@ fn select_value_name(option: &SessionConfigOption, value: &str) -> Option<String
     None
 }
 
+fn parse_launch_control_summary(json: &str) -> anyhow::Result<Vec<AgentControlSelection>> {
+    Ok(serde_json::from_str(json)?)
+}
+
+#[allow(dead_code)]
+fn permission_launch_control_summary(permission_mode: &str) -> Vec<AgentControlSelection> {
+    let (value_label, risk_level) = match permission_mode {
+        crate::models::permission_mode::FULL_AUTO => ("Full auto", "medium"),
+        crate::models::permission_mode::YOLO => ("YOLO", "high"),
+        _ => ("Manual", "low"),
+    };
+    vec![AgentControlSelection {
+        id: "permission".to_string(),
+        label: "Permission".to_string(),
+        value: permission_mode.to_string(),
+        value_label: value_label.to_string(),
+        category: "permission".to_string(),
+        scope: "launch".to_string(),
+        risk_level: Some(risk_level.to_string()),
+    }]
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
@@ -1722,6 +1807,8 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             agent_id: row.agent_id,
             agent_name: row.agent_name,
             permission_mode: row.permission_mode,
+            launch_profile_id: row.launch_profile_id,
+            launch_profile_key: row.launch_profile_key,
             acp_session_id: row.acp_session_id,
             external_session_id: row.external_session_id,
             status: normalize_session_status(row.status, pending_permission.is_some()),
@@ -1735,6 +1822,8 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             created_at: row.workspace_created_at,
         },
         last_activity_at: row.session_updated_at,
+        launch_control_summary: parse_launch_control_summary(&row.launch_control_summary_json)
+            .unwrap_or_default(),
         current_model: match (row.current_model_config_id, row.current_model_value) {
             (Some(config_id), Some(value)) => Some(SessionCurrentModel {
                 config_id,
@@ -2102,10 +2191,24 @@ mod tests {
         .execute(&storage.pool)
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/0009_session_launch_profiles.sql"
+        ))
+        .execute(&storage.pool)
+        .await
+        .unwrap();
 
         let session = storage.get_session("session-old").await.unwrap();
         assert_eq!(
             session.permission_mode,
+            crate::models::permission_mode::MANUAL
+        );
+        assert_eq!(
+            session.launch_profile_id,
+            crate::models::permission_mode::MANUAL
+        );
+        assert_eq!(
+            session.launch_profile_key,
             crate::models::permission_mode::MANUAL
         );
     }

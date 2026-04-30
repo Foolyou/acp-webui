@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -8,12 +9,15 @@ use std::{
 use anyhow::Context;
 use clap::Parser;
 
-use crate::models::{permission_mode, AgentPermissionMode};
+use crate::models::{
+    permission_mode, AgentControl, AgentControlSelection, AgentControlValue, AgentPermissionMode,
+};
 
 const DEFAULT_WORK_DIR_NAME: &str = ".acp-webui";
 const DEFAULT_DATABASE_FILE: &str = "acp-webui.db";
 pub const CODEX_AGENT_ID: &str = "codex";
 pub const CLAUDE_AGENT_ID: &str = "claude";
+pub const OPENCODE_AGENT_ID: &str = "opencode";
 pub const DEFAULT_AGENT_ID: &str = CODEX_AGENT_ID;
 #[cfg(not(feature = "embedded-frontend"))]
 const DEFAULT_FRONTEND_DIST: &str = "frontend/dist";
@@ -29,6 +33,9 @@ pub struct Config {
     pub claude_acp_enabled: bool,
     pub claude_acp_command: String,
     pub claude_acp_args: Vec<String>,
+    pub opencode_acp_enabled: bool,
+    pub opencode_acp_command: String,
+    pub opencode_acp_args: Vec<String>,
     pub frontend_dist: Option<PathBuf>,
     pub pairing_token: Option<String>,
     pub disable_auth: bool,
@@ -38,11 +45,31 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentConfig {
     pub id: String,
+    pub provider_id: String,
     pub title: String,
     pub command: String,
     pub args: Vec<String>,
     pub enabled: bool,
     pub permission_modes: Vec<AgentPermissionMode>,
+    pub launch_controls: Vec<AgentControl>,
+    pub launch_profiles: Vec<AgentLaunchProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLaunchProfile {
+    pub id: String,
+    pub key: String,
+    pub permission_mode: String,
+    pub args: Vec<String>,
+    pub summary: Vec<AgentControlSelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAgentLaunchProfile {
+    pub id: String,
+    pub key: String,
+    pub permission_mode: String,
+    pub summary: Vec<AgentControlSelection>,
 }
 
 impl AgentConfig {
@@ -51,14 +78,82 @@ impl AgentConfig {
     }
 
     pub fn runtime_config_for_permission_mode(&self, mode: &str) -> anyhow::Result<Self> {
-        if !self.supports_permission_mode(mode) {
-            anyhow::bail!("{} does not support permission mode `{mode}`", self.title);
-        }
+        let profile = self
+            .launch_profiles
+            .iter()
+            .find(|profile| profile.key == mode || profile.permission_mode == mode)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} does not support launch profile `{mode}`", self.title)
+            })?;
         let mut config = self.clone();
-        if self.id == CODEX_AGENT_ID {
-            config.args = codex_acp_args_for_permission_mode(&self.args, mode)?;
-        }
+        config.args = profile.args.clone();
         Ok(config)
+    }
+
+    pub fn default_launch_profile_key_for_permission_mode(&self, mode: &str) -> Option<&str> {
+        self.launch_profiles
+            .iter()
+            .find(|profile| profile.permission_mode == mode)
+            .map(|profile| profile.key.as_str())
+    }
+
+    pub fn resolve_launch_profile(
+        &self,
+        requested_permission_mode: Option<&str>,
+        values: Option<&BTreeMap<String, String>>,
+    ) -> anyhow::Result<ResolvedAgentLaunchProfile> {
+        let values = values.cloned().unwrap_or_default();
+        let permission = values
+            .get("permission")
+            .map(String::as_str)
+            .or(requested_permission_mode)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(permission_mode::MANUAL);
+        if !permission_mode::is_known(permission) {
+            anyhow::bail!("Unknown permission mode `{permission}`");
+        }
+        if !self.supports_permission_mode(permission) {
+            anyhow::bail!(
+                "{} does not support permission mode `{permission}`",
+                self.title
+            );
+        }
+
+        let mut selected = BTreeMap::new();
+        selected.insert("permission".to_string(), permission.to_string());
+        for control in &self.launch_controls {
+            if control.id == "permission" {
+                continue;
+            }
+            let value = values
+                .get(&control.id)
+                .map(String::as_str)
+                .unwrap_or(&control.default_value);
+            if !control.options.iter().any(|option| option.value == value) {
+                anyhow::bail!(
+                    "{} launch control `{}` does not support value `{value}`",
+                    self.title,
+                    control.id
+                );
+            }
+            selected.insert(control.id.clone(), value.to_string());
+        }
+
+        let key = launch_profile_key(&selected);
+        let profile = self
+            .launch_profiles
+            .iter()
+            .find(|profile| profile.key == key);
+        let Some(profile) = profile else {
+            anyhow::bail!("{} launch profile `{key}` is not available", self.title);
+        };
+        Ok(ResolvedAgentLaunchProfile {
+            id: profile.id.clone(),
+            key: profile.key.clone(),
+            permission_mode: profile.permission_mode.clone(),
+            summary: profile.summary.clone(),
+        })
     }
 }
 
@@ -91,6 +186,19 @@ struct RawConfig {
 
     #[arg(long = "claude-acp-arg", env = "ACP_WEBUI_CLAUDE_ACP_ARG")]
     claude_acp_args: Vec<String>,
+
+    #[arg(long, env = "ACP_WEBUI_OPENCODE_ACP_ENABLED", default_value_t = false)]
+    opencode_acp_enabled: bool,
+
+    #[arg(
+        long,
+        env = "ACP_WEBUI_OPENCODE_ACP_COMMAND",
+        default_value = "opencode"
+    )]
+    opencode_acp_command: String,
+
+    #[arg(long = "opencode-acp-arg", env = "ACP_WEBUI_OPENCODE_ACP_ARG")]
+    opencode_acp_args: Vec<String>,
 
     #[arg(long, env = "ACP_WEBUI_FRONTEND_DIST")]
     frontend_dist: Option<PathBuf>,
@@ -185,6 +293,13 @@ impl Config {
             } else {
                 raw.claude_acp_args
             },
+            opencode_acp_enabled: raw.opencode_acp_enabled,
+            opencode_acp_command: raw.opencode_acp_command,
+            opencode_acp_args: if raw.opencode_acp_args.is_empty() {
+                vec!["acp".to_string()]
+            } else {
+                raw.opencode_acp_args
+            },
             frontend_dist: raw.frontend_dist,
             pairing_token: raw.pairing_token,
             disable_auth: raw.disable_auth,
@@ -198,23 +313,77 @@ impl Config {
 
     pub fn agent_configs(&self) -> Vec<AgentConfig> {
         vec![
-            AgentConfig {
-                id: CODEX_AGENT_ID.to_string(),
-                title: "Codex".to_string(),
-                command: self.codex_acp_command.clone(),
-                args: self.codex_acp_args.clone(),
-                enabled: true,
-                permission_modes: codex_permission_modes(),
-            },
-            AgentConfig {
-                id: CLAUDE_AGENT_ID.to_string(),
-                title: "Claude".to_string(),
-                command: self.claude_acp_command.clone(),
-                args: self.claude_acp_args.clone(),
-                enabled: self.claude_acp_enabled,
-                permission_modes: vec![manual_permission_mode()],
-            },
+            codex_agent_config(
+                self.codex_acp_command.clone(),
+                self.codex_acp_args.clone(),
+                true,
+            ),
+            generic_agent_config(
+                CLAUDE_AGENT_ID,
+                "claude",
+                "Claude",
+                self.claude_acp_command.clone(),
+                self.claude_acp_args.clone(),
+                self.claude_acp_enabled,
+            ),
+            generic_agent_config(
+                OPENCODE_AGENT_ID,
+                "opencode",
+                "OpenCode",
+                self.opencode_acp_command.clone(),
+                self.opencode_acp_args.clone(),
+                self.opencode_acp_enabled,
+            ),
         ]
+    }
+}
+
+fn codex_agent_config(command: String, base_args: Vec<String>, enabled: bool) -> AgentConfig {
+    let launch_controls = codex_launch_controls();
+    let launch_profiles = codex_launch_profiles(&base_args);
+    AgentConfig {
+        id: CODEX_AGENT_ID.to_string(),
+        provider_id: "codex".to_string(),
+        title: "Codex".to_string(),
+        command,
+        args: base_args,
+        enabled,
+        permission_modes: codex_permission_modes(),
+        launch_controls,
+        launch_profiles,
+    }
+}
+
+fn generic_agent_config(
+    id: &str,
+    provider_id: &str,
+    title: &str,
+    command: String,
+    base_args: Vec<String>,
+    enabled: bool,
+) -> AgentConfig {
+    let controls = vec![permission_launch_control(vec![manual_permission_mode()])];
+    let values = BTreeMap::from([(
+        "permission".to_string(),
+        permission_mode::MANUAL.to_string(),
+    )]);
+    let summary = control_summary(&controls, &values);
+    AgentConfig {
+        id: id.to_string(),
+        provider_id: provider_id.to_string(),
+        title: title.to_string(),
+        command,
+        args: base_args.clone(),
+        enabled,
+        permission_modes: vec![manual_permission_mode()],
+        launch_controls: controls,
+        launch_profiles: vec![AgentLaunchProfile {
+            id: permission_mode::MANUAL.to_string(),
+            key: launch_profile_key(&values),
+            permission_mode: permission_mode::MANUAL.to_string(),
+            args: base_args,
+            summary,
+        }],
     }
 }
 
@@ -244,6 +413,181 @@ pub fn codex_acp_args_for_permission_mode(
         _ => anyhow::bail!("Unknown Codex permission mode `{mode}`"),
     }
     Ok(args)
+}
+
+fn codex_acp_args_for_launch_profile(
+    base_args: &[String],
+    values: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<String>> {
+    let permission = values
+        .get("permission")
+        .map(String::as_str)
+        .unwrap_or(permission_mode::MANUAL);
+    let mut args = codex_acp_args_for_permission_mode(base_args, permission)?;
+    if let Some(reasoning) = values.get("reasoning_effort") {
+        if reasoning != "default" {
+            args.extend([
+                "-c".to_string(),
+                format!("model_reasoning_effort=\"{reasoning}\""),
+            ]);
+        }
+    }
+    if values.get("response_mode").map(String::as_str) == Some("fast")
+        && !matches!(
+            values.get("reasoning_effort").map(String::as_str),
+            Some("minimal" | "low")
+        )
+    {
+        args.extend([
+            "-c".to_string(),
+            "model_reasoning_effort=\"minimal\"".to_string(),
+        ]);
+    }
+    Ok(args)
+}
+
+fn codex_launch_controls() -> Vec<AgentControl> {
+    vec![
+        permission_launch_control(codex_permission_modes()),
+        AgentControl {
+            id: "reasoning_effort".to_string(),
+            label: "Reasoning".to_string(),
+            description: Some(
+                "Controls model reasoning effort when the provider supports it".to_string(),
+            ),
+            category: "model".to_string(),
+            scope: "launch".to_string(),
+            control_type: "select".to_string(),
+            default_value: "default".to_string(),
+            options: vec![
+                control_value("default", "Provider default", None, None),
+                control_value("minimal", "Minimal", None, None),
+                control_value("low", "Low", None, None),
+                control_value("medium", "Medium", None, None),
+                control_value("high", "High", None, None),
+            ],
+        },
+        AgentControl {
+            id: "response_mode".to_string(),
+            label: "Response mode".to_string(),
+            description: Some("Prefers lower-latency behavior for new sessions".to_string()),
+            category: "performance".to_string(),
+            scope: "launch".to_string(),
+            control_type: "select".to_string(),
+            default_value: "standard".to_string(),
+            options: vec![
+                control_value("standard", "Standard", None, None),
+                control_value(
+                    "fast",
+                    "Fast",
+                    Some("Uses minimal reasoning unless explicitly overridden"),
+                    None,
+                ),
+            ],
+        },
+    ]
+}
+
+fn codex_launch_profiles(base_args: &[String]) -> Vec<AgentLaunchProfile> {
+    let controls = codex_launch_controls();
+    let mut profiles = Vec::new();
+    for permission in [
+        permission_mode::MANUAL,
+        permission_mode::FULL_AUTO,
+        permission_mode::YOLO,
+    ] {
+        for reasoning in ["default", "minimal", "low", "medium", "high"] {
+            for response_mode in ["standard", "fast"] {
+                let values = BTreeMap::from([
+                    ("permission".to_string(), permission.to_string()),
+                    ("reasoning_effort".to_string(), reasoning.to_string()),
+                    ("response_mode".to_string(), response_mode.to_string()),
+                ]);
+                let key = launch_profile_key(&values);
+                let args = codex_acp_args_for_launch_profile(base_args, &values)
+                    .expect("built-in Codex launch profile is valid");
+                profiles.push(AgentLaunchProfile {
+                    id: key.clone(),
+                    key,
+                    permission_mode: permission.to_string(),
+                    args,
+                    summary: control_summary(&controls, &values),
+                });
+            }
+        }
+    }
+    profiles
+}
+
+fn permission_launch_control(modes: Vec<AgentPermissionMode>) -> AgentControl {
+    AgentControl {
+        id: "permission".to_string(),
+        label: "Permission".to_string(),
+        description: Some(
+            "Controls approval and sandbox posture for the launched runtime".to_string(),
+        ),
+        category: "permission".to_string(),
+        scope: "launch".to_string(),
+        control_type: "select".to_string(),
+        default_value: permission_mode::MANUAL.to_string(),
+        options: modes
+            .into_iter()
+            .map(|mode| AgentControlValue {
+                value: mode.id,
+                label: mode.label,
+                description: Some(mode.description),
+                risk_level: Some(mode.risk_level),
+            })
+            .collect(),
+    }
+}
+
+fn control_value(
+    value: &str,
+    label: &str,
+    description: Option<&str>,
+    risk_level: Option<&str>,
+) -> AgentControlValue {
+    AgentControlValue {
+        value: value.to_string(),
+        label: label.to_string(),
+        description: description.map(str::to_string),
+        risk_level: risk_level.map(str::to_string),
+    }
+}
+
+fn launch_profile_key(values: &BTreeMap<String, String>) -> String {
+    values
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn control_summary(
+    controls: &[AgentControl],
+    values: &BTreeMap<String, String>,
+) -> Vec<AgentControlSelection> {
+    controls
+        .iter()
+        .filter_map(|control| {
+            let value = values.get(&control.id)?;
+            let option = control
+                .options
+                .iter()
+                .find(|option| &option.value == value)?;
+            Some(AgentControlSelection {
+                id: control.id.clone(),
+                label: control.label.clone(),
+                value: value.clone(),
+                value_label: option.label.clone(),
+                category: control.category.clone(),
+                scope: control.scope.clone(),
+                risk_level: option.risk_level.clone(),
+            })
+        })
+        .collect()
 }
 
 pub fn manual_permission_mode() -> AgentPermissionMode {
@@ -330,6 +674,9 @@ mod tests {
             claude_acp_enabled: true,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: None,
             pairing_token: None,
             disable_auth: false,

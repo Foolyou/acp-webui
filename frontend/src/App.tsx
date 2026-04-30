@@ -66,7 +66,8 @@ function updateAgentStatus(
         title: agentId,
         enabled: true,
         status,
-        permissionModes: [fallbackMode]
+        permissionModes: [fallbackMode],
+        launchControls: []
       }
     ];
   }
@@ -343,7 +344,12 @@ export function App() {
     [runBusy]
   );
 
-  const createSession = useCallback(async (workspaceId: string, agentId?: string, permissionMode?: PermissionModeId) => {
+  const createSession = useCallback(async (
+    workspaceId: string,
+    agentId?: string,
+    permissionMode?: PermissionModeId,
+    launchControlValues?: Record<string, string>
+  ) => {
     setState((current) => ({
       ...current,
       creatingSessionWorkspaceId: workspaceId,
@@ -353,7 +359,7 @@ export function App() {
     }));
     await router.navigate({ to: "/workspaces/$workspaceId/sessions/new", params: { workspaceId } });
     try {
-      const detail = await api.createSession(workspaceId, agentId, permissionMode);
+      const detail = await api.createSession(workspaceId, agentId, permissionMode, launchControlValues);
       localStorage.setItem("currentWorkspaceId", detail.workspace.id);
       localStorage.setItem("currentSessionId", detail.session.id);
       setState((current) => ({

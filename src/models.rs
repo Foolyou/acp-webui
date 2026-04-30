@@ -3,6 +3,41 @@ use serde_json::Value;
 use sqlx::FromRow;
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentControlValue {
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub risk_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentControl {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub category: String,
+    pub scope: String,
+    #[serde(rename = "type")]
+    pub control_type: String,
+    pub default_value: String,
+    pub options: Vec<AgentControlValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentControlSelection {
+    pub id: String,
+    pub label: String,
+    pub value: String,
+    pub value_label: String,
+    pub category: String,
+    pub scope: String,
+    pub risk_level: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -20,6 +55,8 @@ pub struct Session {
     pub agent_id: String,
     pub agent_name: String,
     pub permission_mode: String,
+    pub launch_profile_id: String,
+    pub launch_profile_key: String,
     pub acp_session_id: Option<String>,
     pub external_session_id: Option<String>,
     pub status: String,
@@ -185,6 +222,7 @@ pub struct SessionDetail {
     pub workspace: Workspace,
     pub config_options: Option<Vec<SessionConfigOption>>,
     pub current_model: Option<SessionCurrentModel>,
+    pub launch_control_summary: Vec<AgentControlSelection>,
     pub messages: Vec<Message>,
     pub review_artifacts: Vec<ReviewArtifactSummary>,
     pub timeline: Vec<TimelineItem>,
@@ -461,6 +499,7 @@ pub struct SessionListItem {
     pub workspace: Workspace,
     pub last_activity_at: String,
     pub current_model: Option<SessionCurrentModel>,
+    pub launch_control_summary: Vec<AgentControlSelection>,
     pub pending_permission: Option<SessionListPermission>,
     pub queued_approval_count: i64,
     pub review_artifact_count: i64,
@@ -491,6 +530,17 @@ pub struct CreateWorkspaceRequest {
 pub struct CreateSessionRequest {
     pub agent_id: Option<String>,
     pub permission_mode: Option<String>,
+    pub launch_control_values: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub source_category: String,
+    pub enabled: bool,
+    pub duplicate_index: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

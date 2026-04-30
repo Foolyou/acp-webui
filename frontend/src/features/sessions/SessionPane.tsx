@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { Button } from "react-aria-components";
-import { currentModelLabel, modelConfigOption, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
+import { api } from "../../api";
+import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
-import type { AgentRuntimeStatus, ChatMessage, ReviewArtifactSummary, SessionDetail, TimelineItem } from "../../types";
+import type { AgentRuntimeStatus, ChatMessage, ReviewArtifactSummary, SessionDetail, SkillSummary, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
 import {
   fallbackPermissionModes,
@@ -58,8 +59,7 @@ export function SessionPane({
     : continuity.state === "restore_failed"
       ? "Retry restore"
       : "Restore";
-  const modelOption = modelConfigOption(currentSession.configOptions);
-  const modelValues = selectValues(modelOption);
+  const sessionSelectOptions = (currentSession.configOptions ?? []).filter((option) => selectValues(option).length > 0);
   const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentConnection);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
@@ -335,14 +335,19 @@ export function SessionPane({
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
         controls={
-          modelOption ? (
-            <ModelSelector
-              busy={busy}
-              disabledReason={modelDisabledReason}
-              option={modelOption}
-              values={modelValues}
-              onSetSessionConfigOption={onSetSessionConfigOption}
-            />
+          sessionSelectOptions.length ? (
+            <>
+              {sessionSelectOptions.map((option) => (
+                <ModelSelector
+                  busy={busy}
+                  disabledReason={modelDisabledReason}
+                  key={option.id}
+                  option={option}
+                  values={selectValues(option)}
+                  onSetSessionConfigOption={onSetSessionConfigOption}
+                />
+              ))}
+            </>
           ) : null
         }
       />
@@ -359,7 +364,7 @@ function ModelSelector({
 }: {
   busy: boolean;
   disabledReason: string | null;
-  option: NonNullable<ReturnType<typeof modelConfigOption>>;
+  option: NonNullable<SessionDetail["configOptions"]>[number];
   values: ReturnType<typeof selectValues>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
 }) {
@@ -517,6 +522,22 @@ function PromptComposer({
 }) {
   const [prompt, setPrompt] = useState("");
   const [composing, setComposing] = useState(false);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .skills()
+      .then((items) => {
+        if (!cancelled) setSkills(items);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function submitPrompt() {
     const trimmed = prompt.trim();
@@ -536,6 +557,19 @@ function PromptComposer({
       event.preventDefault();
       void submitPrompt();
     }
+  }
+
+  const skillMatch = /\$([\w:-]*)$/.exec(prompt);
+  const skillSuggestions =
+    skillMatch && !disabled
+      ? skills
+          .filter((skill) => skill.name.toLowerCase().startsWith(skillMatch[1].toLowerCase()))
+          .slice(0, 6)
+      : [];
+
+  function applySkill(skillName: string) {
+    if (!skillMatch) return;
+    setPrompt(`${prompt.slice(0, skillMatch.index)}$${skillName} `);
   }
 
   const status = continuityReason
@@ -586,6 +620,21 @@ function PromptComposer({
           rows={3}
           value={prompt}
         />
+        {skillSuggestions.length ? (
+          <div className="skill-autocomplete" role="listbox">
+            {skillSuggestions.map((skill) => (
+              <Button
+                className="skill-autocomplete-item"
+                key={skill.name}
+                onPress={() => applySkill(skill.name)}
+                type="button"
+              >
+                <strong>${skill.name}</strong>
+                {skill.description ? <span>{skill.description}</span> : null}
+              </Button>
+            ))}
+          </div>
+        ) : null}
         <div className="composer-actions">
           <span className="shortcut-hint">Ctrl Enter</span>
           <Button className="primary" isDisabled={disabled || busy} type="submit">

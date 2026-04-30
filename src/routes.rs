@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     extract::{
@@ -28,7 +32,7 @@ use crate::{
         CreateSessionRequest, CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message,
         PermissionRequest, PromptRequest, ResolvePermissionRequest, ReviewArtifact,
         ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity, SessionDetail,
-        SessionListItem, SetSessionConfigOptionRequest, TimelineItem, Workspace,
+        SessionListItem, SetSessionConfigOptionRequest, SkillSummary, TimelineItem, Workspace,
     },
     storage::Storage,
 };
@@ -75,6 +79,7 @@ struct PairRequest {
 pub fn api_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/app-state", get(app_state))
+        .route("/api/skills", get(list_skills))
         .route("/api/inbox", get(inbox))
         .route(
             "/api/workspaces",
@@ -253,6 +258,78 @@ async fn inbox(State(state): State<AppState>) -> AppResult<Json<Vec<InboxItem>>>
     Ok(Json(state.storage.list_inbox_items().await?))
 }
 
+async fn list_skills() -> AppResult<Json<Vec<SkillSummary>>> {
+    Ok(Json(discover_skills()))
+}
+
+fn discover_skills() -> Vec<SkillSummary> {
+    let mut roots = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join(".codex").join("skills"));
+    }
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        roots.push(PathBuf::from(codex_home).join("skills"));
+    }
+
+    let mut skills = Vec::new();
+    for (index, root) in roots.iter().enumerate() {
+        let source_category = if index == 0 {
+            "workspace"
+        } else {
+            "codex_home"
+        };
+        collect_skills(root, source_category, &mut skills);
+    }
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for skill in &mut skills {
+        let count = counts.entry(skill.name.clone()).or_default();
+        skill.duplicate_index = (*count > 0).then_some(*count + 1);
+        *count += 1;
+    }
+    skills
+}
+
+fn collect_skills(root: &FsPath, source_category: &str, skills: &mut Vec<SkillSummary>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let skill_md = path.join("SKILL.md");
+            if skill_md.is_file() {
+                skills.push(skill_summary_from_file(&path, &skill_md, source_category));
+            }
+            collect_skills(&path, source_category, skills);
+        }
+    }
+}
+
+fn skill_summary_from_file(dir: &FsPath, file: &FsPath, source_category: &str) -> SkillSummary {
+    let name = dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("skill")
+        .to_string();
+    let description = fs::read_to_string(file).ok().and_then(|content| {
+        content
+            .lines()
+            .find(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with('#')
+            })
+            .map(|line| line.trim().to_string())
+    });
+    SkillSummary {
+        name,
+        description,
+        source_category: source_category.to_string(),
+        enabled: true,
+        duplicate_index: None,
+    }
+}
+
 async fn list_sessions(State(state): State<AppState>) -> AppResult<Json<Vec<SessionListItem>>> {
     let items = state.storage.list_session_items().await?;
     Ok(Json(apply_session_list_continuity(&state, items).await))
@@ -325,9 +402,19 @@ async fn create_session(
         .agents
         .resolve_permission_mode(&agent_id, requested_permission_mode)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let launch_profile = state
+        .agents
+        .resolve_launch_profile(
+            &agent_id,
+            Some(&permission_mode),
+            payload
+                .as_ref()
+                .and_then(|Json(payload)| payload.launch_control_values.as_ref()),
+        )
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let runtime = state
         .agents
-        .runtime_for_permission_mode_use(&agent_id, &permission_mode)
+        .runtime_for_launch_profile_use(&agent_id, &launch_profile)
         .await
         .map_err(|error| AppError::ServiceUnavailable(error.to_string()))?;
 
@@ -339,12 +426,15 @@ async fn create_session(
 
     let session = state
         .storage
-        .create_session_for_agent_with_permission_mode_and_config_options(
+        .create_session_for_agent_with_launch_profile_and_config_options(
             &workspace.id,
             &agent_id,
             &runtime.agent().title,
             acp_session_id.clone(),
-            &permission_mode,
+            &launch_profile.permission_mode,
+            &launch_profile.id,
+            &launch_profile.key,
+            launch_profile.summary,
             new_session.config_options,
         )
         .await
@@ -710,14 +800,18 @@ impl AppState {
         session: &Session,
     ) -> AppResult<Arc<CodexRuntime>> {
         self.agents
-            .runtime_for_permission_mode(&session.agent_id, &session.permission_mode)
+            .runtime_for_launch_profile(&session.agent_id, &session.launch_profile_key)
             .await
             .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
     }
 
     async fn runtime_for_session_use(&self, session: &Session) -> AppResult<Arc<CodexRuntime>> {
         self.agents
-            .runtime_for_permission_mode_use(&session.agent_id, &session.permission_mode)
+            .runtime_for_launch_profile_key_use(
+                &session.agent_id,
+                &session.launch_profile_key,
+                &session.permission_mode,
+            )
             .await
             .map_err(|error| AppError::ServiceUnavailable(error.to_string()))
     }
@@ -740,7 +834,7 @@ impl AppState {
         let row = self.storage.session_continuity_row(&session.id).await?;
         let runtime = match self
             .agents
-            .runtime_for_permission_mode(&session.agent_id, &session.permission_mode)
+            .runtime_for_launch_profile(&session.agent_id, &session.launch_profile_key)
             .await
         {
             Ok(runtime) => runtime,
@@ -1088,7 +1182,10 @@ mod tests {
 
     use crate::{
         config::{manual_permission_mode, AgentConfig, Config, CLAUDE_AGENT_ID, CODEX_AGENT_ID},
-        models::{AgentSessionCapabilities, NewReviewArtifact},
+        models::{
+            AgentControl, AgentControlSelection, AgentControlValue, AgentSessionCapabilities,
+            NewReviewArtifact,
+        },
         storage::NewPermissionRequest,
     };
 
@@ -1114,6 +1211,9 @@ mod tests {
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
@@ -1165,6 +1265,9 @@ mod tests {
             claude_acp_enabled: true,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
@@ -1228,6 +1331,9 @@ mod tests {
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
@@ -1248,18 +1354,52 @@ mod tests {
     }
 
     fn fake_agent(id: &str, title: &str, script: PathBuf) -> AgentConfig {
+        let permission_mode = manual_permission_mode();
+        let permission_control = AgentControl {
+            id: "permission".to_string(),
+            label: "Permission".to_string(),
+            description: Some("Controls approval and sandbox posture".to_string()),
+            category: "permission".to_string(),
+            scope: "launch".to_string(),
+            control_type: "select".to_string(),
+            default_value: permission_mode.id.clone(),
+            options: vec![AgentControlValue {
+                value: permission_mode.id.clone(),
+                label: permission_mode.label.clone(),
+                description: Some(permission_mode.description.clone()),
+                risk_level: Some(permission_mode.risk_level.clone()),
+            }],
+        };
+        let args = vec![
+            "run".to_string(),
+            "--script".to_string(),
+            script.to_string_lossy().to_string(),
+            id.to_string(),
+        ];
         AgentConfig {
             id: id.to_string(),
+            provider_id: id.to_string(),
             title: title.to_string(),
             command: "uv".to_string(),
-            args: vec![
-                "run".to_string(),
-                "--script".to_string(),
-                script.to_string_lossy().to_string(),
-                id.to_string(),
-            ],
+            args: args.clone(),
             enabled: true,
-            permission_modes: vec![manual_permission_mode()],
+            permission_modes: vec![permission_mode.clone()],
+            launch_controls: vec![permission_control],
+            launch_profiles: vec![crate::config::AgentLaunchProfile {
+                id: permission_mode.id.clone(),
+                key: permission_mode.id.clone(),
+                permission_mode: permission_mode.id.clone(),
+                args,
+                summary: vec![AgentControlSelection {
+                    id: "permission".to_string(),
+                    label: "Permission".to_string(),
+                    value: permission_mode.id.clone(),
+                    value_label: permission_mode.label,
+                    category: "permission".to_string(),
+                    scope: "launch".to_string(),
+                    risk_level: Some(permission_mode.risk_level),
+                }],
+            }],
         }
     }
 
@@ -1413,6 +1553,9 @@ for line in sys.stdin:
             claude_acp_enabled: false,
             claude_acp_command: "npx".to_string(),
             claude_acp_args: vec![],
+            opencode_acp_enabled: false,
+            opencode_acp_command: "opencode-acp".to_string(),
+            opencode_acp_args: vec![],
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token,
             disable_auth,

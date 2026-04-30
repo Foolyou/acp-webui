@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { Button } from "react-aria-components";
 import { PageHeader } from "../../components/common";
 import type { AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
@@ -19,7 +20,7 @@ export function SessionsPane({
 }: {
   agents: AgentRuntimeStatus[];
   loading: boolean;
-  onCreate: (agentId: string, permissionMode: PermissionModeId) => void;
+  onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
@@ -54,19 +55,60 @@ function AgentCreateControls({
   size
 }: {
   agents: AgentRuntimeStatus[];
-  onCreate: (agentId: string, permissionMode: PermissionModeId) => void;
+  onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
   size?: "small";
 }) {
+  const [controlValues, setControlValues] = useState<Record<string, Record<string, string>>>({});
+
+  function selectedValues(agent: AgentRuntimeStatus) {
+    const agentValues = controlValues[agent.id] ?? {};
+    const values: Record<string, string> = {};
+    for (const control of agent.launchControls ?? []) {
+      values[control.id] = agentValues[control.id] ?? control.defaultValue;
+    }
+    return values;
+  }
+
   return (
     <div className={`agent-create-controls ${size ?? ""}`}>
       {agents.map((agent) => {
         const modes = fallbackPermissionModes(agent);
+        const controls = (agent.launchControls ?? []).filter((control) => control.id !== "permission");
+        const values = selectedValues(agent);
         return (
           <div className={`agent-option-group ${size ?? ""}`} key={agent.id}>
             <div className="agent-option-summary">
               <strong>{agent.title}</strong>
               <span>{agentStatusText(agent)}</span>
             </div>
+            {controls.length ? (
+              <div className="launch-control-options">
+                {controls.map((control) => (
+                  <label key={control.id} title={control.description ?? control.label}>
+                    <span>{control.label}</span>
+                    <select
+                      disabled={!agent.enabled}
+                      onChange={(event) =>
+                        setControlValues((current) => ({
+                          ...current,
+                          [agent.id]: {
+                            ...(current[agent.id] ?? {}),
+                            [control.id]: event.target.value
+                          }
+                        }))
+                      }
+                      value={values[control.id]}
+                    >
+                      {control.options.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            ) : null}
             <div className="permission-mode-options" role="group" aria-label={`${agent.title} permission modes`}>
               {modes.map((mode) => {
                 const available =
@@ -76,7 +118,7 @@ function AgentCreateControls({
                     className={`permission-mode-option ${mode.status.state} ${permissionModeClass(mode.id)}`}
                     isDisabled={!available}
                     key={mode.id}
-                    onPress={() => onCreate(agent.id, mode.id)}
+                    onPress={() => onCreate(agent.id, mode.id, { ...values, permission: mode.id })}
                   >
                     <strong>{mode.label}</strong>
                     <span>{mode.description}</span>
@@ -111,6 +153,9 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       </span>
       {item.currentModel ? (
         <span className="model-summary">Model: {item.currentModel.name ?? item.currentModel.value}</span>
+      ) : null}
+      {item.launchControlSummary?.length ? (
+        <span className="model-summary">{item.launchControlSummary.map((item) => item.valueLabel).join(" / ")}</span>
       ) : null}
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">

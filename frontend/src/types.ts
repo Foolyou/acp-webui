@@ -7,10 +7,12 @@ export type ConnectionStatus = {
 
 export type AgentRuntimeStatus = {
   id: string;
+  providerId?: string;
   title: string;
   enabled: boolean;
   status: ConnectionStatus;
   permissionModes: AgentPermissionModeStatus[];
+  launchControls?: AgentControl[];
 };
 
 export type PermissionModeId = "manual" | "full_auto" | "yolo" | (string & {});
@@ -23,6 +25,34 @@ export type AgentPermissionModeStatus = {
   description: string;
   riskLevel: PermissionModeRiskLevel;
   status: ConnectionStatus;
+};
+
+export type AgentControlValue = {
+  value: string;
+  label: string;
+  description?: string | null;
+  riskLevel?: PermissionModeRiskLevel | string | null;
+};
+
+export type AgentControl = {
+  id: string;
+  label: string;
+  description?: string | null;
+  category: string;
+  scope: "launch" | "session" | string;
+  type: "select" | string;
+  defaultValue: string;
+  options: AgentControlValue[];
+};
+
+export type AgentControlSelection = {
+  id: string;
+  label: string;
+  value: string;
+  valueLabel: string;
+  category: string;
+  scope: string;
+  riskLevel?: PermissionModeRiskLevel | string | null;
 };
 
 export type AgentSessionCapabilities = {
@@ -45,6 +75,8 @@ export type Session = {
   agentId: string;
   agentName: string;
   permissionMode: PermissionModeId;
+  launchProfileId?: string;
+  launchProfileKey?: string;
   acpSessionId?: string | null;
   externalSessionId?: string | null;
   status: string;
@@ -203,6 +235,7 @@ export type SessionDetail = {
   workspace: Workspace;
   configOptions?: SessionConfigOption[] | null;
   currentModel?: SessionCurrentModel | null;
+  launchControlSummary?: AgentControlSelection[];
   messages: ChatMessage[];
   reviewArtifacts: ReviewArtifactSummary[];
   timeline: TimelineItem[];
@@ -235,6 +268,7 @@ export type SessionListItem = {
   workspace: Workspace;
   lastActivityAt: string;
   currentModel?: SessionCurrentModel | null;
+  launchControlSummary?: AgentControlSelection[];
   pendingPermission?: SessionListPermission | null;
   queuedApprovalCount?: number;
   reviewArtifactCount: number;
@@ -248,6 +282,14 @@ export type AppData = {
   codex: ConnectionStatus;
   agents: AgentRuntimeStatus[];
   inbox: InboxItem[];
+};
+
+export type SkillSummary = {
+  name: string;
+  description?: string | null;
+  sourceCategory?: string;
+  enabled?: boolean;
+  duplicateIndex?: number | null;
 };
 
 export type RealtimeEvent =

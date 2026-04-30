@@ -351,6 +351,33 @@ pre {
   gap: 0.35rem;
 }
 
+.launch-control-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.launch-control-options label {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 7rem;
+}
+
+.launch-control-options span {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.launch-control-options select {
+  min-height: 2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.2rem 0.35rem;
+}
+
 .permission-mode-option {
   display: grid;
   min-width: 6.4rem;
@@ -1043,6 +1070,32 @@ pre {
   justify-content: flex-end;
   gap: 0.65rem;
   min-width: 0;
+}
+
+.skill-autocomplete {
+  display: grid;
+  gap: 0.25rem;
+  max-height: 12rem;
+  overflow: auto;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.45rem;
+}
+
+.skill-autocomplete-item {
+  display: grid;
+  gap: 0.08rem;
+  width: 100%;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+}
+
+.skill-autocomplete-item span {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
 }
 
 .composer-status {
