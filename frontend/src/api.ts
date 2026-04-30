@@ -4,7 +4,9 @@ import type {
   ChatMessage,
   PermissionRequest,
   PermissionModeId,
+  QueuedPrompt,
   ReviewArtifact,
+  ActiveTurn,
   SessionConfigState,
   SessionListItem,
   SessionDetail,
@@ -90,7 +92,12 @@ export const api = {
       body: JSON.stringify({ value })
     }),
   prompt: (sessionId: string, prompt: string) =>
-    request<{ message: ChatMessage }>(`/api/sessions/${sessionId}/prompt`, {
+    request<{
+      message: ChatMessage;
+      queuedPrompt?: QueuedPrompt | null;
+      queuedPrompts?: QueuedPrompt[];
+      activeTurn?: ActiveTurn | null;
+    }>(`/api/sessions/${sessionId}/prompt`, {
       method: "POST",
       body: JSON.stringify({ prompt })
     }),

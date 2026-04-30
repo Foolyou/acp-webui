@@ -1401,6 +1401,10 @@ pre {
   background: var(--color-danger);
 }
 
+.tool-group-row.running .tool-activity-dot {
+  background: var(--color-accent);
+}
+
 .tool-group-summary {
   min-width: 0;
   color: var(--color-text-muted);
@@ -1413,6 +1417,11 @@ pre {
 
 .tool-group-row.single .tool-group-summary {
   color: var(--color-text);
+}
+
+.tool-group-row.multi.completed {
+  border-left: 3px solid rgba(45, 95, 85, 0.18);
+  padding-left: 0.55rem;
 }
 
 .tool-group-toggle {
@@ -1646,6 +1655,61 @@ pre {
 .composer-topline .primary,
 .composer-topline .secondary {
   flex: 0 0 auto;
+}
+
+.queued-prompts {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(45, 95, 85, 0.18);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  padding: 0.62rem 0.72rem;
+}
+
+.queued-prompts > strong,
+.queued-count {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.queued-prompt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.5rem;
+  min-width: 0;
+  align-items: start;
+}
+
+.queued-prompt span {
+  color: var(--color-accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.queued-prompt p {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.queued-count {
+  flex: 0 0 auto;
+  border: 1px solid rgba(45, 95, 85, 0.2);
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  padding: 0.22rem 0.5rem;
+  white-space: nowrap;
+}
+
+.stop-button {
+  border-color: rgba(155, 53, 45, 0.34);
+  color: var(--color-danger);
 }
 
 .composer-actions {
@@ -1997,5 +2061,33 @@ pre {
 
   .approval-option {
     min-width: min(100%, 8.4rem);
+  }
+
+  .composer-topline {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.45rem;
+  }
+
+  .composer-topline .composer-status {
+    flex: 1 1 100%;
+    padding-inline: 0;
+  }
+
+  .queued-count {
+    flex: 1 1 auto;
+    width: fit-content;
+  }
+
+  .tool-group-main,
+  .tool-item-main {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .tool-group-main .tool-status,
+  .tool-group-toggle,
+  .tool-item-main .tool-status {
+    grid-column: 2;
+    width: fit-content;
   }
 }

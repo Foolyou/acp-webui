@@ -88,7 +88,13 @@ export function buildTimelineBlocks(
           break;
         }
         const toolItemWithArtifacts = withLinkedArtifactIds(toolItem, reviewArtifacts);
-        pendingTools.push({ item: toolItemWithArtifacts, display: toolCallDisplay(toolItemWithArtifacts, reviewArtifacts) });
+        const entry = { item: toolItemWithArtifacts, display: toolCallDisplay(toolItemWithArtifacts, reviewArtifacts) };
+        if (toolItemWithArtifacts.status.toLowerCase() === "completed") {
+          pendingTools.push(entry);
+          break;
+        }
+        flushTools();
+        blocks.push(toolGroupBlock([entry]));
         break;
       }
       case "review_artifact":
@@ -190,7 +196,7 @@ function toolGroupBlock(entries: TimelineToolGroupEntry[]): Extract<TimelineDisp
     entries,
     summary: toolGroupSummary(entries),
     status,
-    statusLabel: failureCount ? `${failureCount} failed` : runningCount ? "running" : null,
+    statusLabel: failureCount ? `${failureCount} failed` : runningCount ? "running" : entries.length > 1 ? `${entries.length} completed` : null,
     failureCount,
     classNames
   };

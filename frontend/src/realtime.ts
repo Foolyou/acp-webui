@@ -86,6 +86,34 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
         }
       };
 
+    case "active_turn_updated":
+      if (state.currentSession?.session.id !== event.sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        currentSession: {
+          ...state.currentSession,
+          activeTurn: event.activeTurn ?? null,
+          session: {
+            ...state.currentSession.session,
+            status: normalizeSessionStatus(event.status, Boolean(state.currentSession.pendingPermission))
+          }
+        }
+      };
+
+    case "queued_prompts_updated":
+      if (state.currentSession?.session.id !== event.sessionId) {
+        return state;
+      }
+      return {
+        ...state,
+        currentSession: {
+          ...state.currentSession,
+          queuedPrompts: event.queuedPrompts
+        }
+      };
+
     case "error":
       return { ...state, error: event.message };
 

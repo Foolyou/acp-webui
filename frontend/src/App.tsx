@@ -135,6 +135,11 @@ function mergeTimelineItem(timeline: SessionDetail["timeline"], item: SessionDet
 export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
+  const currentSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentSessionIdRef.current = state.currentSession?.session.id ?? null;
+  }, [state.currentSession?.session.id]);
 
   const markUnauthorized = useCallback(async () => {
     const auth = await api.authStatus().catch(() => ({
@@ -199,17 +204,55 @@ export function App() {
     }
 
     let closedByEffect = false;
+    let socket: WebSocket | null = null;
+
+    async function reconcileCurrentSession() {
+      const sessionId = currentSessionIdRef.current;
+      if (!sessionId) return;
+      try {
+        const detail = await api.session(sessionId);
+        setState((current) =>
+          current.currentSession?.session.id === sessionId
+            ? {
+                ...current,
+                currentSession: detail,
+                sessions: [
+                  sessionDetailToListItem(detail),
+                  ...current.sessions.filter((item) => item.session.id !== detail.session.id)
+                ],
+                liveAssistant: ""
+              }
+            : current
+        );
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          await markUnauthorized();
+        }
+      }
+    }
+
+    function scheduleReconnect() {
+      if (closedByEffect || reconnectTimer.current !== undefined) return;
+      reconnectTimer.current = window.setTimeout(() => {
+        reconnectTimer.current = undefined;
+        connect();
+      }, 1200);
+    }
 
     function connect() {
+      window.clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = undefined;
       setState((current) => ({ ...current, socketState: "connecting" }));
       const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${scheme}://${window.location.host}/api/ws`);
+      const nextSocket = new WebSocket(`${scheme}://${window.location.host}/api/ws`);
+      socket = nextSocket;
 
-      socket.addEventListener("open", () => {
+      nextSocket.addEventListener("open", () => {
         setState((current) => ({ ...current, socketState: "connected" }));
+        void reconcileCurrentSession();
       });
 
-      socket.addEventListener("message", (event) => {
+      nextSocket.addEventListener("message", (event) => {
         const message = JSON.parse(event.data) as RealtimeEvent;
         if (message.type === "connection_status") {
           setState((current) => ({
@@ -242,26 +285,44 @@ export function App() {
         }));
       });
 
-      socket.addEventListener("close", () => {
+      nextSocket.addEventListener("close", () => {
         if (closedByEffect) return;
         setState((current) => ({ ...current, socketState: "disconnected" }));
-        reconnectTimer.current = window.setTimeout(connect, 1200);
+        scheduleReconnect();
       });
 
-      socket.addEventListener("error", () => {
+      nextSocket.addEventListener("error", () => {
         setState((current) => ({ ...current, socketState: "disconnected" }));
+        nextSocket.close();
+        scheduleReconnect();
       });
-
-      return socket;
     }
 
-    const socket = connect();
+    connect();
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        if (!socket || socket.readyState >= WebSocket.CLOSING) {
+          connect();
+        }
+        void reconcileCurrentSession();
+      }
+    }
+    function onOnline() {
+      if (!socket || socket.readyState >= WebSocket.CLOSING) {
+        connect();
+      }
+      void reconcileCurrentSession();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", onOnline);
     return () => {
       closedByEffect = true;
       window.clearTimeout(reconnectTimer.current);
-      socket.close();
+      socket?.close();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", onOnline);
     };
-  }, [state.auth]);
+  }, [markUnauthorized, state.auth]);
 
   const selectedWorkspace = useMemo(
     () => state.workspaces.find((workspace) => workspace.id === state.currentWorkspaceId) ?? null,
@@ -398,15 +459,19 @@ export function App() {
       const previousStatus = state.currentSession?.session.status ?? "idle";
       if (!sessionId) return;
       await runBusy(async () => {
+        const activeBeforeSubmit = ["running", "waiting_approval", "stopping"].includes(previousStatus);
         setState((current) =>
           current.currentSession?.session.id === sessionId
             ? {
                 ...current,
                 currentSession: {
                   ...current.currentSession,
-                  session: { ...current.currentSession.session, status: "running" }
+                  session: {
+                    ...current.currentSession.session,
+                    status: activeBeforeSubmit ? current.currentSession.session.status : "running"
+                  }
                 },
-                sessions: updateSessionListStatus(current.sessions, sessionId, "running"),
+                sessions: activeBeforeSubmit ? current.sessions : updateSessionListStatus(current.sessions, sessionId, "running"),
                 liveAssistant: ""
               }
             : current
@@ -436,8 +501,19 @@ export function App() {
                 currentSession: {
                   ...current.currentSession,
                   messages: mergeChatMessage(current.currentSession.messages, response.message),
-                  timeline: mergeTimelineItem(current.currentSession.timeline, messageToTimelineItem(response.message))
+                  timeline: mergeTimelineItem(current.currentSession.timeline, messageToTimelineItem(response.message)),
+                  queuedPrompts: response.queuedPrompts ?? current.currentSession.queuedPrompts,
+                  activeTurn:
+                    response.activeTurn === undefined ? current.currentSession.activeTurn : response.activeTurn
                 },
+                sessions:
+                  response.queuedPrompts !== undefined
+                    ? current.sessions.map((item) =>
+                        item.session.id === sessionId
+                          ? { ...item, queuedPromptCount: response.queuedPrompts?.length ?? 0 }
+                          : item
+                      )
+                    : current.sessions,
                 liveAssistant: ""
               }
             : current

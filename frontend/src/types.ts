@@ -195,6 +195,23 @@ export type SessionContinuity = {
   restoreCompletedAt?: string | null;
 };
 
+export type QueuedPrompt = {
+  id: string;
+  sessionId: string;
+  messageId: string;
+  prompt: string;
+  status: string;
+  position: number;
+  createdAt: string;
+  submittedAt?: string | null;
+};
+
+export type ActiveTurn = {
+  startedAt: string;
+  status: "running" | "stopping" | "stopped" | string;
+  stopRequestedAt?: string | null;
+};
+
 export type SessionConfigSelectValue = {
   value: string;
   name: string;
@@ -237,6 +254,8 @@ export type SessionDetail = {
   currentModel?: SessionCurrentModel | null;
   launchControlSummary?: AgentControlSelection[];
   messages: ChatMessage[];
+  queuedPrompts?: QueuedPrompt[];
+  activeTurn?: ActiveTurn | null;
   reviewArtifacts: ReviewArtifactSummary[];
   timeline: TimelineItem[];
   pendingPermission?: PermissionRequest | null;
@@ -269,6 +288,8 @@ export type SessionListItem = {
   lastActivityAt: string;
   currentModel?: SessionCurrentModel | null;
   launchControlSummary?: AgentControlSelection[];
+  queuedPromptCount?: number;
+  activeTurn?: ActiveTurn | null;
   pendingPermission?: SessionListPermission | null;
   queuedApprovalCount?: number;
   reviewArtifactCount: number;
@@ -296,6 +317,8 @@ export type RealtimeEvent =
   | { type: "connection_status"; status: ConnectionStatus }
   | { type: "agent_connection_status"; agentId: string; permissionMode?: PermissionModeId; status: ConnectionStatus }
   | { type: "session_status"; sessionId: string; status: string }
+  | { type: "active_turn_updated"; sessionId: string; status: string; activeTurn?: ActiveTurn | null }
+  | { type: "queued_prompts_updated"; sessionId: string; queuedPrompts: QueuedPrompt[] }
   | { type: "text_delta"; sessionId: string; delta: string }
   | { type: "assistant_message"; sessionId: string; content: string }
   | {

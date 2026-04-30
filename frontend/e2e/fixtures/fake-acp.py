@@ -181,6 +181,8 @@ for line in sys.stdin:
                 "result": {"configOptions": config_options()},
             }
         )
+    elif method == "session/cancel":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
     elif method == "session/prompt":
         prompt_session_id = message.get("params", {}).get("sessionId", session_id)
         prompt_text = " ".join(

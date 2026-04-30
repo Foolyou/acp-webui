@@ -21,10 +21,10 @@ use crate::{
     config::{AgentConfig, Config, ResolvedAgentLaunchProfile, CODEX_AGENT_ID},
     models::{
         permission_mode, permission_status, review_artifact_kind, role, status, tool_call_status,
-        AgentControl, AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact,
-        PermissionRequest, ReviewArtifact, ReviewArtifactSummary, SessionConfigOption,
-        SessionConfigState, SessionContinuity, SessionCurrentModel, TimelineItem, ToolCallRow,
-        UpsertToolCall,
+        ActiveTurn, AgentControl, AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact,
+        PermissionRequest, QueuedPrompt, ReviewArtifact, ReviewArtifactSummary,
+        SessionConfigOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
+        TimelineItem, ToolCallRow, UpsertToolCall,
     },
     storage::{NewPermissionRequest, Storage},
 };
@@ -137,6 +137,15 @@ pub enum RealtimeEvent {
     SessionStatus {
         session_id: String,
         status: String,
+    },
+    ActiveTurnUpdated {
+        session_id: String,
+        status: String,
+        active_turn: Option<ActiveTurn>,
+    },
+    QueuedPromptsUpdated {
+        session_id: String,
+        queued_prompts: Vec<QueuedPrompt>,
     },
     TextDelta {
         session_id: String,
@@ -570,6 +579,18 @@ impl AgentRuntime {
             .unwrap_or_default();
 
         Ok(PromptOutcome { content })
+    }
+
+    pub async fn stop_session_turn(&self, acp_session_id: String) -> anyhow::Result<()> {
+        let peer = self.ensure_ready().await?;
+        peer.request(
+            "session/cancel",
+            json!({
+                "sessionId": acp_session_id
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn resolve_permission(

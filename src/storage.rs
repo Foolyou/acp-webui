@@ -11,12 +11,13 @@ use uuid::Uuid;
 use serde_json::Value;
 
 use crate::models::{
-    continuity_state, permission_status, role, status, tool_call_status, AgentControlSelection,
-    InboxItem, Message, NewReviewArtifact, PermissionOption, PermissionRequest,
-    PermissionRequestRow, ReviewArtifact, ReviewArtifactRow, ReviewArtifactSummary, Session,
-    SessionConfigOption, SessionConfigSelectOption, SessionConfigState, SessionContinuity,
-    SessionCurrentModel, SessionDetail, SessionListItem, SessionListPermission, TimelineItem,
-    ToolCallRow, UpsertToolCall, Workspace,
+    continuity_state, permission_status, queued_prompt_status, role, status, tool_call_status,
+    turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message, NewReviewArtifact,
+    PermissionOption, PermissionRequest, PermissionRequestRow, QueuedPrompt, ReviewArtifact,
+    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
+    SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
+    SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
+    UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -629,6 +630,9 @@ impl Storage {
                 s.current_model_config_id,
                 s.current_model_value,
                 s.current_model_name,
+                s.active_turn_started_at,
+                s.active_turn_status,
+                s.active_turn_stop_requested_at,
                 w.id AS workspace_row_id,
                 w.name AS workspace_name,
                 w.path AS workspace_path,
@@ -639,6 +643,7 @@ impl Storage {
                 p.kind AS permission_kind,
                 p.created_at AS permission_created_at,
                 COALESCE(pending_counts.pending_approval_count, 0) AS pending_approval_count
+                , COALESCE(queue_counts.queued_prompt_count, 0) AS queued_prompt_count
             FROM sessions s
             INNER JOIN workspaces w ON w.id = s.workspace_id
             LEFT JOIN (
@@ -668,12 +673,19 @@ impl Storage {
                 WHERE status = ?
                 GROUP BY session_id
             ) pending_counts ON pending_counts.session_id = s.id
+            LEFT JOIN (
+                SELECT session_id, COUNT(*) AS queued_prompt_count
+                FROM queued_prompts
+                WHERE status = ?
+                GROUP BY session_id
+            ) queue_counts ON queue_counts.session_id = s.id
             WHERE (? IS NULL OR s.workspace_id = ?)
             ORDER BY s.updated_at DESC
             "#,
         )
         .bind(permission_status::PENDING)
         .bind(permission_status::PENDING)
+        .bind(queued_prompt_status::QUEUED)
         .bind(workspace_id)
         .bind(workspace_id)
         .fetch_all(&self.pool)
@@ -697,6 +709,143 @@ impl Storage {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn start_active_turn(&self, id: &str) -> anyhow::Result<ActiveTurn> {
+        let now = now();
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                active_turn_started_at = ?,
+                active_turn_status = ?,
+                active_turn_stop_requested_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(status::RUNNING)
+        .bind(&now)
+        .bind(turn_status::RUNNING)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(ActiveTurn {
+            started_at: now,
+            status: turn_status::RUNNING.to_string(),
+            stop_requested_at: None,
+        })
+    }
+
+    pub async fn request_active_turn_stop(&self, id: &str) -> anyhow::Result<ActiveTurn> {
+        let now = now();
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                active_turn_started_at = COALESCE(active_turn_started_at, ?),
+                active_turn_status = ?,
+                active_turn_stop_requested_at = COALESCE(active_turn_stop_requested_at, ?),
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(status::STOPPING)
+        .bind(&now)
+        .bind(turn_status::STOPPING)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.active_turn_for_session(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session does not have an active turn"))
+    }
+
+    pub async fn finish_active_turn_idle(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                active_turn_started_at = NULL,
+                active_turn_status = NULL,
+                active_turn_stop_requested_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(status::IDLE)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn finish_active_turn_failed(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                active_turn_started_at = NULL,
+                active_turn_status = NULL,
+                active_turn_stop_requested_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(status::FAILED)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn finish_active_turn_stopped(&self, id: &str) -> anyhow::Result<ActiveTurn> {
+        let now = now();
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET status = ?,
+                active_turn_status = ?,
+                active_turn_stop_requested_at = COALESCE(active_turn_stop_requested_at, ?),
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(status::STOPPED)
+        .bind(turn_status::STOPPED)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.active_turn_for_session(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session does not have an active turn"))
+    }
+
+    pub async fn active_turn_for_session(&self, id: &str) -> anyhow::Result<Option<ActiveTurn>> {
+        let row = sqlx::query_as::<_, ActiveTurnRow>(
+            r#"
+            SELECT active_turn_started_at, active_turn_status, active_turn_stop_requested_at
+            FROM sessions
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row_to_active_turn(row))
     }
 
     pub async fn create_message(
@@ -725,6 +874,155 @@ impl Storage {
         .await?;
 
         self.get_message(&id).await
+    }
+
+    pub async fn update_message_status(
+        &self,
+        id: &str,
+        message_status: &str,
+    ) -> anyhow::Result<Message> {
+        sqlx::query(
+            r#"
+            UPDATE messages
+            SET status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(message_status)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_message(id).await
+    }
+
+    pub async fn create_queued_prompt(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        prompt: &str,
+    ) -> anyhow::Result<QueuedPrompt> {
+        let id = Uuid::new_v4().to_string();
+        let created_at = now();
+        let position = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COALESCE(MAX(position), 0) + 1
+            FROM queued_prompts
+            WHERE session_id = ?
+            "#,
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO queued_prompts (id, session_id, message_id, prompt, status, position, created_at, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            "#,
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(message_id)
+        .bind(prompt)
+        .bind(queued_prompt_status::QUEUED)
+        .bind(position)
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        self.touch_session(session_id).await?;
+
+        self.get_queued_prompt(&id).await
+    }
+
+    pub async fn get_queued_prompt(&self, id: &str) -> anyhow::Result<QueuedPrompt> {
+        let prompt = sqlx::query_as::<_, QueuedPrompt>(
+            r#"
+            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            FROM queued_prompts
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(prompt)
+    }
+
+    pub async fn list_queued_prompts(&self, session_id: &str) -> anyhow::Result<Vec<QueuedPrompt>> {
+        let prompts = sqlx::query_as::<_, QueuedPrompt>(
+            r#"
+            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            FROM queued_prompts
+            WHERE session_id = ? AND status = ?
+            ORDER BY position ASC, created_at ASC, id ASC
+            "#,
+        )
+        .bind(session_id)
+        .bind(queued_prompt_status::QUEUED)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(prompts)
+    }
+
+    pub async fn next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<QueuedPrompt>> {
+        let prompt = sqlx::query_as::<_, QueuedPrompt>(
+            r#"
+            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            FROM queued_prompts
+            WHERE session_id = ? AND status = ?
+            ORDER BY position ASC, created_at ASC, id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(session_id)
+        .bind(queued_prompt_status::QUEUED)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(prompt)
+    }
+
+    pub async fn mark_queued_prompt_submitted(&self, id: &str) -> anyhow::Result<QueuedPrompt> {
+        let submitted_at = now();
+        sqlx::query(
+            r#"
+            UPDATE queued_prompts
+            SET status = ?,
+                submitted_at = ?
+            WHERE id = ? AND status = ?
+            "#,
+        )
+        .bind(queued_prompt_status::SUBMITTED)
+        .bind(&submitted_at)
+        .bind(id)
+        .bind(queued_prompt_status::QUEUED)
+        .execute(&self.pool)
+        .await?;
+
+        let prompt = self.get_queued_prompt(id).await?;
+        self.touch_session(&prompt.session_id).await?;
+        Ok(prompt)
+    }
+
+    async fn touch_session(&self, id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE sessions
+            SET updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn create_message_if_missing(
@@ -821,6 +1119,8 @@ impl Storage {
         let mut session = self.get_session(session_id).await?;
         let workspace = self.get_workspace(&session.workspace_id).await?;
         let messages = self.list_messages(&session.id).await?;
+        let queued_prompts = self.list_queued_prompts(&session.id).await?;
+        let active_turn = self.active_turn_for_session(&session.id).await?;
         let review_artifacts = self.list_review_artifact_summaries(&session.id).await?;
         let tool_calls = self.list_tool_calls(&session.id).await?;
         let permission_rows = self
@@ -846,6 +1146,8 @@ impl Storage {
             current_model: config_state.current_model,
             launch_control_summary,
             messages,
+            queued_prompts,
+            active_turn,
             review_artifacts,
             timeline,
             pending_permission,
@@ -1602,6 +1904,9 @@ struct SessionListItemRow {
     current_model_config_id: Option<String>,
     current_model_value: Option<String>,
     current_model_name: Option<String>,
+    active_turn_started_at: Option<String>,
+    active_turn_status: Option<String>,
+    active_turn_stop_requested_at: Option<String>,
     workspace_row_id: String,
     workspace_name: String,
     workspace_path: String,
@@ -1612,6 +1917,7 @@ struct SessionListItemRow {
     permission_kind: Option<String>,
     permission_created_at: Option<String>,
     pending_approval_count: i64,
+    queued_prompt_count: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1620,6 +1926,13 @@ struct SessionConfigStateRow {
     current_model_config_id: Option<String>,
     current_model_value: Option<String>,
     current_model_name: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ActiveTurnRow {
+    active_turn_started_at: Option<String>,
+    active_turn_status: Option<String>,
+    active_turn_stop_requested_at: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1845,6 +2158,11 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
         _ => None,
     };
     let review_artifact_count = row.review_artifact_count;
+    let active_turn = row_to_active_turn(ActiveTurnRow {
+        active_turn_started_at: row.active_turn_started_at,
+        active_turn_status: row.active_turn_status,
+        active_turn_stop_requested_at: row.active_turn_stop_requested_at,
+    });
 
     SessionListItem {
         session: Session {
@@ -1878,6 +2196,8 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
             }),
             _ => None,
         },
+        queued_prompt_count: row.queued_prompt_count,
+        active_turn,
         pending_permission,
         queued_approval_count: queued_approval_count(row.pending_approval_count),
         review_artifact_count,
@@ -1886,6 +2206,16 @@ fn row_to_session_list_item(row: SessionListItemRow) -> SessionListItem {
         continuable: true,
         view_only_reason: None,
     }
+}
+
+fn row_to_active_turn(row: ActiveTurnRow) -> Option<ActiveTurn> {
+    Some(ActiveTurn {
+        started_at: row.active_turn_started_at?,
+        status: row
+            .active_turn_status
+            .unwrap_or_else(|| turn_status::RUNNING.to_string()),
+        stop_requested_at: row.active_turn_stop_requested_at,
+    })
 }
 
 fn build_timeline(
@@ -2127,6 +2457,88 @@ mod tests {
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+    }
+
+    #[tokio::test]
+    async fn stores_queued_prompts_and_active_turn_projection() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+        let first_message = storage
+            .create_message(&session.id, role::USER, "first", "queued")
+            .await
+            .unwrap();
+        let second_message = storage
+            .create_message(&session.id, role::USER, "second", "queued")
+            .await
+            .unwrap();
+        let first = storage
+            .create_queued_prompt(&session.id, &first_message.id, "first")
+            .await
+            .unwrap();
+        let second = storage
+            .create_queued_prompt(&session.id, &second_message.id, "second")
+            .await
+            .unwrap();
+        let active_turn = storage.start_active_turn(&session.id).await.unwrap();
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(
+            detail
+                .queued_prompts
+                .iter()
+                .map(|prompt| prompt.prompt.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        let detail_turn = detail.active_turn.unwrap();
+        assert_eq!(detail_turn.started_at, active_turn.started_at);
+        assert_eq!(detail_turn.status, active_turn.status);
+
+        let item = storage
+            .list_session_items()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.session.id == session.id)
+            .unwrap();
+        assert_eq!(item.queued_prompt_count, 2);
+        let item_turn = item.active_turn.unwrap();
+        assert_eq!(item_turn.started_at, active_turn.started_at);
+        assert_eq!(item_turn.status, active_turn.status);
+
+        let submitted = storage
+            .mark_queued_prompt_submitted(&first.id)
+            .await
+            .unwrap();
+        assert_eq!(submitted.status, queued_prompt_status::SUBMITTED);
+        assert!(submitted.submitted_at.is_some());
+        assert_eq!(
+            storage
+                .next_queued_prompt(&session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            second.id
+        );
+        assert_eq!(
+            storage
+                .list_queued_prompts(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

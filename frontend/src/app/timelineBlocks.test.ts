@@ -93,7 +93,7 @@ describe("buildTimelineBlocks", () => {
     ]);
 
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran 3 commands" });
+    expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran 3 commands", statusLabel: "3 completed" });
     expect(blocks[0].kind === "tool_group" ? blocks[0].entries.map((entry) => entry.item.id) : []).toEqual([
       "tool-1",
       "tool-2",
@@ -111,9 +111,15 @@ describe("buildTimelineBlocks", () => {
     expect(blocks.map((block) => block.kind)).toEqual(["tool_group", "message", "tool_group"]);
   });
 
-  test("summarizes mixed tool groups and exposes failure counts", () => {
+  test("keeps failed and running tool calls as visible boundaries", () => {
     const blocks = buildTimelineBlocks([
       toolCall({ id: "tool-1", status: "failed", input: { command: "npm test" } }),
+      toolCall({
+        id: "tool-running",
+        toolCallId: "acp-tool-running",
+        status: "running",
+        input: { command: "npm run build" }
+      }),
       toolCall({
         id: "tool-2",
         toolCallId: "acp-tool-2",
@@ -130,11 +136,24 @@ describe("buildTimelineBlocks", () => {
       })
     ]);
 
+    expect(blocks).toHaveLength(3);
     expect(blocks[0]).toMatchObject({
       kind: "tool_group",
-      summary: "Ran 1 command, changed 1 file, used 1 tool",
+      summary: "Ran npm test",
       status: "failed",
       statusLabel: "1 failed"
+    });
+    expect(blocks[1]).toMatchObject({
+      kind: "tool_group",
+      summary: "Ran npm run build",
+      status: "running",
+      statusLabel: "running"
+    });
+    expect(blocks[2]).toMatchObject({
+      kind: "tool_group",
+      summary: "Changed 1 file, used 1 tool",
+      status: "completed",
+      statusLabel: "2 completed"
     });
   });
 

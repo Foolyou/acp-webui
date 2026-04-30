@@ -131,6 +131,7 @@ export function SessionDetailRoute() {
       onRestoreSession={actions.restoreSession}
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
+      onStopSession={actions.cancelApproval}
     />
   );
 }

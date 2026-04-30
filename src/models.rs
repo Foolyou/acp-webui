@@ -224,6 +224,8 @@ pub struct SessionDetail {
     pub current_model: Option<SessionCurrentModel>,
     pub launch_control_summary: Vec<AgentControlSelection>,
     pub messages: Vec<Message>,
+    pub queued_prompts: Vec<QueuedPrompt>,
+    pub active_turn: Option<ActiveTurn>,
     pub review_artifacts: Vec<ReviewArtifactSummary>,
     pub timeline: Vec<TimelineItem>,
     pub pending_permission: Option<PermissionRequest>,
@@ -500,6 +502,8 @@ pub struct SessionListItem {
     pub last_activity_at: String,
     pub current_model: Option<SessionCurrentModel>,
     pub launch_control_summary: Vec<AgentControlSelection>,
+    pub queued_prompt_count: i64,
+    pub active_turn: Option<ActiveTurn>,
     pub pending_permission: Option<SessionListPermission>,
     pub queued_approval_count: i64,
     pub review_artifact_count: i64,
@@ -549,6 +553,27 @@ pub struct PromptRequest {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedPrompt {
+    pub id: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub prompt: String,
+    pub status: String,
+    pub position: i64,
+    pub created_at: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTurn {
+    pub started_at: String,
+    pub status: String,
+    pub stop_requested_at: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSessionConfigOptionRequest {
@@ -558,8 +583,21 @@ pub struct SetSessionConfigOptionRequest {
 pub mod status {
     pub const IDLE: &str = "idle";
     pub const RUNNING: &str = "running";
+    pub const STOPPING: &str = "stopping";
+    pub const STOPPED: &str = "stopped";
     pub const WAITING_APPROVAL: &str = "waiting_approval";
     pub const FAILED: &str = "failed";
+}
+
+pub mod queued_prompt_status {
+    pub const QUEUED: &str = "queued";
+    pub const SUBMITTED: &str = "submitted";
+}
+
+pub mod turn_status {
+    pub const RUNNING: &str = "running";
+    pub const STOPPING: &str = "stopping";
+    pub const STOPPED: &str = "stopped";
 }
 
 pub mod permission_mode {

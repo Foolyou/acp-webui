@@ -783,6 +783,144 @@ test("shows mobile skill suggestions for symbol keyboard triggers", async ({ pag
   }
 });
 
+test("recovers missed mobile session messages on visibility return without refresh", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+
+  const workspace = {
+    id: "mobile-reconnect-workspace",
+    name: "Mobile reconnect workspace",
+    path: repoRoot,
+    createdAt: new Date().toISOString()
+  };
+  const session = {
+    id: "mobile-reconnect-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    permissionMode: "manual",
+    acpSessionId: "mobile-reconnect-acp-session",
+    externalSessionId: "mobile-reconnect-acp-session",
+    status: "running",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const continuity = {
+    state: "live",
+    continuable: true,
+    restorable: false,
+    restoring: false,
+    reason: null,
+    failureMessage: null,
+    restoreStartedAt: null,
+    restoreCompletedAt: null
+  };
+  let detail: SessionDetail = {
+    session,
+    workspace,
+    messages: [],
+    queuedPrompts: [
+      {
+        id: "queued-prompt-1",
+        sessionId: session.id,
+        messageId: "queued-message-1",
+        prompt: "queued follow-up",
+        status: "queued",
+        position: 1,
+        createdAt: new Date().toISOString()
+      }
+    ],
+    activeTurn: {
+      startedAt: new Date(Date.now() - 65_000).toISOString(),
+      status: "running"
+    },
+    reviewArtifacts: [],
+    timeline: [],
+    pendingPermission: null,
+    pendingPermissions: [],
+    pendingApprovalCount: 0,
+    queuedApprovalCount: 0,
+    failureMessage: null,
+    continuity,
+    continuable: true,
+    viewOnlyReason: null
+  };
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: null },
+        agents: [{ id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } }],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([workspace]) });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route("**/api/skills", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route(`**/api/sessions/${session.id}`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
+  });
+
+  await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
+  await expect(page.getByPlaceholder("Queue a follow-up for Codex...")).toBeVisible();
+  await expect(page.getByText(/Codex is working for 1m/)).toBeVisible();
+  await expect(page.getByText("queued follow-up")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  detail = {
+    ...detail,
+    session: { ...detail.session, status: "idle", updatedAt: new Date().toISOString() },
+    activeTurn: null,
+    queuedPrompts: [],
+    messages: [
+      {
+        id: "missed-message",
+        sessionId: session.id,
+        role: "assistant",
+        content: "Missed while away",
+        status: "idle",
+        createdAt: new Date().toISOString()
+      }
+    ],
+    timeline: [
+      {
+        kind: "message",
+        id: "missed-message",
+        sessionId: session.id,
+        role: "assistant",
+        content: "Missed while away",
+        status: "idle",
+        timestamp: new Date().toISOString()
+      }
+    ]
+  };
+
+  await page.evaluate(() => {
+    const sockets = (window as unknown as { __mockSockets?: WebSocket[] }).__mockSockets ?? [];
+    sockets.at(-1)?.close();
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  await expect(page.getByText("Missed while away")).toBeVisible();
+  await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
+});
+
 test("renders compact mobile tool activity rows with evidence and diagnostics", async ({ page }) => {
   await mockConnectedWebSocket(page);
 
@@ -1366,12 +1504,16 @@ async function mockConnectedWebSocket(page: import("@playwright/test").Page) {
 
       constructor() {
         super();
+        const windowWithSockets = window as unknown as { __mockSockets?: MockSocket[] };
+        windowWithSockets.__mockSockets = windowWithSockets.__mockSockets ?? [];
+        windowWithSockets.__mockSockets.push(this);
         setTimeout(() => this.dispatchEvent(new Event("open")), 0);
       }
 
       send() {}
 
       close() {
+        this.readyState = 3;
         this.dispatchEvent(new CloseEvent("close"));
       }
     }

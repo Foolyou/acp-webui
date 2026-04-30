@@ -28,9 +28,9 @@ use crate::{
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
-        continuity_state, permission_mode, review_artifact_kind, role, status,
+        continuity_state, permission_mode, review_artifact_kind, role, status, ActiveTurn,
         CreateSessionRequest, CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message,
-        PermissionRequest, PromptRequest, ResolvePermissionRequest, ReviewArtifact,
+        PermissionRequest, PromptRequest, QueuedPrompt, ResolvePermissionRequest, ReviewArtifact,
         ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity, SessionDetail,
         SessionListItem, SetSessionConfigOptionRequest, SkillSummary, TimelineItem, Workspace,
     },
@@ -68,6 +68,9 @@ struct AppStateResponse {
 #[serde(rename_all = "camelCase")]
 struct PromptAcceptedResponse {
     message: Message,
+    queued_prompt: Option<QueuedPrompt>,
+    queued_prompts: Vec<QueuedPrompt>,
+    active_turn: Option<ActiveTurn>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -775,20 +778,6 @@ async fn submit_prompt(
         .await?
         .is_some();
 
-    if has_pending_permission || session.status == status::WAITING_APPROVAL {
-        return Err(AppError::Conflict(
-            "This session is waiting for approval. Resolve the pending approval before sending another prompt."
-                .to_string(),
-        ));
-    }
-
-    if session.status == status::RUNNING {
-        return Err(AppError::Conflict(
-            "This session is already running. Wait for it to finish before sending another prompt."
-                .to_string(),
-        ));
-    }
-
     let continuity = state.session_continuity(&session).await?;
     if !continuity.continuable {
         let reason = match continuity.state.as_str() {
@@ -813,18 +802,53 @@ async fn submit_prompt(
     };
     let runtime = state.runtime_for_existing_session(&session).await?;
 
+    let should_queue = has_pending_permission
+        || matches!(
+            session.status.as_str(),
+            status::WAITING_APPROVAL | status::RUNNING | status::STOPPING
+        );
+
+    if should_queue {
+        let message = state
+            .storage
+            .create_message(&session.id, role::USER, &prompt, "queued")
+            .await
+            .map_err(AppError::Other)?;
+        let queued_prompt = state
+            .storage
+            .create_queued_prompt(&session.id, &message.id, &prompt)
+            .await
+            .map_err(AppError::Other)?;
+        let queued_prompts = state.storage.list_queued_prompts(&session.id).await?;
+        let _ = state.events_tx.send(RealtimeEvent::TimelineItemUpsert {
+            item: message_timeline_item(&message),
+        });
+        let _ = state.events_tx.send(RealtimeEvent::QueuedPromptsUpdated {
+            session_id: session.id.clone(),
+            queued_prompts: queued_prompts.clone(),
+        });
+        return Ok(Json(PromptAcceptedResponse {
+            message,
+            queued_prompt: Some(queued_prompt),
+            queued_prompts,
+            active_turn: state.storage.active_turn_for_session(&session.id).await?,
+        }));
+    }
+
     let message = state
         .storage
         .create_message(&session.id, role::USER, &prompt, status::IDLE)
         .await
         .map_err(AppError::Other)?;
-    state
-        .storage
-        .update_session_status(&session.id, status::RUNNING)
-        .await?;
+    let active_turn = state.storage.start_active_turn(&session.id).await?;
     let _ = state.events_tx.send(RealtimeEvent::SessionStatus {
         session_id: session.id.clone(),
         status: status::RUNNING.to_string(),
+    });
+    let _ = state.events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+        session_id: session.id.clone(),
+        status: status::RUNNING.to_string(),
+        active_turn: Some(active_turn.clone()),
     });
 
     tokio::spawn(run_prompt_turn(
@@ -836,7 +860,12 @@ async fn submit_prompt(
         prompt,
     ));
 
-    Ok(Json(PromptAcceptedResponse { message }))
+    Ok(Json(PromptAcceptedResponse {
+        message,
+        queued_prompt: None,
+        queued_prompts: state.storage.list_queued_prompts(&session.id).await?,
+        active_turn: Some(active_turn),
+    }))
 }
 
 impl AppState {
@@ -1015,30 +1044,56 @@ async fn cancel_session(
         .await
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
     let runtime = state.runtime_for_existing_session(&session).await?;
-    if state
+    let has_pending_permission = state
         .storage
         .pending_permission_for_session(&session_id)
         .await?
-        .is_none()
-    {
+        .is_some();
+    let is_running = matches!(
+        session.status.as_str(),
+        status::RUNNING | status::WAITING_APPROVAL | status::STOPPING
+    );
+    if !has_pending_permission && !is_running {
         return Err(AppError::Conflict(
-            "Only sessions waiting for approval can be cancelled in this version.".to_string(),
+            "This session does not have active work to stop.".to_string(),
         ));
     }
 
-    runtime
-        .cancel_pending_permissions_for_session(&session_id)
-        .await
-        .map_err(|error| AppError::Conflict(error.to_string()))?;
-    state
+    let active_turn = state.storage.request_active_turn_stop(&session_id).await?;
+    if has_pending_permission {
+        runtime
+            .cancel_pending_permissions_for_session(&session_id)
+            .await
+            .map_err(|error| AppError::Conflict(error.to_string()))?;
+    }
+    if let Some(acp_session_id) = session.acp_session_id.clone() {
+        if let Err(error) = runtime.stop_session_turn(acp_session_id).await {
+            tracing::warn!(
+                ?error,
+                session_id,
+                "agent did not accept session cancel request; using local stop fallback"
+            );
+        }
+    }
+    let stopped_turn = state
         .storage
-        .update_session_status(&session_id, status::FAILED)
+        .finish_active_turn_stopped(&session_id)
         .await?;
-    let text = "Turn cancelled while waiting for approval.";
+    let text = "Turn stop requested. Any already completed messages and tool calls were preserved.";
     state.storage.add_system_message(&session_id, text).await?;
     let _ = state.events_tx.send(RealtimeEvent::SessionStatus {
         session_id: session_id.clone(),
-        status: status::FAILED.to_string(),
+        status: status::STOPPED.to_string(),
+    });
+    let _ = state.events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+        session_id: session_id.clone(),
+        status: status::STOPPING.to_string(),
+        active_turn: Some(active_turn),
+    });
+    let _ = state.events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+        session_id: session_id.clone(),
+        status: status::STOPPED.to_string(),
+        active_turn: Some(stopped_turn),
     });
 
     Ok(Json(state.session_detail(&session_id).await?))
@@ -1052,90 +1107,153 @@ async fn run_prompt_turn(
     acp_session_id: String,
     prompt: String,
 ) {
-    match runtime.prompt(acp_session_id, prompt).await {
-        Ok(outcome) => {
-            match storage.get_session(&session_id).await {
-                Ok(session) if session.status == status::FAILED => {
-                    tracing::debug!(session_id, "prompt turn finished after session failed");
-                    return;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(?error, "failed to inspect session before completion");
-                }
-            }
-            if !outcome.content.is_empty() {
-                match storage
-                    .create_message(&session_id, role::ASSISTANT, &outcome.content, status::IDLE)
-                    .await
-                {
-                    Ok(message) => {
-                        let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
-                            item: TimelineItem::Message {
-                                id: message.id.clone(),
-                                session_id: message.session_id.clone(),
-                                timestamp: message.created_at.clone(),
-                                status: message.status.clone(),
-                                role: message.role.clone(),
-                                content: message.content.clone(),
-                            },
-                        });
+    let mut next_prompt = Some(prompt);
+    while let Some(prompt) = next_prompt.take() {
+        match runtime.prompt(acp_session_id.clone(), prompt).await {
+            Ok(outcome) => {
+                match storage.get_session(&session_id).await {
+                    Ok(session)
+                        if matches!(session.status.as_str(), status::FAILED | status::STOPPED) =>
+                    {
+                        tracing::debug!(
+                            session_id,
+                            "prompt turn finished after session was no longer active"
+                        );
+                        return;
                     }
+                    Ok(_) => {}
                     Err(error) => {
-                        tracing::error!(?error, "failed to persist assistant message");
+                        tracing::error!(?error, "failed to inspect session before completion");
                     }
                 }
-                let _ = events_tx.send(RealtimeEvent::AssistantMessage {
-                    session_id: session_id.clone(),
-                    content: outcome.content,
-                });
-            }
-            match storage.pending_permission_for_session(&session_id).await {
-                Ok(Some(_)) => {
-                    tracing::debug!(
+                if !outcome.content.is_empty() {
+                    match storage
+                        .create_message(
+                            &session_id,
+                            role::ASSISTANT,
+                            &outcome.content,
+                            status::IDLE,
+                        )
+                        .await
+                    {
+                        Ok(message) => {
+                            let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+                                item: message_timeline_item(&message),
+                            });
+                        }
+                        Err(error) => {
+                            tracing::error!(?error, "failed to persist assistant message");
+                        }
+                    }
+                    let _ = events_tx.send(RealtimeEvent::AssistantMessage {
+                        session_id: session_id.clone(),
+                        content: outcome.content,
+                    });
+                }
+                match storage.pending_permission_for_session(&session_id).await {
+                    Ok(Some(_)) => {
+                        tracing::debug!(
                         session_id,
                         "prompt turn completed with pending permission; preserving waiting_approval"
                     );
-                }
-                Ok(None) => {
-                    if let Err(error) = storage
-                        .update_session_status(&session_id, status::IDLE)
-                        .await
-                    {
-                        tracing::error!(?error, "failed to mark session idle");
                     }
-                    let _ = events_tx.send(RealtimeEvent::SessionStatus {
-                        session_id,
-                        status: status::IDLE.to_string(),
-                    });
+                    Ok(None) => {
+                        if let Err(error) = storage.finish_active_turn_idle(&session_id).await {
+                            tracing::error!(?error, "failed to mark session idle");
+                        }
+                        let _ = events_tx.send(RealtimeEvent::SessionStatus {
+                            session_id: session_id.clone(),
+                            status: status::IDLE.to_string(),
+                        });
+                        let _ = events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+                            session_id: session_id.clone(),
+                            status: status::IDLE.to_string(),
+                            active_turn: None,
+                        });
+                        match dispatch_next_queued_prompt(&storage, &events_tx, &session_id).await {
+                            Ok(Some(queued_prompt)) => {
+                                next_prompt = Some(queued_prompt.prompt);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::error!(?error, "failed to dispatch queued prompt");
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            ?error,
+                            "failed to inspect pending permission before marking session idle"
+                        );
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(
-                        ?error,
-                        "failed to inspect pending permission before marking session idle"
-                    );
+            }
+            Err(error) => {
+                tracing::error!(?error, "prompt turn failed");
+                let text = format!("Prompt failed: {error}");
+                if let Err(error) = storage.finish_active_turn_failed(&session_id).await {
+                    tracing::error!(?error, "failed to mark session failed");
                 }
+                if let Err(error) = storage.add_system_message(&session_id, &text).await {
+                    tracing::error!(?error, "failed to persist prompt failure");
+                }
+                let _ = events_tx.send(RealtimeEvent::Error { message: text });
+                let _ = events_tx.send(RealtimeEvent::SessionStatus {
+                    session_id: session_id.clone(),
+                    status: status::FAILED.to_string(),
+                });
+                let _ = events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+                    session_id: session_id.clone(),
+                    status: status::FAILED.to_string(),
+                    active_turn: None,
+                });
+                break;
             }
-        }
-        Err(error) => {
-            tracing::error!(?error, "prompt turn failed");
-            let text = format!("Prompt failed: {error}");
-            if let Err(error) = storage
-                .update_session_status(&session_id, status::FAILED)
-                .await
-            {
-                tracing::error!(?error, "failed to mark session failed");
-            }
-            if let Err(error) = storage.add_system_message(&session_id, &text).await {
-                tracing::error!(?error, "failed to persist prompt failure");
-            }
-            let _ = events_tx.send(RealtimeEvent::Error { message: text });
-            let _ = events_tx.send(RealtimeEvent::SessionStatus {
-                session_id,
-                status: status::FAILED.to_string(),
-            });
         }
     }
+}
+
+async fn dispatch_next_queued_prompt(
+    storage: &Storage,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    session_id: &str,
+) -> anyhow::Result<Option<QueuedPrompt>> {
+    if storage
+        .pending_permission_for_session(session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(None);
+    }
+    let Some(queued_prompt) = storage.next_queued_prompt(session_id).await? else {
+        return Ok(None);
+    };
+    let submitted = storage
+        .mark_queued_prompt_submitted(&queued_prompt.id)
+        .await?;
+    let message = storage
+        .update_message_status(&submitted.message_id, status::IDLE)
+        .await?;
+    let active_turn = storage.start_active_turn(session_id).await?;
+    let queued_prompts = storage.list_queued_prompts(session_id).await?;
+    let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
+        item: message_timeline_item(&message),
+    });
+    let _ = events_tx.send(RealtimeEvent::QueuedPromptsUpdated {
+        session_id: session_id.to_string(),
+        queued_prompts,
+    });
+    let _ = events_tx.send(RealtimeEvent::SessionStatus {
+        session_id: session_id.to_string(),
+        status: status::RUNNING.to_string(),
+    });
+    let _ = events_tx.send(RealtimeEvent::ActiveTurnUpdated {
+        session_id: session_id.to_string(),
+        status: status::RUNNING.to_string(),
+        active_turn: Some(active_turn),
+    });
+    Ok(Some(submitted))
 }
 
 async fn websocket(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
@@ -1186,6 +1304,17 @@ async fn send_ws_event(socket: &mut WebSocket, event: &RealtimeEvent) -> anyhow:
     let text = serde_json::to_string(event)?;
     socket.send(WsMessage::Text(text.into())).await?;
     Ok(())
+}
+
+fn message_timeline_item(message: &Message) -> TimelineItem {
+    TimelineItem::Message {
+        id: message.id.clone(),
+        session_id: message.session_id.clone(),
+        timestamp: message.created_at.clone(),
+        status: message.status.clone(),
+        role: message.role.clone(),
+        content: message.content.clone(),
+    }
 }
 
 fn summarize_diff(diff: &str) -> String {
@@ -1533,6 +1662,8 @@ for line in sys.stdin:
             continue
         current_model = value
         send({"jsonrpc": "2.0", "id": request_id, "result": {"configOptions": config_options()}})
+    elif method == "session/cancel":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
     elif method == "session/prompt":
         session_id = message.get("params", {}).get("sessionId", "shared-session")
         text = prompt_text(message).lower()
@@ -2644,6 +2775,32 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let permission = wait_for_pending_permission(&state.storage, &claude_session.id).await;
+        let queued_body = serde_json::json!({"prompt": "queued follow up"});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/prompt", claude_session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(queued_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let response_json: Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(response_json["queuedPrompt"]["prompt"], "queued follow up");
+        assert_eq!(
+            state
+                .storage
+                .list_queued_prompts(&claude_session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         let resolve_body = serde_json::json!({"optionId": "allow-once"});
         let response = app
             .oneshot(
@@ -2666,6 +2823,13 @@ for line in sys.stdin:
             "Permission resolved by claude with allow-once",
         )
         .await;
+        wait_for_message_containing(&state.storage, &claude_session.id, "Hello from claude").await;
+        assert!(state
+            .storage
+            .list_queued_prompts(&claude_session.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -3076,25 +3240,40 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn prompt_is_rejected_while_waiting_for_approval() {
-        let (state, _db_dir) = test_state().await;
+    async fn prompt_is_queued_while_waiting_for_approval() {
+        let (state, _db_dir) = test_state_with_fake_agents().await;
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace = state
             .storage
-            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
             .await
             .unwrap();
         let session = state
             .storage
-            .create_session(&workspace.id, "acp-session".to_string())
+            .create_session_for_agent(
+                &workspace.id,
+                "codex",
+                "Codex",
+                "shared-session".to_string(),
+            )
             .await
             .unwrap();
+        state
+            .agents
+            .runtime("codex")
+            .await
+            .unwrap()
+            .register_session("shared-session".to_string(), session.id.clone())
+            .await;
         state
             .storage
             .update_session_status(&session.id, status::WAITING_APPROVAL)
             .await
             .unwrap();
-        let app = api_router(state);
+        let app = api_router(state.clone());
 
         let body = serde_json::json!({"prompt": "second prompt"});
         let response = app
@@ -3109,23 +3288,48 @@ for line in sys.stdin:
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["queuedPrompt"]["prompt"], "second prompt");
+        let queued = state
+            .storage
+            .list_queued_prompts(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].prompt, "second prompt");
     }
 
     #[tokio::test]
-    async fn prompt_is_rejected_when_pending_permission_exists_even_if_status_drifted_idle() {
-        let (state, _db_dir) = test_state().await;
+    async fn prompt_is_queued_when_pending_permission_exists_even_if_status_drifted_idle() {
+        let (state, _db_dir) = test_state_with_fake_agents().await;
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace = state
             .storage
-            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
             .await
             .unwrap();
         let session = state
             .storage
-            .create_session(&workspace.id, "acp-session".to_string())
+            .create_session_for_agent(
+                &workspace.id,
+                "codex",
+                "Codex",
+                "shared-session".to_string(),
+            )
             .await
             .unwrap();
+        state
+            .agents
+            .runtime("codex")
+            .await
+            .unwrap()
+            .register_session("shared-session".to_string(), session.id.clone())
+            .await;
         state
             .storage
             .create_permission_request(NewPermissionRequest {
@@ -3147,7 +3351,7 @@ for line in sys.stdin:
             .update_session_status(&session.id, status::IDLE)
             .await
             .unwrap();
-        let app = api_router(state);
+        let app = api_router(state.clone());
 
         let body = serde_json::json!({"prompt": "second prompt"});
         let response = app
@@ -3162,13 +3366,19 @@ for line in sys.stdin:
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains("waiting for approval"));
+        assert_eq!(json["queuedPrompt"]["prompt"], "second prompt");
+        assert_eq!(
+            state
+                .storage
+                .list_queued_prompts(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -3231,8 +3441,56 @@ for line in sys.stdin:
         );
         assert_eq!(
             state.storage.get_session(&session.id).await.unwrap().status,
-            status::FAILED
+            status::STOPPED
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_reports_unavailable_when_session_has_no_active_work() {
+        let (state, _db_dir) = test_state_with_fake_agents().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session_for_agent(
+                &workspace.id,
+                "codex",
+                "Codex",
+                "shared-session".to_string(),
+            )
+            .await
+            .unwrap();
+        state
+            .agents
+            .runtime("codex")
+            .await
+            .unwrap()
+            .register_session("shared-session".to_string(), session.id.clone())
+            .await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/cancel", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("active work"));
     }
 
     #[tokio::test]

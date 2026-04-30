@@ -13,6 +13,8 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
     lastActivityAt: detail.session.updatedAt,
     currentModel: detail.currentModel ?? null,
     launchControlSummary: detail.launchControlSummary ?? [],
+    queuedPromptCount: detail.queuedPrompts?.length ?? 0,
+    activeTurn: detail.activeTurn ?? null,
     pendingPermission: detail.pendingPermission
       ? {
           id: detail.pendingPermission.id,
@@ -38,6 +40,10 @@ export function applySessionListRealtime(
   switch (event.type) {
     case "session_status":
       return updateSessionListStatus(sessions, event.sessionId, event.status);
+    case "active_turn_updated":
+      return updateSessionListActiveTurn(sessions, event.sessionId, event.status, event.activeTurn ?? null);
+    case "queued_prompts_updated":
+      return updateSessionListQueue(sessions, event.sessionId, event.queuedPrompts.length);
     case "permission_requested":
       return setSessionListPermission(
         sessions,
@@ -151,6 +157,40 @@ function updateSessionListReviewAvailability(sessions: SessionListItem[], sessio
           ...item,
           reviewArtifactCount: item.reviewArtifactCount + 1,
           hasReviewArtifacts: true
+        }
+      : item
+  );
+}
+
+function updateSessionListActiveTurn(
+  sessions: SessionListItem[],
+  sessionId: string,
+  status: string,
+  activeTurn: SessionListItem["activeTurn"]
+) {
+  const now = new Date().toISOString();
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          activeTurn,
+          lastActivityAt: now,
+          session: {
+            ...item.session,
+            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission)),
+            updatedAt: now
+          }
+        }
+      : item
+  );
+}
+
+function updateSessionListQueue(sessions: SessionListItem[], sessionId: string, queuedPromptCount: number) {
+  return sessions.map((item) =>
+    item.session.id === sessionId
+      ? {
+          ...item,
+          queuedPromptCount
         }
       : item
   );

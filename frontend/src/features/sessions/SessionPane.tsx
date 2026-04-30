@@ -29,6 +29,7 @@ export function SessionPane({
   onOpenReviewArtifact,
   onRestoreSession,
   onSetSessionConfigOption,
+  onStopSession,
   onSendPrompt
 }: {
   agentStatus: AgentRuntimeStatus | null;
@@ -39,18 +40,19 @@ export function SessionPane({
   onOpenReviewArtifact: (artifactId: string) => void;
   onRestoreSession: (sessionId: string) => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
+  onStopSession: () => Promise<void>;
   onSendPrompt: (prompt: string) => Promise<void>;
 }) {
   const waitingApproval =
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
-  const running = currentSession.session.status === "running" || waitingApproval;
+  const running = ["running", "stopping"].includes(currentSession.session.status) || waitingApproval;
   const continuity = currentSession.continuity;
   const agentName = currentSession.session.agentName;
   const permissionModes = agentStatus ? fallbackPermissionModes(agentStatus) : [];
   const permissionMode = currentSession.session.permissionMode;
   const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
   const agentReady = !agentConnection || agentConnection.state === "ready";
-  const canSend = continuity.continuable && !running && agentReady;
+  const canSend = continuity.continuable && agentReady;
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
@@ -74,6 +76,11 @@ export function SessionPane({
     () => buildTimelineBlocks(currentSession.timeline, currentSession.reviewArtifacts),
     [currentSession.reviewArtifacts, currentSession.timeline]
   );
+  const elapsedLabel = useActiveTurnElapsed(currentSession.activeTurn);
+  const stoppingTurn = currentSession.activeTurn?.status === "stopping" || currentSession.session.status === "stopping";
+  const canStop =
+    ["running", "waiting_approval"].includes(currentSession.session.status) &&
+    currentSession.activeTurn?.status !== "stopping";
 
   const setAutoFollow = useCallback(
     (value: boolean) => {
@@ -300,6 +307,9 @@ export function SessionPane({
             {queuedApprovalCount > 0 ? ` (${queuedApprovalCount} queued)` : ""}
           </div>
         ) : null}
+        {currentSession.queuedPrompts?.length ? (
+          <QueuedPromptList queuedPrompts={currentSession.queuedPrompts} />
+        ) : null}
         {timelineBlocks.map((block) => (
           <TimelineBlockRow
             block={block}
@@ -336,10 +346,51 @@ export function SessionPane({
         restoreButtonLabel={continuity.restorable || continuity.restoring ? restoreButtonLabel : null}
         restoreDisabled={busy || !canRestore}
         restoreRequired={continuity.restorable || continuity.restoring}
+        elapsedLabel={elapsedLabel}
+        queuedPromptCount={currentSession.queuedPrompts?.length ?? 0}
+        canStop={canStop}
+        stoppingTurn={stoppingTurn}
+        onStopSession={onStopSession}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
       />
     </section>
+  );
+}
+
+function useActiveTurnElapsed(activeTurn: SessionDetail["activeTurn"]) {
+  const [now, setNow] = useState(() => Date.now());
+  const active = activeTurn && ["running", "stopping"].includes(activeTurn.status);
+
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [active, activeTurn?.startedAt]);
+
+  if (!activeTurn?.startedAt) return null;
+  return formatActiveTurnElapsed(activeTurn.startedAt, now);
+}
+
+export function formatActiveTurnElapsed(startedAt: string, now: number = Date.now()) {
+  const elapsedMs = Math.max(0, now - Date.parse(startedAt));
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function QueuedPromptList({ queuedPrompts }: { queuedPrompts: NonNullable<SessionDetail["queuedPrompts"]> }) {
+  return (
+    <div className="queued-prompts" aria-label="Queued prompts">
+      <strong>{queuedPrompts.length} queued</strong>
+      {queuedPrompts.map((prompt, index) => (
+        <div className="queued-prompt" key={prompt.id}>
+          <span>#{index + 1}</span>
+          <p>{prompt.prompt}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -634,6 +685,11 @@ function PromptComposer({
   restoreDisabled,
   continuityReason,
   restoreRequired,
+  elapsedLabel,
+  queuedPromptCount,
+  canStop,
+  stoppingTurn,
+  onStopSession,
   waitingApproval
 }: {
   agentName: string;
@@ -647,6 +703,11 @@ function PromptComposer({
   restoreDisabled: boolean;
   continuityReason?: string | null;
   restoreRequired: boolean;
+  elapsedLabel: string | null;
+  queuedPromptCount: number;
+  canStop: boolean;
+  stoppingTurn: boolean;
+  onStopSession: () => Promise<void>;
   waitingApproval: boolean;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -705,17 +766,31 @@ function PromptComposer({
     ? continuityReason
     : waitingApproval
       ? "Waiting for approval"
+      : stoppingTurn
+        ? `Stopping ${agentName}${elapsedLabel ? ` after ${elapsedLabel}` : "..."}`
       : running
-        ? `${agentName} is working...`
+        ? `${agentName} is working${elapsedLabel ? ` for ${elapsedLabel}` : "..."}`
         : agentStatus && agentStatus.status.state !== "ready"
           ? agentStatus.status.message ?? `${agentName} is ${agentStatus.status.state}`
           : null;
 
   return (
     <div className={`composer-wrap ${waitingApproval ? "blocked" : ""}`}>
-      {status || restoreButtonLabel ? (
+      {status || restoreButtonLabel || queuedPromptCount > 0 || canStop ? (
         <div className="composer-topline">
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
+          {queuedPromptCount > 0 ? <span className="queued-count">{queuedPromptCount} queued</span> : null}
+          {canStop ? (
+            <Button
+              className="secondary small stop-button"
+              isDisabled={busy}
+              onPress={() => {
+                void onStopSession();
+              }}
+            >
+              Stop
+            </Button>
+          ) : null}
           {restoreButtonLabel ? (
             <Button
               className="primary small"
@@ -742,7 +817,9 @@ function PromptComposer({
                 ? "Restore session to continue"
                 : "Start a new session to continue"
               : waitingApproval
-                ? "Resolve approval before sending another prompt"
+                ? "Queue a follow-up behind the approval..."
+                : running
+                  ? `Queue a follow-up for ${agentName}...`
                 : `Ask ${agentName}...`
           }
           rows={waitingApproval ? 1 : 2}
