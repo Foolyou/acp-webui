@@ -149,6 +149,19 @@ describe("toolCallDisplay", () => {
     expect(display.evidenceActions).toContainEqual({ id: "artifact-2", kind: "markdown", label: "Markdown" });
   });
 
+  test("uses action labels for permission status artifacts", () => {
+    const display = toolCallDisplay(
+      toolCall({ reviewArtifactIds: ["artifact-1"] }),
+      [artifact({ id: "artifact-1", kind: "generic", title: "Permission requested" })]
+    );
+
+    expect(display.evidenceActions).toContainEqual({
+      id: "artifact-1",
+      kind: "artifact",
+      label: "Request details"
+    });
+  });
+
   test("falls back to generic activity and diagnostics", () => {
     const input = { payload: { opaque: true } };
     const output = { text: "opaque output" };

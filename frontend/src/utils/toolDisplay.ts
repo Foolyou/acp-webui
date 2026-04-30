@@ -234,8 +234,29 @@ function evidenceLabel(kind: ToolActivityEvidenceKind, title?: string | null) {
     case "diagnostics":
       return "Diagnostics";
     case "artifact":
-      return title ? compactText(title, 40) : "Artifact";
+      return artifactEvidenceLabel(title);
   }
+}
+
+function artifactEvidenceLabel(title?: string | null) {
+  const compact = compactText(title ?? "", 40);
+  if (!compact) {
+    return "Artifact";
+  }
+
+  return isPermissionStatusTitle(compact) ? "Request details" : compact;
+}
+
+function isPermissionStatusTitle(title: string) {
+  const normalized = title.trim().toLowerCase();
+  return (
+    normalized === "permission requested" ||
+    normalized === "permission request" ||
+    normalized === "permission resolved" ||
+    normalized === "approval requested" ||
+    normalized === "approval request" ||
+    normalized === "approval resolved"
+  );
 }
 
 function detail(label: string, value?: string | null): ToolCallDisplayDetail | null {

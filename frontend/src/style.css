@@ -592,17 +592,19 @@ pre {
 }
 
 .permission-mode-option.permission-mode-yolo,
-.permission-mode-badge.permission-mode-yolo,
 .permission-mode-warning {
   border-color: rgba(155, 53, 45, 0.45);
   background: var(--color-danger-soft);
   color: var(--color-danger);
 }
 
-.permission-mode-option.permission-mode-full-auto,
-.permission-mode-badge.permission-mode-full-auto {
+.permission-mode-option.permission-mode-full-auto {
   border-color: rgba(154, 118, 30, 0.32);
   background: var(--color-warning-soft);
+}
+
+.permission-mode-badge.permission-mode-yolo {
+  color: var(--color-danger);
 }
 
 .model-selector {
@@ -714,16 +716,25 @@ pre {
 
 .status-chip,
 .permission-status {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-subtle);
-  padding: 0.34rem 0.45rem;
+  border: 0;
+  border-left: 3px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.14rem 0 0.14rem 0.52rem;
 }
 
 .permission-status {
   display: grid;
   gap: 0.05rem;
   min-width: min(100%, 8rem);
+}
+
+.permission-status.permission-mode-yolo {
+  border-left-color: rgba(155, 53, 45, 0.55);
+}
+
+.permission-status.permission-mode-full-auto {
+  border-left-color: rgba(154, 118, 30, 0.45);
 }
 
 .permission-status span {
@@ -845,10 +856,11 @@ pre {
 .pill {
   display: grid;
   gap: 0.1rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  padding: 0.45rem 0.6rem;
+  border: 0;
+  border-left: 3px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.22rem 0 0.22rem 0.52rem;
 }
 
 .pill span,
@@ -941,16 +953,31 @@ pre {
 .review-nav span {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  background: var(--color-surface-subtle);
-  color: var(--color-text);
-  padding: 0.23rem 0.48rem;
-  font-size: 0.74rem;
-  font-weight: 750;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  line-height: 1.25;
+  padding: 0.03rem 0;
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .permission-mode-badge {
-  border: 1px solid var(--color-border);
+  border: 0;
+}
+
+.badge.ready,
+.badge.idle,
+.badge.connected,
+.badge.completed {
+  color: var(--color-accent);
+}
+
+.badge.failed,
+.badge.disabled,
+.badge.disconnected {
+  color: var(--color-danger);
 }
 
 .timeline {
@@ -1317,11 +1344,12 @@ pre {
 }
 
 .tool-status {
-  border-radius: 999px;
-  background: var(--color-surface-subtle);
-  padding: 0.18rem 0.42rem;
-  font-size: 0.72rem;
-  font-weight: 800;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 750;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -1394,14 +1422,24 @@ pre {
 
 .tool-diagnostics > summary {
   width: fit-content;
-  min-height: 34px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  padding: 0.42rem 0.65rem;
-  color: var(--color-text);
-  font-size: 0.84rem;
+  min-height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
   list-style-position: inside;
+  margin-left: 0;
+  padding: 0.06rem 0;
+}
+
+.tool-diagnostics > summary:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 .tool-diagnostics .review-pre {
