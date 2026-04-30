@@ -3,7 +3,6 @@ import { useAppContext } from "../app/context";
 
 export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
   const { state } = useAppContext();
-  const currentWorkspaceId = state.currentWorkspaceId ?? state.workspaces[0]?.id ?? "";
   return (
     <nav className="nav-stack">
       <div className="nav-group" aria-label="Primary navigation">
@@ -25,17 +24,6 @@ export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
         >
           Agents <span>{state.agents.length}</span>
         </Link>
-        {currentWorkspaceId ? (
-          <Link
-            activeProps={{ className: "active" }}
-            className="nav-link"
-            onClick={onNavigate}
-            params={{ workspaceId: currentWorkspaceId }}
-            to="/workspaces/$workspaceId/sessions"
-          >
-            Sessions <span>{state.sessions.length}</span>
-          </Link>
-        ) : null}
         <Link
           activeOptions={{ exact: true }}
           activeProps={{ className: "active" }}

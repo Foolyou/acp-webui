@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "react-aria-components";
@@ -360,7 +361,16 @@ function SessionContextHeader({
 }) {
   return (
     <div className="session-toolbar">
-      <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
+      <div className="session-heading-stack">
+        <Link
+          className="secondary small session-list-link"
+          params={{ workspaceId: currentSession.workspace.id }}
+          to="/workspaces/$workspaceId/sessions"
+        >
+          Back to sessions
+        </Link>
+        <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
+      </div>
       <div className="session-context-controls">
         {sessionSelectOptions.length ? (
           <div className="session-config-controls">

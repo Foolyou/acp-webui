@@ -193,7 +193,8 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
 
   const ids = sessionRouteIds(page);
-  await openMenuAndClick(page, /Sessions/);
+  await expectPrimaryNavigationWithoutSessions(page);
+  await returnToWorkspaceSessions(page);
   await expect(page.getByRole("link", { name: /acp-webui.*Codex.*idle/i })).toBeVisible();
 
   const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
@@ -222,7 +223,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
   await page.getByRole("button", { name: "Menu" }).click();
   const navigation = page.getByRole("dialog", { name: "Navigation" });
-  await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveClass(/(^|\s)active(\s|$)/);
+  await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveCount(0);
   await expect(navigation.getByRole("link", { name: /Workspaces/ })).not.toHaveClass(/(^|\s)active(\s|$)/);
   await expect(navigation.getByRole("link", { name: /acp-webui/ }).first()).toHaveClass(/(^|\s)selected(\s|$)/);
   await navigation.getByRole("button", { name: "Close" }).click();
@@ -266,7 +267,7 @@ test("creates a Claude session when Claude is selected", async ({ page }) => {
   await expect(page.getByText("Reply with the smoke phrase.")).toBeVisible();
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
   const ids = sessionRouteIds(page);
-  await openMenuAndClick(page, /Sessions/);
+  await returnToWorkspaceSessions(page);
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("Claude");
 });
@@ -290,7 +291,7 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
 
-  await openMenuAndClick(page, /Sessions/);
+  await returnToWorkspaceSessions(page);
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("YOLO");
   await expect(sessionLink).toContainText("No approvals / no sandbox");
@@ -320,7 +321,7 @@ test("displays, switches, persists, and disables advertised model selector", asy
   await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
   await expect(page.getByLabel("Model")).toHaveValue("pro");
 
-  await openMenuAndClick(page, /Sessions/);
+  await returnToWorkspaceSessions(page);
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("Model: Pro model");
   await sessionLink.click();
@@ -968,7 +969,7 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
-  await openMenuAndClick(page, /Sessions/);
+  await returnToWorkspaceSessions(page);
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("1 review items");
   await sessionLink.click();
@@ -1131,6 +1132,19 @@ async function startSession(page: import("@playwright/test").Page, agentName = "
 async function openMenuAndClick(page: import("@playwright/test").Page, name: RegExp) {
   await page.getByRole("button", { name: "Menu" }).click();
   await page.getByRole("link", { name }).click();
+}
+
+async function returnToWorkspaceSessions(page: import("@playwright/test").Page) {
+  const { workspaceId } = sessionRouteIds(page);
+  await page.getByRole("link", { name: "Back to sessions" }).click();
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/sessions$`));
+}
+
+async function expectPrimaryNavigationWithoutSessions(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Menu" }).click();
+  const navigation = page.getByRole("dialog", { name: "Navigation" });
+  await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveCount(0);
+  await navigation.getByRole("button", { name: "Close" }).click();
 }
 
 async function expectPageFitsViewport(page: import("@playwright/test").Page) {

@@ -281,6 +281,19 @@ pre {
   backdrop-filter: blur(14px);
 }
 
+.session-heading-stack {
+  display: flex;
+  flex: 1 1 15rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.session-list-link {
+  white-space: nowrap;
+}
+
 .session-context-controls {
   display: flex;
   flex: 1 1 auto;
