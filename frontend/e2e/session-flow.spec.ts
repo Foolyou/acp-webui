@@ -685,6 +685,104 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
   expect(metrics.p95InputGapMs).toBeLessThan(150);
 });
 
+test("shows mobile skill suggestions for symbol keyboard triggers", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+
+  const workspace = {
+    id: "skill-trigger-workspace",
+    name: "Skill trigger workspace",
+    path: repoRoot,
+    createdAt: new Date().toISOString()
+  };
+  const session = {
+    id: "skill-trigger-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    permissionMode: "manual",
+    acpSessionId: "skill-trigger-acp-session",
+    externalSessionId: "skill-trigger-acp-session",
+    status: "idle",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const detail: SessionDetail = {
+    session,
+    workspace,
+    configOptions: [],
+    currentModel: null,
+    messages: [],
+    reviewArtifacts: [],
+    timeline: [],
+    pendingPermission: null,
+    pendingPermissions: [],
+    pendingApprovalCount: 0,
+    queuedApprovalCount: 0,
+    failureMessage: null,
+    continuity: {
+      state: "live",
+      continuable: true,
+      restorable: false,
+      restoring: false,
+      reason: null,
+      failureMessage: null,
+      restoreStartedAt: null,
+      restoreCompletedAt: null
+    },
+    continuable: true,
+    viewOnlyReason: null
+  };
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: { state: "ready", message: null },
+        agents: [{ id: "codex", title: "Codex", enabled: true, status: { state: "ready", message: null } }],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([workspace]) });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route("**/api/skills", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify([
+        { name: "imagegen", description: "Generate images" },
+        { name: "skill-creator", description: "Create skills" }
+      ])
+    });
+  });
+  await page.route(`**/api/sessions/${session.id}`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
+  });
+
+  await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
+  const composer = page.getByPlaceholder("Ask Codex...");
+
+  for (const trigger of ["$", "＄", "￥"]) {
+    await composer.fill(trigger);
+    await expect(page.locator(".skill-autocomplete")).toBeVisible();
+    await expect(page.locator(".skill-autocomplete-item")).toHaveCount(2);
+    await page.locator(".skill-autocomplete-item", { hasText: "$imagegen" }).click();
+    await expect(composer).toHaveValue("$imagegen ");
+  }
+});
+
 test("renders compact mobile tool activity rows with evidence and diagnostics", async ({ page }) => {
   await mockConnectedWebSocket(page);
 

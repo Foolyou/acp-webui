@@ -688,7 +688,7 @@ function PromptComposer({
     }
   }
 
-  const skillMatch = /\$([\w:-]*)$/.exec(prompt);
+  const skillMatch = /[$＄￥]([\w:-]*)$/u.exec(prompt);
   const skillSuggestions =
     skillMatch && !disabled
       ? skills
