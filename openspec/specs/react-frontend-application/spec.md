@@ -58,7 +58,7 @@ The React frontend SHALL connect to the existing WebSocket endpoint and apply su
 The React frontend SHALL preserve the existing browser interactions for permission approval and session review artifacts.
 
 #### Scenario: User resolves supported approval option
-- **WHEN** a pending permission request is visible and the user selects an allow-once or reject-once option
+- **WHEN** a pending permission request is visible and the user selects an agent-provided supported option
 - **THEN** the React frontend SHALL submit the selected option to the existing permission resolution API
 - **AND** it SHALL clear that resolved approval from the active UI after the backend resolves the request
 - **AND** it SHALL show the next queued approval when one remains
@@ -180,4 +180,35 @@ The React frontend SHALL include browser automation coverage that detects prompt
 - **WHEN** the long-timeline responsiveness test runs
 - **THEN** it SHALL keep the session timeline visible rather than hiding the content under test
 - **AND** it SHALL verify that the composer remains enabled and usable
+
+### Requirement: Frontend supports permission mode selection
+The React frontend SHALL let users choose a supported permission mode before creating a workspace session.
+
+#### Scenario: Supported modes are available
+- **WHEN** the user starts creating a session for an agent that supports multiple permission modes
+- **THEN** the browser SHALL present the supported modes as a clear selection control
+- **AND** it SHALL submit the selected permission mode to the backend session creation API
+
+#### Scenario: Agent supports only manual mode
+- **WHEN** the selected agent supports only `manual`
+- **THEN** the browser SHALL avoid offering unsupported automatic or YOLO modes
+- **AND** it SHALL create the session with `manual`
+
+#### Scenario: User selects YOLO mode
+- **WHEN** the user selects `yolo` before creating a session
+- **THEN** the browser SHALL show a prominent warning that approvals and sandboxing are bypassed
+- **AND** the created Session Detail SHALL show a persistent YOLO indicator after navigation
+
+### Requirement: Frontend displays session permission mode
+The React frontend SHALL display the persisted permission mode where it affects supervision or review.
+
+#### Scenario: Session detail opens
+- **WHEN** the browser renders Session Detail for a session
+- **THEN** it SHALL show the session's permission mode near the agent, workspace, status, or composer controls
+- **AND** `yolo` SHALL be visually distinct from `manual`
+
+#### Scenario: Sessions list opens
+- **WHEN** the browser renders the Sessions list
+- **THEN** it SHALL show compact permission mode metadata for sessions whose mode is not `manual`
+- **AND** it SHALL preserve the indicator after reload
 

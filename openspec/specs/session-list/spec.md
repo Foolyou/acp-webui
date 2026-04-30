@@ -9,7 +9,12 @@ The system SHALL provide persisted session list projections suitable for workspa
 #### Scenario: Browser loads session list
 - **WHEN** the browser requests the session list for a workspace
 - **THEN** the backend SHALL return persisted sessions for that workspace ordered by most recent activity first
-- **AND** each row SHALL include the session id, workspace id, workspace name, agent name, current status, creation timestamp, last activity timestamp, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
+- **AND** each row SHALL include the session id, workspace id, workspace name, agent name, permission mode, current status, creation timestamp, last activity timestamp, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
+
+#### Scenario: Session has non-manual permission mode
+- **WHEN** a listed session has permission mode `full_auto` or `yolo`
+- **THEN** the session list row SHALL include compact permission mode metadata
+- **AND** the browser SHALL be able to show the mode without loading full session detail
 
 #### Scenario: Session has pending approval
 - **WHEN** a listed session has one or more pending permission requests
@@ -40,7 +45,7 @@ The system SHALL allow the user to navigate from a workspace-scoped session list
 - **AND** it SHALL keep the user in the current workspace context
 
 ### Requirement: Sessions list stays current during realtime updates
-The system SHALL keep the visible Sessions list current as session status, approval state, and review artifact availability change.
+The system SHALL keep the visible Sessions list current as session status, approval state, permission mode metadata, and review artifact availability change.
 
 #### Scenario: Session status changes while Sessions list is visible
 - **WHEN** the browser is showing the Sessions list and receives a session status update
@@ -49,6 +54,11 @@ The system SHALL keep the visible Sessions list current as session status, appro
 #### Scenario: Approval state changes while Sessions list is visible
 - **WHEN** the browser is showing the Sessions list and receives permission requested or permission resolved events
 - **THEN** the browser SHALL update the affected row's pending approval indicator, active approval summary, and queued approval count
+
+#### Scenario: Permission mode metadata is present while Sessions list is visible
+- **WHEN** the browser is showing the Sessions list and receives a session projection containing permission mode metadata
+- **THEN** the browser SHALL preserve and render the affected row's permission mode indicator
+- **AND** it SHALL keep the row's existing status, approval, review, and continuity metadata intact
 
 #### Scenario: Review artifact becomes available while Sessions list is visible
 - **WHEN** the browser is showing the Sessions list and receives a review artifact event

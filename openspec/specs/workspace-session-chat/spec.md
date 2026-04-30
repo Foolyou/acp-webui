@@ -21,14 +21,14 @@ The system SHALL allow the user to create a workspace from a local filesystem pa
 
 ### Requirement: User can create a session in a workspace
 
-The system SHALL allow the user to create an agent-backed session for a workspace with visible creation feedback.
+The system SHALL allow the user to create an agent-backed session for a workspace with visible creation feedback and a persisted permission mode.
 
 #### Scenario: Session is created for an existing workspace
 
-- **WHEN** the user creates a session for an existing workspace and selects an available agent
-- **THEN** the backend SHALL start that agent runtime if it is idle or retryable failed
-- **AND** it SHALL create an ACP session through the selected agent after the runtime is ready
-- **AND** it SHALL persist a local session record linked to the workspace with the selected agent id
+- **WHEN** the user creates a session for an existing workspace and selects an available agent and supported permission mode
+- **THEN** the backend SHALL start that agent runtime for the selected permission mode if it is idle or retryable failed
+- **AND** it SHALL create the ACP session through that runtime after initialization succeeds
+- **AND** it SHALL persist a local session record linked to the workspace with the selected agent id and permission mode
 - **AND** the browser SHALL show an optimistic chat loading state until the new session detail is available
 - **AND** the browser SHALL navigate to or display the new session detail view
 
@@ -37,6 +37,12 @@ The system SHALL allow the user to create an agent-backed session for a workspac
 - **WHEN** the user tries to create a session while the selected agent connection is already starting or the selected agent is disabled
 - **THEN** the backend SHALL reject the request
 - **AND** the browser SHALL show the current connection status for that selected agent
+
+#### Scenario: Session creation requests unsupported permission mode
+
+- **WHEN** the user tries to create a session with a permission mode unsupported by the selected agent
+- **THEN** the backend SHALL reject the request
+- **AND** the browser SHALL show a readable mode-specific validation error
 
 #### Scenario: Session creation takes noticeable time
 
@@ -49,6 +55,12 @@ The system SHALL allow the user to create an agent-backed session for a workspac
 - **WHEN** a compatible client creates a session without sending an agent id
 - **THEN** the backend SHALL use the configured default agent
 - **AND** it SHALL persist that resolved agent id on the session
+
+#### Scenario: Session creation omits permission mode
+
+- **WHEN** a compatible client creates a session without sending a permission mode
+- **THEN** the backend SHALL use `manual`
+- **AND** it SHALL persist `manual` on the session
 
 ### Requirement: User can submit a text prompt
 The system SHALL allow the user to submit a text prompt to an idle continuable session.
