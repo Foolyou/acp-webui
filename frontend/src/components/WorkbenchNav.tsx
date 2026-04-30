@@ -16,6 +16,15 @@ export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
         >
           Inbox <span>{state.inbox.length}</span>
         </Link>
+        <Link
+          activeOptions={{ exact: true }}
+          activeProps={{ className: "active" }}
+          className="nav-link"
+          onClick={onNavigate}
+          to="/agents"
+        >
+          Agents <span>{state.agents.length}</span>
+        </Link>
         {currentWorkspaceId ? (
           <Link
             activeProps={{ className: "active" }}

@@ -5,7 +5,7 @@ import { useAppContext } from "../app/context";
 import { ApprovalSheet } from "../features/approvals/ApprovalSheet";
 import { ReviewOverlay } from "../features/reviews/ReviewOverlay";
 import { BrandBlock } from "./common";
-import { StatusDot, StatusStack } from "./status";
+import { StatusDot } from "./status";
 import { WorkbenchNav } from "./WorkbenchNav";
 
 export function WorkbenchShell() {
@@ -21,7 +21,6 @@ export function WorkbenchShell() {
       <aside className="sidebar" aria-label="Primary">
         <BrandBlock />
         <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
-        <StatusStack agents={state.agents} socketState={state.socketState} />
       </aside>
 
       <section className="workbench">

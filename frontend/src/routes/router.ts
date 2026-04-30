@@ -3,6 +3,7 @@ import type { AppRouterContext } from "../app/types";
 import { initialState } from "../app/types";
 import { WorkbenchShell } from "../components/WorkbenchShell";
 import {
+  AgentsRoute,
   InboxRoute,
   IndexRoute,
   NewSessionRoute,
@@ -49,6 +50,12 @@ const inboxRoute = createRoute({
   component: InboxRoute
 });
 
+const agentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/agents",
+  component: AgentsRoute
+});
+
 const workspacesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workspaces",
@@ -76,6 +83,7 @@ export const sessionDetailRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   inboxRoute,
+  agentsRoute,
   workspacesRoute,
   workspaceSessionsRoute,
   newSessionRoute,

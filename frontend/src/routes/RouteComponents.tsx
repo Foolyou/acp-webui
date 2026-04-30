@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useAppContext } from "../app/context";
 import { LoadingPanel, PageHeader } from "../components/common";
+import { AgentsStatusPane } from "../features/agents/AgentsStatusPane";
 import { CreatingSessionPane } from "../features/sessions/CreatingSessionPane";
 import { InboxPane } from "../features/sessions/InboxPane";
 import { SessionPane } from "../features/sessions/SessionPane";
@@ -33,6 +34,11 @@ export function IndexRoute() {
 export function InboxRoute() {
   const { actions, state } = useAppContext();
   return <InboxPane inbox={state.inbox} onOpen={(sessionId) => actions.loadSession(sessionId)} />;
+}
+
+export function AgentsRoute() {
+  const { state } = useAppContext();
+  return <AgentsStatusPane agents={state.agents} socketState={state.socketState} />;
 }
 
 export function WorkspacesRoute() {

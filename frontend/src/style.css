@@ -312,10 +312,40 @@ pre {
   min-width: 0;
 }
 
+.agent-create-flow {
+  display: grid;
+  gap: 0.7rem;
+}
+
 .agent-create-controls.small {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
 }
 
+.agent-choice {
+  display: grid;
+  gap: 0.12rem;
+  justify-items: start;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.62rem 0.7rem;
+  text-align: left;
+}
+
+.agent-choice span {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.agent-choice.selected,
+.agent-choice.last-profile {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-subtle);
+}
+
+.agent-create-detail,
 .agent-option,
 .agent-option-group {
   display: grid;
@@ -332,6 +362,34 @@ pre {
   gap: 0.4rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+.agent-create-detail {
+  gap: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+.agent-create-detail-head,
+.agent-status-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.agent-create-detail-head > div,
+.agent-status-head > div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.agent-create-detail-head span,
+.agent-status-head span {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
 }
 
 .session-create-panel {
@@ -436,6 +494,11 @@ pre {
   text-align: left;
 }
 
+.permission-mode-option.selected {
+  border-color: var(--color-border-strong);
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .permission-mode-option.permission-mode-yolo,
 .permission-mode-badge.permission-mode-yolo,
 .permission-mode-warning {
@@ -527,6 +590,53 @@ pre {
 
 .nav-group {
   gap: 0.45rem;
+}
+
+.agent-status-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 0.7rem;
+}
+
+.agent-status-card {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 0.8rem;
+}
+
+.agent-status-section {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.status-chip-row,
+.permission-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.status-chip,
+.permission-status {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-subtle);
+  padding: 0.34rem 0.45rem;
+}
+
+.permission-status {
+  display: grid;
+  gap: 0.05rem;
+  min-width: min(100%, 8rem);
+}
+
+.permission-status span {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
 }
 
 .nav-link,

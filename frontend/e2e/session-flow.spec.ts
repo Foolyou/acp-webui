@@ -171,10 +171,14 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Navigation" }));
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
+  await openMenuAndClick(page, /Agents/);
+  await expect(page.getByRole("heading", { name: "Agent status" })).toBeVisible();
+  await expect(page.locator(".agent-status-card", { hasText: "Codex" })).toBeVisible();
+  await openMenuAndClick(page, /Workspaces/);
 
   await page.getByLabel("Workspace path").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(agentCreateButton(page, "Codex")).toBeVisible();
+  await expect(agentChoice(page, "Codex")).toBeVisible();
 
   await startSession(page);
 
@@ -274,7 +278,8 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await ensureWorkspace(page);
 
   await showSessionCreateControls(page);
-  await expect(agentCreateButton(page, "Codex", "YOLO")).toContainText("No approvals / no sandbox");
+  await agentChoice(page, "Codex").click();
+  await expect(agentCreateButton(page, "YOLO")).toContainText("No approvals / no sandbox");
   await startSession(page, "Codex", "YOLO");
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
@@ -288,6 +293,8 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("YOLO");
   await expect(sessionLink).toContainText("No approvals / no sandbox");
+  await showSessionCreateControls(page);
+  await expect(page.getByRole("button", { name: /Last profile.*Codex.*YOLO/i })).toBeVisible();
 });
 
 test("displays, switches, persists, and disables advertised model selector", async ({ page }) => {
@@ -477,10 +484,12 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
   });
 
   await page.goto(`/workspaces/${workspace.id}/sessions`);
-  await expect(agentCreateButton(page, "Claude")).toBeEnabled();
-  await expect(agentCreateGroup(page, "Claude")).toContainText("Claude needs local authentication");
-  await expect(agentCreateButton(page, "Codex")).toBeEnabled();
-  await agentCreateButton(page, "Codex").click();
+  await expect(agentChoice(page, "Claude")).toBeEnabled();
+  await agentChoice(page, "Claude").click();
+  await expect(page.locator(".agent-create-detail")).toContainText("Claude needs local authentication");
+  await expect(agentChoice(page, "Codex")).toBeEnabled();
+  await agentChoice(page, "Codex").click();
+  await page.getByRole("button", { name: "Create session" }).click();
   await expect(page.getByPlaceholder("Ask Codex...")).toBeVisible();
 });
 
@@ -1086,18 +1095,15 @@ async function ensureWorkspace(page: import("@playwright/test").Page) {
   }
   await page.getByLabel("Workspace path").fill(repoRoot);
   await page.getByRole("button", { name: "Add" }).click();
-  await expect(agentCreateButton(page, "Codex")).toBeVisible();
+  await expect(agentChoice(page, "Codex")).toBeVisible();
 }
 
-function agentCreateGroup(page: import("@playwright/test").Page, agentName: string) {
-  return page
-    .locator(".agent-create-controls")
-    .locator(".agent-option-group", { hasText: agentName })
-    .first();
+function agentChoice(page: import("@playwright/test").Page, agentName: string) {
+  return page.locator(".agent-choice", { hasText: agentName }).first();
 }
 
-function agentCreateButton(page: import("@playwright/test").Page, agentName: string, modeName = "Manual") {
-  return agentCreateGroup(page, agentName).getByRole("button", { name: new RegExp(modeName) });
+function agentCreateButton(page: import("@playwright/test").Page, modeName = "Manual") {
+  return page.locator(".agent-create-detail").getByRole("button", { name: new RegExp(modeName) });
 }
 
 async function showSessionCreateControls(page: import("@playwright/test").Page) {
@@ -1115,7 +1121,9 @@ async function showSessionCreateControls(page: import("@playwright/test").Page) 
 
 async function startSession(page: import("@playwright/test").Page, agentName = "Codex", modeName = "Manual") {
   await showSessionCreateControls(page);
-  await agentCreateButton(page, agentName, modeName).click();
+  await agentChoice(page, agentName).click();
+  await agentCreateButton(page, modeName).click();
+  await page.getByRole("button", { name: "Create session" }).click();
   await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
 }
 
