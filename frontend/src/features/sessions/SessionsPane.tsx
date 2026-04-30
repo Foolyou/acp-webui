@@ -212,21 +212,27 @@ function AgentCreateDetail({
           ))}
         </div>
       ) : null}
-      <div className="permission-mode-options" role="group" aria-label={`${agent.title} permission modes`}>
-        {modes.map((mode) => (
-          <Button
-            className={`permission-mode-option ${mode.status.state} ${permissionModeClass(mode.id)} ${
-              selectedMode?.id === mode.id ? "selected" : ""
-            }`}
-            isDisabled={!canLaunch(agent, mode)}
-            key={mode.id}
-            onPress={() => onSelectMode(mode.id)}
-          >
-            <strong>{mode.label}</strong>
-            <span>{mode.description}</span>
-          </Button>
-        ))}
-      </div>
+      <label className="permission-mode-select-field">
+        <span>Permission mode</span>
+        <select
+          disabled={!agent.enabled || !modes.some((mode) => canLaunch(agent, mode))}
+          onChange={(event) => onSelectMode(event.target.value as PermissionModeId)}
+          value={selectedMode?.id ?? ""}
+        >
+          {modes.map((mode) => (
+            <option disabled={!canLaunch(agent, mode)} key={mode.id} value={mode.id}>
+              {mode.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedMode ? (
+        <div className={`permission-mode-summary ${selectedMode.status.state} ${permissionModeClass(selectedMode.id)}`}>
+          <strong>{selectedMode.label}</strong>
+          <span>{selectedMode.description}</span>
+          <small>{selectedMode.status.message ?? selectedMode.status.state}</small>
+        </div>
+      ) : null}
       <Button className="primary" isDisabled={!selectedMode || !selectedLaunchable} onPress={() => selectedMode && onConfirm(selectedMode.id)}>
         Create session
       </Button>

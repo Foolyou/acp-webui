@@ -455,6 +455,43 @@ pre {
   gap: 0.35rem;
 }
 
+.permission-mode-select-field {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.permission-mode-select-field span {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.permission-mode-select-field select {
+  min-height: 2.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.35rem 0.5rem;
+  font-weight: 750;
+}
+
+.permission-mode-summary {
+  display: grid;
+  gap: 0.08rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 0.48rem 0.56rem;
+}
+
+.permission-mode-summary span,
+.permission-mode-summary small {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
 .launch-control-options {
   display: flex;
   flex-wrap: wrap;

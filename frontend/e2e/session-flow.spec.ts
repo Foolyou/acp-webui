@@ -279,7 +279,8 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
 
   await showSessionCreateControls(page);
   await agentChoice(page, "Codex").click();
-  await expect(agentCreateButton(page, "YOLO")).toContainText("No approvals / no sandbox");
+  await permissionModeSelect(page).selectOption({ label: "YOLO" });
+  await expect(page.locator(".permission-mode-summary")).toContainText("No approvals / no sandbox");
   await startSession(page, "Codex", "YOLO");
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
@@ -1102,8 +1103,8 @@ function agentChoice(page: import("@playwright/test").Page, agentName: string) {
   return page.locator(".agent-choice", { hasText: agentName }).first();
 }
 
-function agentCreateButton(page: import("@playwright/test").Page, modeName = "Manual") {
-  return page.locator(".agent-create-detail").getByRole("button", { name: new RegExp(modeName) });
+function permissionModeSelect(page: import("@playwright/test").Page) {
+  return page.locator(".agent-create-detail").getByLabel("Permission mode");
 }
 
 async function showSessionCreateControls(page: import("@playwright/test").Page) {
@@ -1122,7 +1123,7 @@ async function showSessionCreateControls(page: import("@playwright/test").Page) 
 async function startSession(page: import("@playwright/test").Page, agentName = "Codex", modeName = "Manual") {
   await showSessionCreateControls(page);
   await agentChoice(page, agentName).click();
-  await agentCreateButton(page, modeName).click();
+  await permissionModeSelect(page).selectOption({ label: modeName });
   await page.getByRole("button", { name: "Create session" }).click();
   await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
 }
