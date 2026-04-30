@@ -280,7 +280,7 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await showSessionCreateControls(page);
   await agentChoice(page, "Codex").click();
   await permissionModeSelect(page).selectOption({ label: "YOLO" });
-  await expect(page.locator(".permission-mode-summary")).toContainText("No approvals / no sandbox");
+  await expect(permissionModeSelect(page)).toHaveValue("yolo");
   await startSession(page, "Codex", "YOLO");
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();

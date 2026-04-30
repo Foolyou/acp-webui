@@ -226,13 +226,6 @@ function AgentCreateDetail({
           ))}
         </select>
       </label>
-      {selectedMode ? (
-        <div className={`permission-mode-summary ${selectedMode.status.state} ${permissionModeClass(selectedMode.id)}`}>
-          <strong>{selectedMode.label}</strong>
-          <span>{selectedMode.description}</span>
-          <small>{selectedMode.status.message ?? selectedMode.status.state}</small>
-        </div>
-      ) : null}
       <Button className="primary" isDisabled={!selectedMode || !selectedLaunchable} onPress={() => selectedMode && onConfirm(selectedMode.id)}>
         Create session
       </Button>

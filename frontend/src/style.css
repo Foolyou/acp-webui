@@ -477,21 +477,6 @@ pre {
   font-weight: 750;
 }
 
-.permission-mode-summary {
-  display: grid;
-  gap: 0.08rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  padding: 0.48rem 0.56rem;
-}
-
-.permission-mode-summary span,
-.permission-mode-summary small {
-  color: var(--color-text-muted);
-  font-size: 0.76rem;
-}
-
 .launch-control-options {
   display: flex;
   flex-wrap: wrap;
