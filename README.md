@@ -134,7 +134,7 @@ To trust a specific device or network range, pass explicit trusted clients. Pref
 ```bash
 cargo run -- \
   --bind-host 0.0.0.0 \
-  --trusted-client 100.64.12.34/32
+  --trusted-client <trusted-client-cidr>
 ```
 
 `X-Forwarded-For` and `Forwarded` headers are ignored for trusted-client checks in this version. Do not bind to a broad network interface without either pairing token access or explicit trusted clients.
@@ -148,6 +148,22 @@ cargo run -- \
 ```
 
 The backend serves API endpoints under `/api/*`. Development builds serve the production frontend from `frontend/dist` when it exists. During frontend development, use the Vite dev server and point it at the backend API.
+
+To run both development servers on your local Tailscale IPv4 address with Vite hot reload:
+
+```powershell
+.\scripts\run-tailscale-dev.ps1
+```
+
+The script restarts any listeners on the configured dev ports, then starts the backend on `http://<tailscale-ip>:7635` and the Vite frontend on `http://<tailscale-ip>:5777`. Vite proxies `/api` and `/api/ws` to the backend through `ACP_WEBUI_BACKEND_URL`.
+
+Useful variants:
+
+```powershell
+.\scripts\run-tailscale-dev.ps1 -TrustedClients <trusted-client-cidr>
+.\scripts\run-tailscale-dev.ps1 -PairingToken your-local-token
+.\scripts\run-tailscale-dev.ps1 -InstallFrontendDeps
+```
 
 ## Single-Binary Release Build
 
@@ -182,7 +198,7 @@ Useful variants:
 
 ```powershell
 .\scripts\run-tailscale.ps1 -SkipBuild
-.\scripts\run-tailscale.ps1 -TrustedClients 100.64.12.34/32
+.\scripts\run-tailscale.ps1 -TrustedClients <trusted-client-cidr>
 .\scripts\run-tailscale.ps1 -StopExisting
 ```
 
