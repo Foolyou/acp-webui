@@ -1,13 +1,13 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "react-aria-components";
 import { api } from "../../api";
 import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
+import { buildTimelineBlocks, type TimelineDisplayBlock, type TimelineToolGroupEntry } from "../../app/timelineBlocks";
 import { MarkdownContent } from "../../components/MarkdownContent";
-import type { AgentRuntimeStatus, ChatMessage, PermissionModeId, ReviewArtifactSummary, SessionDetail, SkillSummary, TimelineItem } from "../../types";
-import { toolCallDisplay } from "../../utils/toolDisplay";
+import type { AgentRuntimeStatus, ChatMessage, PermissionModeId, ReviewArtifactSummary, SessionDetail, SkillSummary } from "../../types";
 import {
   fallbackPermissionModes,
   connectionStatusForMode,
@@ -70,6 +70,10 @@ export function SessionPane({
   const [isAtBottomState, setIsAtBottomState] = useState({ sessionId: currentSession.session.id, value: true });
   const autoFollow = autoFollowState.sessionId === currentSession.session.id ? autoFollowState.value : true;
   const isAtBottom = isAtBottomState.sessionId === currentSession.session.id ? isAtBottomState.value : true;
+  const timelineBlocks = useMemo(
+    () => buildTimelineBlocks(currentSession.timeline, currentSession.reviewArtifacts),
+    [currentSession.reviewArtifacts, currentSession.timeline]
+  );
 
   const setAutoFollow = useCallback(
     (value: boolean) => {
@@ -296,11 +300,10 @@ export function SessionPane({
             {queuedApprovalCount > 0 ? ` (${queuedApprovalCount} queued)` : ""}
           </div>
         ) : null}
-        {currentSession.timeline.map((item) => (
-          <TimelineRow
-            item={item}
-            key={`${item.kind}-${item.id}`}
-            reviewArtifacts={currentSession.reviewArtifacts}
+        {timelineBlocks.map((block) => (
+          <TimelineBlockRow
+            block={block}
+            key={`${block.kind}-${block.id}`}
             onOpenReviewArtifact={onOpenReviewArtifact}
           />
         ))}
@@ -479,57 +482,96 @@ function ModelSelector({
   );
 }
 
-function TimelineRow({
-  item,
-  reviewArtifacts,
+function TimelineBlockRow({
+  block,
   onOpenReviewArtifact
 }: {
-  item: TimelineItem;
-  reviewArtifacts: ReviewArtifactSummary[];
+  block: TimelineDisplayBlock;
   onOpenReviewArtifact: (artifactId: string) => void;
 }) {
-  switch (item.kind) {
+  switch (block.kind) {
     case "message":
-      return <MessageBubble message={timelineMessage(item)} />;
-    case "tool_call":
-      return <ToolCallRow item={item} reviewArtifacts={reviewArtifacts} onOpenReviewArtifact={onOpenReviewArtifact} />;
+      return <MessageBubble message={timelineMessage(block.item)} />;
+    case "tool_group":
+      return <ToolGroupRow block={block} onOpenReviewArtifact={onOpenReviewArtifact} />;
     case "review_artifact":
       return (
         <ReviewArtifactCard
           artifact={{
-            id: item.id,
-            sessionId: item.sessionId,
-            toolCallId: item.toolCallId,
-            kind: item.artifactKind,
-            title: item.title,
-            summary: item.summary,
-            source: item.source,
-            createdAt: item.timestamp
+            id: block.item.id,
+            sessionId: block.item.sessionId,
+            toolCallId: block.item.toolCallId,
+            kind: block.item.artifactKind,
+            title: block.item.title,
+            summary: block.item.summary,
+            source: block.item.source,
+            createdAt: block.item.timestamp
           }}
           onOpen={onOpenReviewArtifact}
         />
       );
     case "permission":
       return (
-        <div className="timeline-event">
-          <span>{item.status}</span>
-          <strong>{item.title}</strong>
+        <div className="timeline-event permission-event">
+          <span>{block.item.status}</span>
+          <strong>{block.item.title}</strong>
         </div>
       );
   }
 }
 
-function ToolCallRow({
-  item,
-  reviewArtifacts,
+function ToolGroupRow({
+  block,
   onOpenReviewArtifact
 }: {
-  item: Extract<TimelineItem, { kind: "tool_call" }>;
-  reviewArtifacts: ReviewArtifactSummary[];
+  block: Extract<TimelineDisplayBlock, { kind: "tool_group" }>;
+  onOpenReviewArtifact: (artifactId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isMulti = block.entries.length > 1;
+  const className = ["tool-row", "tool-group-row", ...block.classNames, block.status, isMulti ? "multi" : "single"].join(
+    " "
+  );
+
+  return (
+    <article className={className}>
+      <div className="tool-row-main tool-group-main">
+        <span className="tool-activity-dot" aria-hidden="true" />
+        <strong className="tool-group-summary">{block.summary}</strong>
+        {block.statusLabel ? <span className={`tool-status ${block.status}`}>{block.statusLabel}</span> : null}
+        <Button
+          aria-expanded={expanded}
+          className="secondary small tool-group-toggle"
+          type="button"
+          onPress={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Hide" : "Details"}
+        </Button>
+      </div>
+      {expanded ? (
+        <div className="tool-group-items">
+          {block.entries.map((entry) => (
+            <ToolGroupItem
+              entry={entry}
+              key={entry.item.id}
+              onOpenReviewArtifact={onOpenReviewArtifact}
+            />
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function ToolGroupItem({
+  entry,
+  onOpenReviewArtifact
+}: {
+  entry: TimelineToolGroupEntry;
   onOpenReviewArtifact: (artifactId: string) => void;
 }) {
   const [outputExpanded, setOutputExpanded] = useState(false);
-  const display = toolCallDisplay(item, reviewArtifacts);
+  const { display, item } = entry;
   const showOutputTail = Boolean(display.outputTail) && (outputExpanded || item.status === "failed");
   const artifactActions = display.evidenceActions.filter(
     (action) => action.kind !== "diagnostics" && action.kind !== "output"
@@ -537,25 +579,12 @@ function ToolCallRow({
   const hasOutputAction = display.evidenceActions.some((action) => action.kind === "output");
 
   return (
-    <article className={`tool-row ${display.kind} ${item.status}`}>
-      <div className="tool-row-main">
+    <div className={`tool-item ${display.kind} ${item.status}`}>
+      <div className="tool-item-main">
         <span className="tool-action">{display.actionLabel}</span>
-        <span className="tool-heading">
-          <strong>{display.subject}</strong>
-          <span>{display.result}</span>
-        </span>
+        <strong>{display.subject}</strong>
         <span className={`tool-status ${display.status}`}>{display.statusLabel}</span>
       </div>
-      {display.metadata.length ? (
-        <dl className="tool-details">
-          {display.metadata.map((detail) => (
-            <div key={`${detail.label}-${detail.value}`}>
-              <dt>{detail.label}</dt>
-              <dd>{detail.value}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
       {showOutputTail && display.outputTail ? <pre className="tool-output">{display.outputTail}</pre> : null}
       <div className="tool-links">
         {hasOutputAction ? (
@@ -579,7 +608,7 @@ function ToolCallRow({
           </pre>
         </details>
       </div>
-    </article>
+    </div>
   );
 }
 

@@ -253,6 +253,7 @@ test("re-enables prompt composer after a completed turn", async ({ page }) => {
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
+  await expandSessionInfo(page);
   await expect(page.locator(".session-toolbar")).toContainText("idle");
   await expect(prompt).toBeEnabled();
 
@@ -316,6 +317,7 @@ test("displays, switches, persists, and disables advertised model selector", asy
   await ensureWorkspace(page);
 
   await startSession(page, "Codex", "Full auto");
+  await expandSessionInfo(page);
   const modelSelect = page.getByLabel("Model");
   await expect(modelSelect).toBeVisible();
   await expect(page.locator(".composer-wrap").getByLabel("Model")).toHaveCount(0);
@@ -329,12 +331,14 @@ test("displays, switches, persists, and disables advertised model selector", asy
   const ids = sessionRouteIds(page);
   await page.reload();
   await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await expandSessionInfo(page);
   await expect(page.getByLabel("Model")).toHaveValue("pro");
 
   await returnToWorkspaceSessions(page);
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("Model: Pro model");
   await sessionLink.click();
+  await expandSessionInfo(page);
 
   const runningSelect = page.getByLabel("Model");
   await page.getByPlaceholder("Ask Codex...").fill("Create scroll stream while following.");
@@ -905,34 +909,39 @@ test("renders compact mobile tool activity rows with evidence and diagnostics", 
   });
 
   await page.goto(`/workspaces/${workspace.id}/sessions/${session.id}`);
-  await expect(page.locator(".tool-row")).toHaveCount(6);
-  await expect(page.locator(".tool-row.command").first()).toContainText("Ran");
-  await expect(page.locator(".tool-row.command").first()).toContainText("--long-flag-with-a-value");
-  await expect(page.locator(".tool-row.failed")).toContainText("failed");
-  await expect(page.locator(".tool-row.failed .tool-output")).toContainText("failure line 7");
-  await expect(page.locator(".tool-row.mcp")).toContainText("github / fetch_pr");
-  await expect(page.locator(".tool-row.generic")).toContainText("Do custom work");
+  const toolGroup = page.locator(".tool-group-row");
+  await expect(toolGroup).toHaveCount(1);
+  await expect(toolGroup).toContainText("Ran 2 commands, changed 1 file, read 1 file, used 2 tools");
+  await expect(toolGroup).toContainText("1 failed");
   await expectPageFitsViewport(page);
 
-  await page.locator(".tool-row.command").first().getByRole("button", { name: "Output" }).click();
-  await expect(page.locator(".tool-row.command").first().locator(".tool-output")).toContainText("build line 3");
-  await page.locator(".tool-row.command").first().getByText("Diagnostics").click();
-  await expect(page.locator(".tool-row.command").first().locator(".review-pre")).toContainText(longCommand);
+  await toolGroup.getByRole("button", { name: "Details" }).click();
+  await expect(page.locator(".tool-item")).toHaveCount(6);
+  await expect(page.locator(".tool-item.command").first()).toContainText("--long-flag-with-a-value");
+  await expect(page.locator(".tool-item.failed")).toContainText("failed");
+  await expect(page.locator(".tool-item.failed .tool-output")).toContainText("failure line 7");
+  await expect(page.locator(".tool-item.mcp")).toContainText("github / fetch_pr");
+  await expect(page.locator(".tool-item.generic")).toContainText("Do custom work");
 
-  await page.locator(".tool-row.file_change").getByRole("button", { name: "Diff" }).click();
+  await page.locator(".tool-item.command").first().getByRole("button", { name: "Output" }).click();
+  await expect(page.locator(".tool-item.command").first().locator(".tool-output")).toContainText("build line 3");
+  await page.locator(".tool-item.command").first().getByText("Diagnostics").click();
+  await expect(page.locator(".tool-item.command").first().locator(".review-pre")).toContainText(longCommand);
+
+  await page.locator(".tool-item.file_change").getByRole("button", { name: "Diff" }).click();
   const diffDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(diffDialog.getByRole("heading", { name: "Workspace diff evidence" })).toBeVisible();
   await expect(diffDialog.locator(".review-pre.diff")).toContainText("SessionPane.tsx");
   await page.getByRole("button", { name: "Close" }).click();
   await expect(diffDialog).toBeHidden();
 
-  await page.locator(".tool-row.file_read", { hasText: "doc/report.md" }).getByRole("button", { name: "Markdown" }).click();
+  await page.locator(".tool-item.file_read", { hasText: "doc/report.md" }).getByRole("button", { name: "Markdown" }).click();
   const markdownDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(markdownDialog.getByRole("heading", { name: "Markdown evidence" })).toBeVisible();
   await expect(markdownDialog.locator(".markdown-preview h1", { hasText: "Tool Activity" })).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
 
-  await expect(page.locator(".review-card", { hasText: "Workspace diff evidence" })).toBeVisible();
+  await expect(page.locator(".review-card", { hasText: "Workspace diff evidence" })).toHaveCount(0);
 });
 
 test("restores a persisted session after backend restart and sends a follow-up prompt", async ({ page }) => {
@@ -1035,8 +1044,8 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.locator(".tool-row", { hasText: "Render Markdown evidence" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Render Markdown evidence/ })).toBeVisible();
-  await page.getByRole("button", { name: /Render Markdown evidence/ }).click();
+  await page.locator(".tool-row", { hasText: "Render Markdown evidence" }).getByRole("button", { name: "Details" }).click();
+  await page.locator(".tool-row", { hasText: "Render Markdown evidence" }).getByRole("button", { name: "Markdown" }).click();
 
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(reviewDialog.getByRole("heading", { name: "Render Markdown evidence" })).toBeVisible();
@@ -1225,20 +1234,22 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.getByPlaceholder("Ask Codex...").fill("Trigger review artifact.");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
   await expect(page.locator(".tool-row")).toHaveCount(1);
   await expect(page.locator(".tool-row-main")).toContainText("Ran");
   await expect(page.locator(".tool-row-main")).toContainText("git diff -- README.md");
+  await page.locator(".tool-row").getByRole("button", { name: "Details" }).click();
+  await expect(page.locator(".tool-row").getByRole("button", { name: "Terminal" })).toBeVisible();
   const ids = sessionRouteIds(page);
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
-  await returnToWorkspaceSessions(page);
+  await page.goto(`/workspaces/${ids.workspaceId}/sessions`);
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
   const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
   await expect(sessionLink).toContainText("1 review items");
   await sessionLink.click();
-  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toBeVisible();
-  await page.getByRole("button", { name: /Inspect review evidence/ }).click();
+  await page.locator(".tool-row").getByRole("button", { name: "Details" }).click();
+  await page.locator(".tool-row").getByRole("button", { name: "Terminal" }).click();
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(reviewDialog.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
   await expectOverlayPrimaryControlsReachable(reviewDialog);
@@ -1246,7 +1257,8 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.reload();
-  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toHaveCount(1);
+  await expect(page.locator(".tool-row", { hasText: "git diff -- README.md" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toHaveCount(0);
 });
 
 async function mockConnectedWebSocket(page: import("@playwright/test").Page) {
@@ -1400,8 +1412,20 @@ async function openMenuAndClick(page: import("@playwright/test").Page, name: Reg
 
 async function returnToWorkspaceSessions(page: import("@playwright/test").Page) {
   const { workspaceId } = sessionRouteIds(page);
-  await page.getByRole("link", { name: "Back to sessions" }).click();
+  const legacyBackLink = page.getByRole("link", { name: "Back to sessions" });
+  if ((await legacyBackLink.count()) > 0) {
+    await legacyBackLink.click();
+  } else {
+    await page.getByRole("link", { name: "Sessions" }).click();
+  }
   await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/sessions$`));
+}
+
+async function expandSessionInfo(page: import("@playwright/test").Page) {
+  const toggle = page.getByRole("button", { name: "Show session info" });
+  if ((await toggle.count()) > 0) {
+    await toggle.click();
+  }
 }
 
 async function expectPrimaryNavigationWithoutSessions(page: import("@playwright/test").Page) {
@@ -1456,6 +1480,7 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
 async function expectRedesignedSessionLayout(page: import("@playwright/test").Page, viewport: "desktop" | "mobile") {
   await expectPageFitsViewport(page);
   await expect(page.locator(".session-toolbar")).toBeVisible();
+  await expandSessionInfo(page);
   await expect(page.locator(".session-toolbar").getByLabel("Model")).toBeVisible();
   await expect(page.locator(".composer-wrap").getByLabel("Model")).toHaveCount(0);
 
