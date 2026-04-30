@@ -168,6 +168,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await page.getByRole("button", { name: "Menu" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
+  await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Navigation" }));
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
 
@@ -272,6 +273,7 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
+  await showSessionCreateControls(page);
   await expect(agentCreateButton(page, "Codex", "YOLO")).toContainText("No approvals / no sandbox");
   await startSession(page, "Codex", "YOLO");
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
@@ -297,8 +299,8 @@ test("displays, switches, persists, and disables advertised model selector", asy
   await startSession(page, "Codex", "Full auto");
   const modelSelect = page.getByLabel("Model");
   await expect(modelSelect).toBeVisible();
-  await expect(page.locator(".composer-wrap").getByLabel("Model")).toBeVisible();
-  await expect(page.locator(".session-toolbar").getByLabel("Model")).toHaveCount(0);
+  await expect(page.locator(".composer-wrap").getByLabel("Model")).toHaveCount(0);
+  await expect(page.locator(".session-toolbar").getByLabel("Model")).toBeVisible();
   await expect(modelSelect).toHaveValue(/fast|pro/);
 
   await modelSelect.selectOption("pro");
@@ -516,6 +518,20 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
   const detail: SessionDetail = {
     session,
     workspace,
+    configOptions: [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "fast",
+        options: [
+          { value: "fast", name: "Fast model", description: "Lower latency" },
+          { value: "pro", name: "Pro model", description: "Higher capability" }
+        ]
+      }
+    ],
+    currentModel: { configId: "model", value: "fast", name: "Fast model" },
     messages: [],
     reviewArtifacts: [],
     timeline: buildLongTimeline(session.id),
@@ -565,6 +581,9 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
   await expect(page.getByText("Long timeline message 180")).toBeVisible();
   await expect(page.locator("details.tool-row").first()).toBeVisible();
   await expect(page.locator(".review-card").first()).toBeVisible();
+  await expectRedesignedSessionLayout(page, "mobile");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expectRedesignedSessionLayout(page, "desktop");
 
   const timelineState = await page.locator(".timeline").evaluate((element) => {
     const style = getComputedStyle(element);
@@ -746,6 +765,7 @@ test("renders markdown messages and markdown review artifacts", async ({ page })
 
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(reviewDialog.getByRole("heading", { name: "Render Markdown evidence" })).toBeVisible();
+  await expectOverlayPrimaryControlsReachable(reviewDialog);
   await expect(reviewDialog.locator(".markdown-preview h1", { hasText: "Markdown Evidence" })).toBeVisible();
   await expect(reviewDialog.locator(".markdown-preview li", { hasText: "artifact list item" })).toBeVisible();
   await expect(reviewDialog.locator(".markdown-preview code", { hasText: "const artifact = true;" })).toBeVisible();
@@ -862,6 +882,7 @@ test("approves a pending permission request and allows always options", async ({
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
+  await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Approval request" }));
   await expect(page.getByRole("button", { name: /Allow always/ })).toBeEnabled();
   await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
 
@@ -892,7 +913,7 @@ test("opens home to the workspace sessions list instead of the last session", as
   await page.goto("/");
 
   await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
-  await expect(agentCreateButton(page, "Codex")).toBeVisible();
+  await expect(page.getByRole("button", { name: "New session" })).toBeVisible();
   await expect(page.getByPlaceholder("Ask Codex...")).toHaveCount(0);
 });
 
@@ -945,6 +966,7 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.getByRole("button", { name: /Inspect review evidence/ }).click();
   const reviewDialog = page.getByRole("dialog", { name: "Review artifact" });
   await expect(reviewDialog.getByRole("heading", { name: "Inspect review evidence" })).toBeVisible();
+  await expectOverlayPrimaryControlsReachable(reviewDialog);
   await expect(reviewDialog.locator(".muted")).toContainText("git diff -- README.md");
   await page.getByRole("button", { name: "Close" }).click();
 
@@ -1078,7 +1100,21 @@ function agentCreateButton(page: import("@playwright/test").Page, agentName: str
   return agentCreateGroup(page, agentName).getByRole("button", { name: new RegExp(modeName) });
 }
 
+async function showSessionCreateControls(page: import("@playwright/test").Page) {
+  const controls = page.locator(".agent-create-controls");
+  if ((await controls.count()) > 0 && (await controls.first().isVisible())) {
+    return;
+  }
+
+  const newSession = page.getByRole("button", { name: "New session" });
+  if ((await newSession.count()) > 0 && (await newSession.first().isVisible())) {
+    await newSession.first().click();
+  }
+  await expect(controls.first()).toBeVisible();
+}
+
 async function startSession(page: import("@playwright/test").Page, agentName = "Codex", modeName = "Manual") {
+  await showSessionCreateControls(page);
   await agentCreateButton(page, agentName, modeName).click();
   await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
 }
@@ -1099,6 +1135,66 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
       })
     )
     .toBeLessThanOrEqual(1);
+}
+
+async function expectRedesignedSessionLayout(page: import("@playwright/test").Page, viewport: "desktop" | "mobile") {
+  await expectPageFitsViewport(page);
+  await expect(page.locator(".session-toolbar")).toBeVisible();
+  await expect(page.locator(".session-toolbar").getByLabel("Model")).toBeVisible();
+  await expect(page.locator(".composer-wrap").getByLabel("Model")).toHaveCount(0);
+
+  const metrics = await page.evaluate(() => {
+    const rect = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const bounds = element.getBoundingClientRect();
+      return { height: bounds.height, top: bounds.top, bottom: bounds.bottom };
+    };
+    const toolbar = rect(".session-toolbar");
+    const composer = rect(".composer-wrap");
+    const timeline = rect(".timeline");
+    const topbar = rect(".mobile-topbar");
+    return {
+      composer,
+      timeline,
+      toolbar,
+      topbar,
+      viewportHeight: window.innerHeight
+    };
+  });
+
+  expect(metrics.composer).not.toBeNull();
+  expect(metrics.timeline).not.toBeNull();
+  expect(metrics.toolbar).not.toBeNull();
+  expect(metrics.composer!.height).toBeLessThanOrEqual(viewport === "desktop" ? 130 : 170);
+  expect(metrics.timeline!.height).toBeGreaterThan(0);
+  expect(metrics.toolbar!.bottom).toBeLessThan(metrics.composer!.top);
+  if (viewport === "mobile") {
+    expect(metrics.topbar).not.toBeNull();
+    expect(metrics.topbar!.bottom).toBeLessThanOrEqual(metrics.toolbar!.top + 1);
+  }
+}
+
+async function expectOverlayPrimaryControlsReachable(dialog: import("@playwright/test").Locator) {
+  await expect(dialog).toBeVisible();
+  const metrics = await dialog.evaluate((node) => {
+    const bounds = (node as HTMLElement).getBoundingClientRect();
+    const buttons = Array.from(node.querySelectorAll<HTMLElement>("button"));
+    const visibleButtons = buttons.filter((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight;
+    });
+    return {
+      bottom: bounds.bottom,
+      top: bounds.top,
+      viewportHeight: window.innerHeight,
+      visibleButtonCount: visibleButtons.length
+    };
+  });
+
+  expect(metrics.top).toBeGreaterThanOrEqual(0);
+  expect(metrics.bottom).toBeLessThanOrEqual(metrics.viewportHeight + 1);
+  expect(metrics.visibleButtonCount).toBeGreaterThan(0);
 }
 
 async function expectAssistantQuoteFitsViewport(page: import("@playwright/test").Page) {

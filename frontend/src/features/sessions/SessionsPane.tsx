@@ -24,20 +24,30 @@ export function SessionsPane({
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const showCreate = sessions.length === 0 || createOpen;
+
   return (
     <section className="page-surface">
       <div className="section-head">
         <PageHeader eyebrow="Sessions" title={workspace?.name ?? "Sessions"} />
         <div className="section-actions">
-          <span className="muted">{loading ? "Loading" : sessions.length}</span>
-          {sessions.length > 0 ? <AgentCreateControls agents={agents} onCreate={onCreate} size="small" /> : null}
+          <span className="badge">{loading ? "Loading" : `${sessions.length} sessions`}</span>
+          {sessions.length > 0 ? (
+            <Button className="primary small" onPress={() => setCreateOpen((open) => !open)}>
+              New session
+            </Button>
+          ) : null}
         </div>
       </div>
-      {sessions.length === 0 ? (
-        <div className="empty-panel">
-          <p className="empty">No sessions yet.</p>
-          <AgentCreateControls agents={agents} onCreate={onCreate} />
+      {showCreate ? (
+        <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
+          {sessions.length === 0 ? <p className="empty">No sessions yet.</p> : null}
+          <AgentCreateControls agents={agents} onCreate={onCreate} size={sessions.length > 0 ? "small" : undefined} />
         </div>
+      ) : null}
+      {sessions.length === 0 ? (
+        null
       ) : (
         <div className="item-list">
           {sessions.map((item) => (

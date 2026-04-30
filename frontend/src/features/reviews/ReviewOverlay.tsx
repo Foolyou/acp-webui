@@ -20,7 +20,13 @@ export function ReviewOverlay({ artifact, onClose }: { artifact: ReviewArtifact 
                 </Button>
               </div>
               <div className="modal-body">
-                <p className="muted">{artifact.summary}</p>
+                <div className="review-summary">
+                  <p className="muted">{artifact.summary}</p>
+                  <div className="review-nav">
+                    <span>{artifact.source}</span>
+                    {artifact.toolCallId ? <span>{artifact.toolCallId}</span> : null}
+                  </div>
+                </div>
                 <ReviewPayload artifact={artifact} />
               </div>
             </>

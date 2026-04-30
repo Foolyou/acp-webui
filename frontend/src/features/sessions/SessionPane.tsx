@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "react-aria-components";
 import { api } from "../../api";
 import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { PageHeader } from "../../components/common";
-import type { AgentRuntimeStatus, ChatMessage, ReviewArtifactSummary, SessionDetail, SkillSummary, TimelineItem } from "../../types";
+import type { AgentRuntimeStatus, ChatMessage, PermissionModeId, ReviewArtifactSummary, SessionDetail, SkillSummary, TimelineItem } from "../../types";
 import { toolCallDisplay } from "../../utils/toolDisplay";
 import {
   fallbackPermissionModes,
@@ -268,22 +268,18 @@ export function SessionPane({
 
   return (
     <section className="session-layout">
-      <div className="session-toolbar">
-        <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
-        <div className="section-actions">
-          <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
-            Diff
-          </Button>
-          <span className={`badge ${agentConnection?.state ?? "ready"}`}>{agentName}</span>
-          <span
-            className={`permission-mode-badge ${permissionModeClass(permissionMode)}`}
-            title={permissionModeDescription(permissionMode, permissionModes)}
-          >
-            {permissionModeLabel(permissionMode, permissionModes)}
-          </span>
-          <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
-        </div>
-      </div>
+      <SessionContextHeader
+        agentConnectionState={agentConnection?.state ?? "ready"}
+        agentName={agentName}
+        busy={busy}
+        currentSession={currentSession}
+        modelDisabledReason={modelDisabledReason}
+        onOpenDiffFallback={onOpenDiffFallback}
+        onSetSessionConfigOption={onSetSessionConfigOption}
+        permissionMode={permissionMode}
+        permissionModes={permissionModes}
+        sessionSelectOptions={sessionSelectOptions}
+      />
       <div className={`timeline ${autoFollow ? "auto-following" : ""}`} id="timeline" ref={timelineRef}>
         {isYoloSession(currentSession.session) ? (
           <div className="notice warning">YOLO mode: approvals and sandboxing are bypassed.</div>
@@ -334,24 +330,67 @@ export function SessionPane({
         restoreRequired={continuity.restorable || continuity.restoring}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
-        controls={
-          sessionSelectOptions.length ? (
-            <>
-              {sessionSelectOptions.map((option) => (
-                <ModelSelector
-                  busy={busy}
-                  disabledReason={modelDisabledReason}
-                  key={option.id}
-                  option={option}
-                  values={selectValues(option)}
-                  onSetSessionConfigOption={onSetSessionConfigOption}
-                />
-              ))}
-            </>
-          ) : null
-        }
       />
     </section>
+  );
+}
+
+function SessionContextHeader({
+  agentConnectionState,
+  agentName,
+  busy,
+  currentSession,
+  modelDisabledReason,
+  onOpenDiffFallback,
+  onSetSessionConfigOption,
+  permissionMode,
+  permissionModes,
+  sessionSelectOptions
+}: {
+  agentConnectionState: string;
+  agentName: string;
+  busy: boolean;
+  currentSession: SessionDetail;
+  modelDisabledReason: string | null;
+  onOpenDiffFallback: () => void;
+  onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
+  permissionMode: PermissionModeId;
+  permissionModes: ReturnType<typeof fallbackPermissionModes>;
+  sessionSelectOptions: NonNullable<SessionDetail["configOptions"]>;
+}) {
+  return (
+    <div className="session-toolbar">
+      <PageHeader eyebrow={currentSession.workspace.name} title={`${agentName} Session`} />
+      <div className="session-context-controls">
+        {sessionSelectOptions.length ? (
+          <div className="session-config-controls">
+            {sessionSelectOptions.map((option) => (
+              <ModelSelector
+                busy={busy}
+                disabledReason={modelDisabledReason}
+                key={option.id}
+                option={option}
+                values={selectValues(option)}
+                onSetSessionConfigOption={onSetSessionConfigOption}
+              />
+            ))}
+          </div>
+        ) : null}
+        <div className="section-actions">
+          <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
+            Diff
+          </Button>
+          <span className={`badge ${agentConnectionState}`}>{agentName}</span>
+          <span
+            className={`permission-mode-badge ${permissionModeClass(permissionMode)}`}
+            title={permissionModeDescription(permissionMode, permissionModes)}
+          >
+            {permissionModeLabel(permissionMode, permissionModes)}
+          </span>
+          <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -502,7 +541,6 @@ function PromptComposer({
   restoreButtonLabel,
   restoreDisabled,
   continuityReason,
-  controls,
   restoreRequired,
   waitingApproval
 }: {
@@ -516,7 +554,6 @@ function PromptComposer({
   restoreButtonLabel: string | null;
   restoreDisabled: boolean;
   continuityReason?: string | null;
-  controls?: ReactNode;
   restoreRequired: boolean;
   waitingApproval: boolean;
 }) {
@@ -583,7 +620,7 @@ function PromptComposer({
           : null;
 
   return (
-    <div className="composer-wrap">
+    <div className={`composer-wrap ${waitingApproval ? "blocked" : ""}`}>
       {status || restoreButtonLabel ? (
         <div className="composer-topline">
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
@@ -600,7 +637,6 @@ function PromptComposer({
           ) : null}
         </div>
       ) : null}
-      {controls ? <div className="composer-control-bar">{controls}</div> : null}
       <form className="composer" onSubmit={onSubmit}>
         <textarea
           disabled={disabled}
@@ -617,7 +653,7 @@ function PromptComposer({
                 ? "Resolve approval before sending another prompt"
                 : `Ask ${agentName}...`
           }
-          rows={3}
+          rows={waitingApproval ? 1 : 2}
           value={prompt}
         />
         {skillSuggestions.length ? (
