@@ -186,20 +186,29 @@ On Windows, run the embedded frontend smoke test:
 
 The smoke test builds the frontend and release binary, starts the binary from a temporary directory that does not contain `frontend/dist`, and verifies that `/`, an embedded asset, and an SPA route load successfully.
 
-To build and run the embedded release binary bound only to your local Tailscale IPv4 address:
+To stop current local project services, build the embedded release binary, and run it on this machine:
 
 ```powershell
-.\scripts\run-tailscale.ps1
+.\scripts\build-run-release.ps1
 ```
 
-The script detects the local `100.64.0.0/10` Tailscale IPv4 address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>` and fixed port `7635` instead of `0.0.0.0`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
+The script stops listeners on the local project backend and Vite dev ports, stops release binaries running from this repository, builds the frontend and embedded release binary, then starts the release binary in the foreground. By default it binds to `127.0.0.1:7635`.
+
+To bind only to the local Tailscale IPv4 address:
+
+```powershell
+.\scripts\build-run-release.ps1 -BindTailscale
+```
+
+In Tailscale mode (`-BindTailscale`, or the shorter `-Tailscale` alias) the script detects the local `100.64.0.0/10` address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
 
 Useful variants:
 
 ```powershell
-.\scripts\run-tailscale.ps1 -SkipBuild
-.\scripts\run-tailscale.ps1 -TrustedClients <trusted-client-cidr>
-.\scripts\run-tailscale.ps1 -StopExisting
+.\scripts\build-run-release.ps1 -SkipBuild
+.\scripts\build-run-release.ps1 -TailscaleIp 100.x.y.z
+.\scripts\build-run-release.ps1 -BindTailscale -TrustedClients <trusted-client-cidr>
+.\scripts\build-run-release.ps1 -NoRun
 ```
 
 To build, copy, and restart the embedded release binary on a remote Windows
