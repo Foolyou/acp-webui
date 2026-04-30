@@ -202,6 +202,43 @@ Useful variants:
 .\scripts\run-tailscale.ps1 -StopExisting
 ```
 
+To build, copy, and restart the embedded release binary on a remote Windows
+machine through PowerShell remoting:
+
+```powershell
+.\scripts\deploy-windows.ps1 `
+  -ComputerName <host> `
+  -BindTailscale `
+  -TrustedClients <trusted-client-cidr>
+```
+
+The deployment script copies only `acp-webui.exe`, writes a small remote launcher,
+and starts it through a scheduled task named `ACP Web UI`. It stops the previous
+deployment or any listener on the selected bind port before replacing the binary.
+Pass `-NoStopExisting` if you want it to fail instead of closing an occupied
+port.
+With `-BindTailscale`, the script resolves the remote machine's Tailscale IPv4
+address, passes it as `--bind-host`, and verifies that the selected port is not
+listening on any non-Tailscale address. Pass `-TailscaleIp 100.x.y.z` to require
+a specific remote Tailscale address.
+By default it deploys under the remote machine's `%ProgramData%\acp-webui`; pass
+`-RemoteDir <remote-dir>` to choose a different location.
+The remote machine still needs runtime ACP adapter commands such as `codex-acp`
+or `npx` on PATH.
+When `-ComputerName` looks like an SSH target such as `<user>@<host>`, the script
+uses `ssh` and `scp` automatically; pass `-UseSsh` or `-SshTarget <user>@<host>`
+to force SSH transport.
+
+Useful variants:
+
+```powershell
+.\scripts\deploy-windows.ps1 -ComputerName <host> -SkipBuild
+.\scripts\deploy-windows.ps1 -ComputerName <host> -NoRun
+.\scripts\deploy-windows.ps1 -ComputerName <user>@<host> -BindTailscale
+.\scripts\deploy-windows.ps1 -ComputerName <host> -BindTailscale -PairingToken <token>
+.\scripts\deploy-windows.ps1 -ComputerName <host> -TailscaleIp 100.x.y.z -TrustedClients <trusted-client-cidr>
+```
+
 ## Browser E2E
 
 The browser E2E suite uses Playwright with a fake ACP process so it can validate the UI, backend, WebSocket, and SQLite restore flow without making a real Codex call.
