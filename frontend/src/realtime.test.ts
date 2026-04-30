@@ -77,4 +77,44 @@ describe("applyRealtimeEvent", () => {
     expect(result.currentSession?.session.status).toBe("running");
     expect(result.currentSession?.activeTurn?.startedAt).toBe("2026-04-30T00:00:00Z");
   });
+
+  test("does not clear newer live text when an older assistant segment is upserted", () => {
+    const result = applyRealtimeEvent(
+      { currentSession: detail(), inbox: [], liveAssistant: "new suffix", error: null },
+      {
+        type: "timeline_item_upsert",
+        item: {
+          kind: "message",
+          id: "assistant-1",
+          sessionId: "session-1",
+          timestamp: "2026-04-30T00:00:02Z",
+          status: "idle",
+          role: "assistant",
+          content: "old prefix"
+        }
+      }
+    );
+
+    expect(result.liveAssistant).toBe("new suffix");
+  });
+
+  test("clears live text when the persisted assistant message contains it", () => {
+    const result = applyRealtimeEvent(
+      { currentSession: detail(), inbox: [], liveAssistant: "complete text", error: null },
+      {
+        type: "timeline_item_upsert",
+        item: {
+          kind: "message",
+          id: "assistant-1",
+          sessionId: "session-1",
+          timestamp: "2026-04-30T00:00:02Z",
+          status: "idle",
+          role: "assistant",
+          content: "complete text"
+        }
+      }
+    );
+
+    expect(result.liveAssistant).toBe("");
+  });
 });

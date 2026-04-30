@@ -392,8 +392,15 @@ function applyTimelineItemUpsert(state: AppSnapshot, item: TimelineItem): AppSna
       ...state.currentSession,
       timeline: upsertTimelineItem(state.currentSession.timeline, item)
     },
-    liveAssistant: item.kind === "message" && item.role === "assistant" ? "" : state.liveAssistant
+    liveAssistant: shouldClearLiveAssistantForTimelineItem(state.liveAssistant, item) ? "" : state.liveAssistant
   };
+}
+
+function shouldClearLiveAssistantForTimelineItem(liveAssistant: string, item: TimelineItem) {
+  if (!liveAssistant || item.kind !== "message" || item.role !== "assistant") {
+    return false;
+  }
+  return item.content.includes(liveAssistant);
 }
 
 function upsertTimelineItem(items: TimelineItem[], item: TimelineItem): TimelineItem[] {

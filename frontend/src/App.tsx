@@ -9,6 +9,7 @@ import {
   updateSessionListModel,
   updateSessionListStatus
 } from "./app/sessionList";
+import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
 import { messageToTimelineItem } from "./app/timeline";
 import { initialState } from "./app/types";
 import type { AppRouterContext, UiState } from "./app/types";
@@ -220,7 +221,7 @@ export function App() {
                   sessionDetailToListItem(detail),
                   ...current.sessions.filter((item) => item.session.id !== detail.session.id)
                 ],
-                liveAssistant: ""
+                liveAssistant: liveAssistantAfterSessionReconcile(current.liveAssistant, detail)
               }
             : current
         );
