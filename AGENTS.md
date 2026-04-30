@@ -29,6 +29,10 @@
 - Keep those commits scoped to the OpenSpec operation and its directly related implementation or spec updates.
 - Do not leave completed OpenSpec propose, apply, or archive work uncommitted.
 
+## Development Servers
+
+- Run the frontend dev server on port `5777`.
+
 ## Hardcoded Paths
 
 - Hard rule: never commit user-specific hardcoded paths, usernames, home directories, workspace names, local IP addresses, secrets, or machine-specific absolute paths anywhere in code, tests, scripts, specs, docs, or repository guidance.
