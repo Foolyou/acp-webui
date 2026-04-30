@@ -1633,6 +1633,20 @@ pre {
     padding: 0.7rem;
   }
 
+  .mobile-nav-modal .modal-body {
+    padding: 0.7rem;
+  }
+
+  .mobile-nav-modal .nav-stack {
+    gap: 0.55rem;
+    padding-right: 0;
+  }
+
+  .mobile-nav-modal .nav-link,
+  .mobile-nav-modal .workspace-nav {
+    padding-inline: 0.7rem;
+  }
+
   .mobile-nav-modal .nav-section-heading small {
     display: none;
   }

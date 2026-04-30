@@ -162,13 +162,23 @@ test("pairs an anonymous browser before loading app state", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "Local workspaces" })).toBeVisible();
 });
 
+test("lays out mobile navigation overlay consistently", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await page.getByRole("button", { name: "Menu" }).click();
+  await expectMobileNavigationLayout(page);
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
+});
+
 test("creates a workspace and session, sends a prompt, and restores after refresh", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await page.getByRole("button", { name: "Menu" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
-  await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Navigation" }));
+  await expectMobileNavigationLayout(page);
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByRole("dialog", { name: "Navigation" })).toBeHidden();
   await openMenuAndClick(page, /Agents/);
@@ -1145,6 +1155,35 @@ async function expectPrimaryNavigationWithoutSessions(page: import("@playwright/
   const navigation = page.getByRole("dialog", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveCount(0);
   await navigation.getByRole("button", { name: "Close" }).click();
+}
+
+async function expectMobileNavigationLayout(page: import("@playwright/test").Page) {
+  const dialog = page.getByRole("dialog", { name: "Navigation" });
+  await expectOverlayPrimaryControlsReachable(dialog);
+  const metrics = await dialog.evaluate((node) => {
+    const dialogRect = (node as HTMLElement).getBoundingClientRect();
+    const header = (node as HTMLElement).querySelector<HTMLElement>(".modal-header");
+    const body = (node as HTMLElement).querySelector<HTMLElement>(".modal-body");
+    const brand = header?.querySelector<HTMLElement>(".brand");
+    const firstLink = (node as HTMLElement).querySelector<HTMLElement>(".nav-link");
+    const bodyStyle = body ? getComputedStyle(body) : null;
+    const brandRect = brand?.getBoundingClientRect();
+    const firstLinkRect = firstLink?.getBoundingClientRect();
+    return {
+      bodyPaddingLeft: bodyStyle ? Number.parseFloat(bodyStyle.paddingLeft) : null,
+      bodyPaddingRight: bodyStyle ? Number.parseFloat(bodyStyle.paddingRight) : null,
+      brandInset: brandRect ? brandRect.left - dialogRect.left : null,
+      linkInset: firstLinkRect ? firstLinkRect.left - dialogRect.left : null
+    };
+  });
+
+  expect(metrics.bodyPaddingLeft).not.toBeNull();
+  expect(metrics.bodyPaddingRight).not.toBeNull();
+  expect(metrics.brandInset).not.toBeNull();
+  expect(metrics.linkInset).not.toBeNull();
+  expect(metrics.bodyPaddingLeft!).toBeGreaterThanOrEqual(8);
+  expect(metrics.bodyPaddingRight!).toBeGreaterThanOrEqual(8);
+  expect(Math.abs(metrics.brandInset! - metrics.linkInset!)).toBeLessThanOrEqual(1);
 }
 
 async function expectPageFitsViewport(page: import("@playwright/test").Page) {

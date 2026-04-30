@@ -66,7 +66,9 @@ export function WorkbenchShell() {
                 Close
               </Button>
             </div>
-            <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
+            <div className="modal-body">
+              <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
+            </div>
           </Dialog>
         </Modal>
       </ModalOverlay>
