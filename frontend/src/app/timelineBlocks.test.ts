@@ -182,4 +182,27 @@ describe("buildTimelineBlocks", () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran 2 commands" });
   });
+
+  test("renders permission placeholder tool calls with linked command context", () => {
+    const blocks = buildTimelineBlocks([
+      toolCall({
+        id: "permission-tool",
+        toolCallId: "permission-tool",
+        toolKind: "unknown",
+        title: "Permission requested",
+        summary: "tool_call_update completed",
+        input: {}
+      }),
+      permission({
+        id: "permission-1",
+        toolCallId: "permission-tool",
+        title: "git status --short",
+        permissionKind: "execute"
+      })
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran git status --short" });
+    expect(blocks[0].kind === "tool_group" ? blocks[0].entries[0].display.subject : "").toBe("git status --short");
+  });
 });

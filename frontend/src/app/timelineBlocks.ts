@@ -46,6 +46,7 @@ export function buildTimelineBlocks(
   reviewArtifacts: ReviewArtifactSummary[] = []
 ): TimelineDisplayBlock[] {
   const blocks: TimelineDisplayBlock[] = [];
+  const permissionsByToolCallId = permissionMap(timeline);
   const visibleToolCallIds = new Set(
     timeline
       .filter((item): item is ToolCallTimelineItem => item.kind === "tool_call")
@@ -82,11 +83,12 @@ export function buildTimelineBlocks(
         blocks.push({ kind: "message", id: item.id, item });
         break;
       case "tool_call": {
-        if (shouldFoldPermissionToolCall(item)) {
+        const toolItem = toolCallWithPermissionContext(item, permissionsByToolCallId);
+        if (shouldFoldPermissionToolCall(toolItem, permissionsByToolCallId)) {
           break;
         }
-        const toolItem = withLinkedArtifactIds(item, reviewArtifacts);
-        pendingTools.push({ item: toolItem, display: toolCallDisplay(toolItem, reviewArtifacts) });
+        const toolItemWithArtifacts = withLinkedArtifactIds(toolItem, reviewArtifacts);
+        pendingTools.push({ item: toolItemWithArtifacts, display: toolCallDisplay(toolItemWithArtifacts, reviewArtifacts) });
         break;
       }
       case "review_artifact":
@@ -137,9 +139,41 @@ function shouldFoldPermission(item: PermissionTimelineItem) {
   return Boolean(item.toolCallId);
 }
 
-function shouldFoldPermissionToolCall(item: ToolCallTimelineItem) {
+function shouldFoldPermissionToolCall(item: ToolCallTimelineItem, permissionsByToolCallId: Map<string, PermissionTimelineItem>) {
+  if (item.toolCallId && permissionsByToolCallId.has(item.toolCallId)) {
+    return false;
+  }
   const text = [item.toolKind, item.title, item.summary].join(" ").toLowerCase();
   return /\b(permission|approval)\s+(requested|resolved)\b/.test(text);
+}
+
+function permissionMap(timeline: TimelineItem[]) {
+  const map = new Map<string, PermissionTimelineItem>();
+  for (const item of timeline) {
+    if (item.kind === "permission" && item.toolCallId) {
+      map.set(item.toolCallId, item);
+    }
+  }
+  return map;
+}
+
+function toolCallWithPermissionContext(
+  item: ToolCallTimelineItem,
+  permissionsByToolCallId: Map<string, PermissionTimelineItem>
+): ToolCallTimelineItem {
+  if (!item.toolCallId) return item;
+  const permission = permissionsByToolCallId.get(item.toolCallId);
+  if (!permission?.title) return item;
+  const input = item.input && typeof item.input === "object" && !Array.isArray(item.input) ? item.input : {};
+  return {
+    ...item,
+    toolKind: permission.permissionKind || item.toolKind,
+    title: permission.title,
+    input: {
+      ...input,
+      command: permission.title
+    }
+  };
 }
 
 function toolGroupBlock(entries: TimelineToolGroupEntry[]): Extract<TimelineDisplayBlock, { kind: "tool_group" }> {
