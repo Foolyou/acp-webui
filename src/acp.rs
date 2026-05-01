@@ -1807,19 +1807,29 @@ async fn handle_session_update(
                     }
                 }
             }
-            persist_display_image_from_tool_update(storage, events_tx, &local_session_id, update)
-                .await;
-            if let Some(text) = text_from_content(update.get("content"))
-                .or_else(|| text_from_content(update.get("output")))
-            {
-                persist_image_artifacts_from_text(
+            let display_image_call = looks_like_display_image_call(update);
+            if display_image_call {
+                persist_display_image_from_tool_update(
                     storage,
                     events_tx,
                     &local_session_id,
-                    tool_call_id(update).as_deref(),
-                    &text,
+                    update,
                 )
                 .await;
+            }
+            if !display_image_call {
+                if let Some(text) = text_from_content(update.get("content"))
+                    .or_else(|| text_from_content(update.get("output")))
+                {
+                    persist_image_artifacts_from_text(
+                        storage,
+                        events_tx,
+                        &local_session_id,
+                        tool_call_id(update).as_deref(),
+                        &text,
+                    )
+                    .await;
+                }
             }
         }
         "config_option_update" => {
@@ -2658,6 +2668,8 @@ fn find_string_field_inner(value: &Value, keys: &[&str], depth: usize) -> Option
                 "data",
                 "content",
                 "output",
+                "rawOutput",
+                "structuredContent",
             ] {
                 if let Some(found) = map
                     .get(key)
@@ -4278,6 +4290,57 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].kind, review_artifact_kind::IMAGE);
+    }
+
+    #[tokio::test]
+    async fn display_image_tool_update_creates_explicit_image_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("result.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let (events_tx, _) = broadcast::channel(4);
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tool-display-image",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "display_image requested inline display for image `result.png`."
+                    }
+                }
+            ],
+            "rawOutput": {
+                "structuredContent": {
+                    "path": "result.png",
+                    "title": "Result image",
+                    "caption": "Generated result"
+                }
+            }
+        });
+
+        persist_display_image_from_tool_update(&storage, &events_tx, &session.id, &update).await;
+
+        let artifacts = storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, review_artifact_kind::IMAGE);
+        assert_eq!(artifacts[0].source, "display_image");
+        assert_eq!(
+            artifacts[0].tool_call_id.as_deref(),
+            Some("tool-display-image")
+        );
     }
 
     #[tokio::test]

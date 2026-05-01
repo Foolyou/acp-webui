@@ -148,7 +148,7 @@ fn tools_call_response(id: Value, message: &Value) -> Value {
             "content": [
                 {
                     "type": "text",
-                    "text": format!("Requested inline display for image `{path}`.")
+                    "text": format!("display_image requested inline display for image `{path}`.")
                 }
             ],
             "structuredContent": {
