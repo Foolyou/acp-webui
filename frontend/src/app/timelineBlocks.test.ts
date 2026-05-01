@@ -202,6 +202,34 @@ describe("buildTimelineBlocks", () => {
     expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran 2 commands" });
   });
 
+  test("keeps sparse generic permission-labeled tool calls grouped", () => {
+    const blocks = buildTimelineBlocks([
+      toolCall({
+        id: "tool-1",
+        toolCallId: "legacy-tool-1",
+        toolKind: "unknown",
+        title: "Permission requested",
+        summary: "tool_call_update completed",
+        input: {}
+      }),
+      toolCall({
+        id: "tool-2",
+        toolCallId: "legacy-tool-2",
+        toolKind: "unknown",
+        title: "Permission requested",
+        summary: "tool_call_update completed",
+        input: {}
+      })
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Used 2 tools", statusLabel: "2 completed" });
+    expect(blocks[0].kind === "tool_group" ? blocks[0].entries.map((entry) => entry.item.id) : []).toEqual([
+      "tool-1",
+      "tool-2"
+    ]);
+  });
+
   test("renders permission placeholder tool calls with linked command context", () => {
     const blocks = buildTimelineBlocks([
       toolCall({

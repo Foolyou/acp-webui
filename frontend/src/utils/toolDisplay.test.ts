@@ -52,6 +52,31 @@ describe("toolCallDisplay", () => {
     expect(display.evidenceActions.at(-1)).toMatchObject({ kind: "diagnostics", label: "Diagnostics" });
   });
 
+  test("extracts command activity from nested sparse ACP content", () => {
+    const display = toolCallDisplay(
+      toolCall({
+        toolKind: "unknown",
+        title: "Tool call",
+        summary: "tool_call_update completed",
+        input: {
+          sessionUpdate: "tool_call_update",
+          toolCall: {
+            content: [
+              {
+                type: "text",
+                text: "```powershell\nnpm test\nnpm run build\n```"
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(display.kind).toBe("command");
+    expect(display.subject).toBe("npm test && npm run build");
+    expect(display.metadata).toContainEqual({ label: "Command", value: "npm test && npm run build" });
+  });
+
   test("renders file reads with path subjects", () => {
     const display = toolCallDisplay(
       toolCall({

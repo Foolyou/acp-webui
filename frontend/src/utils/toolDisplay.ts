@@ -52,6 +52,8 @@ export function toolCallDisplay(
   reviewArtifacts: ReviewArtifactSummary[] = []
 ): ToolCallDisplay {
   const input = asRecord(item.input);
+  const contentText = findContentText(item.input);
+  const command = findString(item.input, ["command", "cmd", "script", "shell", "commandLine"]) ?? shellCommandFromContent(contentText);
   const toolText = [
     item.toolKind,
     item.title,
@@ -59,19 +61,18 @@ export function toolCallDisplay(
     stringField(input, "kind"),
     stringField(input, "type"),
     stringField(input, "name"),
-    stringField(input, "tool")
+    stringField(input, "tool"),
+    contentText
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-  const command = findString(item.input, ["command", "cmd", "script", "shell", "commandLine"]);
   const cwd = findString(item.input, ["cwd", "workingDirectory"]);
   const path = findString(item.input, ["path", "file", "filename", "directory", "glob"]);
   const query = findString(item.input, ["query", "q", "pattern", "search", "searchQuery"]);
   const url = findString(item.input, ["url", "href", "target"]);
   const server = findString(item.input, ["server", "serverName", "mcpServer"]);
   const tool = findString(item.input, ["tool", "toolName", "name"]);
-  const contentText = textFromContent(input?.content);
   const kind = detectKind(toolText, { command, path, query, server, tool, url });
   const subject = subjectForKind(kind, {
     command,
@@ -314,6 +315,29 @@ function findString(value: unknown, keys: string[], depth = 0): string | undefin
   return undefined;
 }
 
+function findContentText(value: unknown, depth = 0): string | undefined {
+  if (depth > 4) return undefined;
+  if (!value || typeof value !== "object") return undefined;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findContentText(item, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const direct = textFromContent(record.content);
+  if (direct) return direct;
+
+  for (const key of ["input", "params", "arguments", "toolCall", "data"]) {
+    const found = findContentText(record[key], depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function textFromContent(value: unknown): string | undefined {
   if (typeof value === "string") return value.trim() || undefined;
   if (!Array.isArray(value)) return undefined;
@@ -327,6 +351,53 @@ function textFromContent(value: unknown): string | undefined {
     .filter(Boolean)
     .join("\n");
   return text || undefined;
+}
+
+function shellCommandFromContent(value?: string): string | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+
+  const fenced = text.match(/```(?:sh|shell|bash|zsh|powershell|ps1|pwsh|cmd|bat)?\s*\n([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? text).replace(/\r\n/g, "\n");
+  const lines = candidate
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (!lines.length) return undefined;
+
+  const command = lines.slice(0, 3).join(" && ");
+  if (fenced || looksLikeShellCommand(lines[0])) {
+    return command;
+  }
+  return undefined;
+}
+
+function looksLikeShellCommand(value: string) {
+  const firstToken = value.split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (/^(?:\.{1,2}[\\/]|[\\/])/.test(firstToken)) return true;
+  return [
+    "bun",
+    "cargo",
+    "cmd",
+    "deno",
+    "dotnet",
+    "git",
+    "go",
+    "make",
+    "node",
+    "npm",
+    "npx",
+    "pnpm",
+    "powershell",
+    "pwsh",
+    "python",
+    "rg",
+    "rustc",
+    "tsc",
+    "uv",
+    "vite",
+    "yarn"
+  ].includes(firstToken);
 }
 
 function outputFromPayload(payload: unknown) {

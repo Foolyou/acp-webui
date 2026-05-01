@@ -149,8 +149,16 @@ function shouldFoldPermissionToolCall(item: ToolCallTimelineItem, permissionsByT
   if (item.toolCallId && permissionsByToolCallId.has(item.toolCallId)) {
     return false;
   }
+  if (!isPermissionBookkeepingKind(item.toolKind)) {
+    return false;
+  }
   const text = [item.toolKind, item.title, item.summary].join(" ").toLowerCase();
-  return /\b(permission|approval)\s+(requested|resolved)\b/.test(text);
+  return /\b(permission|approval)\s+(request|requested|resolved)\b/.test(text);
+}
+
+function isPermissionBookkeepingKind(value: string) {
+  const normalized = value.toLowerCase().replace(/[-_]+/g, " ");
+  return /\b(permission|approval)\b/.test(normalized);
 }
 
 function permissionMap(timeline: TimelineItem[]) {

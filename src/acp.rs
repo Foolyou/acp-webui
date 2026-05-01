@@ -2007,7 +2007,7 @@ async fn handle_permission_request(
         acp_session_id,
         acp_request_id: request_id.to_string(),
         tool_call_id: tool_call_id(&tool_call),
-        title: tool_call_title(&tool_call),
+        title: permission_tool_call_title(&tool_call),
         kind: tool_call_kind(&tool_call),
         tool_call_json: tool_call,
         options_json: options,
@@ -2343,12 +2343,22 @@ fn tool_call_id(tool_call: &Value) -> Option<String> {
 }
 
 fn tool_call_title(tool_call: &Value) -> String {
+    tool_call_title_field(tool_call)
+        .unwrap_or("Tool call")
+        .to_string()
+}
+
+fn permission_tool_call_title(tool_call: &Value) -> String {
+    tool_call_title_field(tool_call)
+        .unwrap_or("Permission requested")
+        .to_string()
+}
+
+fn tool_call_title_field(tool_call: &Value) -> Option<&str> {
     tool_call
         .get("title")
         .or_else(|| tool_call.get("name"))
         .and_then(Value::as_str)
-        .unwrap_or("Permission requested")
-        .to_string()
 }
 
 fn tool_call_kind(tool_call: &Value) -> String {
@@ -2374,6 +2384,34 @@ mod tests {
 
     #[cfg(windows)]
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn generic_tool_call_title_uses_neutral_fallback() {
+        assert_eq!(tool_call_title(&json!({})), "Tool call");
+        assert_eq!(
+            tool_call_from_update(
+                "session-1",
+                &json!({
+                    "sessionUpdate": "tool_call_update",
+                    "status": "completed"
+                })
+            )
+            .title,
+            "Tool call"
+        );
+    }
+
+    #[test]
+    fn permission_tool_call_title_keeps_permission_fallback() {
+        assert_eq!(
+            permission_tool_call_title(&json!({})),
+            "Permission requested"
+        );
+        assert_eq!(
+            permission_tool_call_title(&json!({ "title": "git status --short" })),
+            "git status --short"
+        );
+    }
 
     #[test]
     fn json_rpc_error_display_includes_details_data() {
