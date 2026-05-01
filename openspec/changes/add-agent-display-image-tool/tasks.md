@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add a workspace-safe image validation and snapshot helper covering path resolution, MIME checks, file size bounds, and neutral display metadata.
 - [x] 1.2 Handle agent display-image requests from a model-visible tool or ACP extension path and persist accepted images as `image` review artifacts.
-- [x] 1.3 Advertise display-image support to compatible agents and add hidden agent guidance that recommends using `display_image` instead of only returning image paths.
+- [x] 1.3 Advertise display-image support through a session-scoped MCP server so compatible agents receive a model-visible `display_image` tool.
 - [x] 1.4 Add conservative assistant/tool text-path enrichment that creates image evidence only for validated workspace-local image files.
 
 ## 2. Session Evidence and API

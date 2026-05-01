@@ -47,17 +47,18 @@ That gives a nice transcript but loses the evidence drill-down model and makes
 tool-origin metadata harder to preserve. The implementation can still synthesize
 inline timeline rendering from the artifact.
 
-### Prefer model-visible MCP-style tool metadata
+### Prefer a model-visible MCP tool
 
-The primary integration should expose a `display_image` tool definition to agent
-runtimes that can consume MCP or equivalent tool metadata. The tool description
-must explicitly say when to use it: after creating, modifying, locating,
-capturing, or referencing an image the user should inspect.
+The primary integration should expose a `display_image` MCP tool to agent
+runtimes by passing an ACP `mcpServers` entry during `session/new` and
+`session/load`. The tool description must explicitly say when to use it: after
+creating, modifying, locating, capturing, or referencing an image the user
+should inspect.
 
-Alternative considered: only add hidden prompt text. Prompt text helps, but
+Alternative considered: hidden prompt text. Browser validation showed this can
+be replayed as visible user transcript content during session restore, and
 without a real callable tool the model can only describe the path or invent a
-call syntax. Hidden prompt guidance remains useful as reinforcement and for
-fallback behavior.
+call syntax. Hidden prompt injection should not be used for this feature.
 
 ### Advertise ACP Web UI display capability as an extension
 

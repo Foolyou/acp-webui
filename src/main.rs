@@ -2,6 +2,7 @@ mod acp;
 mod auth;
 mod config;
 mod error;
+mod mcp_display_image;
 mod models;
 mod paths;
 mod routes;
@@ -16,6 +17,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("mcp-display-image") {
+        return mcp_display_image::run_stdio();
+    }
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

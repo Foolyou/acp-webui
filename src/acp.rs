@@ -416,12 +416,13 @@ impl AgentRuntime {
 
     pub async fn new_session(&self, cwd: String) -> anyhow::Result<NewSessionOutcome> {
         let peer = self.ensure_ready().await?;
+        let mcp_servers = display_image_mcp_servers();
         let result = peer
             .request(
                 "session/new",
                 json!({
                     "cwd": cwd,
-                    "mcpServers": []
+                    "mcpServers": mcp_servers
                 }),
             )
             .await?;
@@ -510,13 +511,14 @@ impl AgentRuntime {
             .write()
             .await
             .insert(acp_session_id.clone(), local_session_id.clone());
+        let mcp_servers = display_image_mcp_servers();
         let result = peer
             .request(
                 "session/load",
                 json!({
                     "sessionId": acp_session_id,
                     "cwd": cwd,
-                    "mcpServers": []
+                    "mcpServers": mcp_servers
                 }),
             )
             .await;
@@ -1331,6 +1333,23 @@ fn prompt_capabilities_from_initialize(result: &Value) -> AgentPromptCapabilitie
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
+}
+
+fn display_image_mcp_servers() -> Vec<Value> {
+    std::env::current_exe()
+        .ok()
+        .map(display_image_mcp_server_for_command)
+        .into_iter()
+        .collect()
+}
+
+fn display_image_mcp_server_for_command(command: PathBuf) -> Value {
+    json!({
+        "name": "acp-webui-display-image",
+        "command": command.to_string_lossy(),
+        "args": ["mcp-display-image"],
+        "env": []
+    })
 }
 
 fn capability_field_enabled(value: Option<&Value>) -> bool {
@@ -3852,6 +3871,16 @@ for line in sys.stdin:
         assert!(!capabilities.resume_session);
         assert!(!capabilities.list_sessions);
         assert!(!capabilities.close_session);
+    }
+
+    #[test]
+    fn display_image_mcp_server_uses_current_binary_subcommand() {
+        let server = display_image_mcp_server_for_command(PathBuf::from("acp-webui"));
+
+        assert_eq!(server["name"], "acp-webui-display-image");
+        assert_eq!(server["command"], "acp-webui");
+        assert_eq!(server["args"], json!(["mcp-display-image"]));
+        assert_eq!(server["env"], json!([]));
     }
 
     #[test]
