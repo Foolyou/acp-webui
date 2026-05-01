@@ -16,6 +16,7 @@ import {
   permissionModeClass,
   permissionModeLabel
 } from "../../utils/permissionMode";
+import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 export function SessionsPane({
   agents,
@@ -253,7 +254,7 @@ function SessionListRow({ item }: { item: SessionListItem }) {
     >
       <span className="item-title">{item.workspace.name}</span>
       <span>
-        {item.session.agentName} · {item.session.status} · {formatRelativeTime(item.lastActivityAt)}
+        {item.session.agentName} · {sessionStatusLabel(item.session.status)} · {formatRelativeTime(item.lastActivityAt)}
       </span>
       {item.currentModel ? (
         <span className="model-summary">Model: {item.currentModel.name ?? item.currentModel.value}</span>

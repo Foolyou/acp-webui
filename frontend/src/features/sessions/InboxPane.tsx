@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Button } from "react-aria-components";
 import { PageHeader } from "../../components/common";
 import type { InboxItem } from "../../types";
+import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 export function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sessionId: string) => void }) {
   const navigate = useNavigate();
@@ -26,7 +27,7 @@ export function InboxPane({ inbox, onOpen }: { inbox: InboxItem[]; onOpen: (sess
             >
               <span className="item-title">{item.permission.title}</span>
               <span>
-                {item.workspace.name} · {item.session.agentName} · {item.session.status}
+                {item.workspace.name} · {item.session.agentName} · {sessionStatusLabel(item.session.status)}
               </span>
               <small>
                 {item.permission.kind}

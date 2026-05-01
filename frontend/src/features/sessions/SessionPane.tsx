@@ -16,6 +16,7 @@ import {
   permissionModeDescription,
   permissionModeLabel
 } from "../../utils/permissionMode";
+import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 const SCROLL_BOTTOM_PROXIMITY_PX = 24;
 const PROGRAMMATIC_SCROLL_WINDOW_MS = 800;
@@ -465,7 +466,9 @@ function SessionContextHeader({
           <div className="session-expanded-context">
             <span>{currentSession.workspace.name}</span>
             <strong>{agentName} Session</strong>
-            <span className={`badge ${currentSession.session.status}`}>{currentSession.session.status}</span>
+            <span className={`badge ${currentSession.session.status}`}>
+              {sessionStatusLabel(currentSession.session.status)}
+            </span>
           </div>
           {sessionSelectOptions.length ? (
             <div className="session-config-controls">
