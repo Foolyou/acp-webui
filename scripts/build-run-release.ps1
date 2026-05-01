@@ -4,8 +4,8 @@ Builds and runs the local single-binary release.
 
 .DESCRIPTION
 This script stops current ACP Web UI services started from this project, builds
-the frontend and embedded release binary, then starts the release binary on the
-local machine.
+the frontend and embedded release binary, then starts the release binary in the
+background on the local machine.
 
 By default it binds to 127.0.0.1. Pass -BindTailscale to resolve the local
 Tailscale IPv4 address and bind only to that address, or pass -TailscaleIp with
@@ -23,10 +23,12 @@ param(
     [int]$BindPort = 7635,
     [int]$FrontendPort = 5777,
     [int]$ReleaseTimeoutSeconds = 30,
+    [int]$StartupTimeoutSeconds = 180,
     [switch]$SkipBuild,
     [switch]$InstallFrontendDeps,
     [switch]$NoRun,
     [switch]$NoStopExisting,
+    [switch]$Foreground,
     [string]$WorkDir,
     [string]$PairingToken,
     [switch]$DisableAuth,
@@ -42,6 +44,9 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $FrontendDir = Join-Path $RepoRoot "frontend"
+$LogDir = Join-Path $RepoRoot ".data\release"
+$ReleaseOut = Join-Path $LogDir "acp-webui.out.log"
+$ReleaseErr = Join-Path $LogDir "acp-webui.err.log"
 $WindowsBinary = Join-Path $RepoRoot "target\release\acp-webui.exe"
 $UnixBinary = Join-Path $RepoRoot "target\release\acp-webui"
 
@@ -309,6 +314,31 @@ function Wait-ForPortRelease {
     throw "Port $Port is still listening after $TimeoutSeconds seconds ($Summary). Close the remaining listener or retry after Windows releases the socket."
 }
 
+function Wait-ForHttpOk {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds
+    )
+
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $Response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 2
+            if ($Response.StatusCode -ge 200 -and $Response.StatusCode -lt 500) {
+                return
+            }
+        } catch {
+            Write-Verbose "Waiting for ${Url}: $($_.Exception.Message)"
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $Deadline)
+
+    throw "Timed out waiting for $Url."
+}
+
 function Test-ProcessPathUnder {
     param(
         [string]$ProcessPath,
@@ -460,6 +490,8 @@ if ($DisableAuth -and -not (Test-LoopbackBindHost $ResolvedBindHost)) {
     throw "-DisableAuth is only allowed when binding to a loopback address."
 }
 
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
 if (-not $NoStopExisting) {
     Stop-ProjectServices -ResolvedBindHost $ResolvedBindHost
 } else {
@@ -550,5 +582,25 @@ if ($NoRun) {
     return
 }
 
-Write-Host "Starting acp-webui release in the foreground. Press Ctrl+C to stop."
-& $Binary @RunArgs
+if ($Foreground) {
+    Write-Host "Starting acp-webui release in the foreground. Press Ctrl+C to stop."
+    & $Binary @RunArgs
+    return
+}
+
+Write-Host "Starting acp-webui release in the background..."
+$ReleaseProcess = Start-Process `
+    -FilePath $Binary `
+    -ArgumentList $RunArgs `
+    -WorkingDirectory $RepoRoot `
+    -RedirectStandardOutput $ReleaseOut `
+    -RedirectStandardError $ReleaseErr `
+    -WindowStyle Hidden `
+    -PassThru
+
+Wait-ForHttpOk -Url "$Url/api/auth/status" -TimeoutSeconds $StartupTimeoutSeconds
+Write-Host "Release server: $Url"
+Write-Host "Release PID: $($ReleaseProcess.Id)"
+Write-Host "Logs:"
+Write-Host "  stdout: $ReleaseOut"
+Write-Host "  stderr: $ReleaseErr"

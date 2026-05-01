@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-Starts or restarts ACP Web UI dev services on the local Tailscale IPv4.
+Starts or restarts ACP Web UI dev services in the background on the local Tailscale IPv4.
 
 .DESCRIPTION
 This script detects the local Tailscale IPv4 address, stops existing listeners
-on the configured frontend and backend dev ports, then starts:
+on the configured frontend and backend dev ports, then starts background services:
 
 - backend dev server:  http://<tailscale-ip>:7635
 - frontend Vite dev:  http://<tailscale-ip>:5777
