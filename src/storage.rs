@@ -2361,10 +2361,7 @@ fn dedupe_review_artifact_summaries(
     let mut deduped = Vec::with_capacity(items.len());
 
     for item in items.into_iter().rev() {
-        let key = match item.tool_call_id.as_deref() {
-            Some(tool_call_id) => format!("tool:{tool_call_id}|{}|{}", item.kind, item.source),
-            None => format!("artifact:{}", item.id),
-        };
+        let key = review_artifact_summary_dedupe_key(&item);
         if seen.insert(key) {
             deduped.push(item);
         }
@@ -2372,6 +2369,32 @@ fn dedupe_review_artifact_summaries(
 
     deduped.reverse();
     deduped
+}
+
+fn review_artifact_summary_dedupe_key(item: &ReviewArtifactSummary) -> String {
+    if item.kind == review_artifact_kind::IMAGE {
+        if let Some(source_path) = item
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.get("sourcePath"))
+            .and_then(Value::as_str)
+        {
+            return match item.tool_call_id.as_deref() {
+                Some(tool_call_id) => {
+                    format!(
+                        "tool:{tool_call_id}|{}|{}|{source_path}",
+                        item.kind, item.source
+                    )
+                }
+                None => format!("image:{}|{source_path}", item.source),
+            };
+        }
+    }
+
+    match item.tool_call_id.as_deref() {
+        Some(tool_call_id) => format!("tool:{tool_call_id}|{}|{}", item.kind, item.source),
+        None => format!("artifact:{}", item.id),
+    }
 }
 
 fn normalize_session_status(status: String, has_pending_permission: bool) -> String {

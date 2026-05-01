@@ -588,18 +588,6 @@ impl AgentRuntime {
             .lock()
             .await
             .remove(&acp_session_id);
-        let prompt_blocks = if self
-            .status
-            .read()
-            .await
-            .prompt_capabilities
-            .embedded_context
-        {
-            prompt_blocks_with_display_image_guidance(&prompt_blocks)
-        } else {
-            prompt_blocks
-        };
-
         let result = peer
             .request(
                 "session/prompt",
@@ -2487,8 +2475,8 @@ async fn display_image_artifact_for_local_session(
     let summary = caption
         .clone()
         .unwrap_or_else(|| format!("Image: {}", snapshot.name));
-    let artifact = storage
-        .create_review_artifact(NewReviewArtifact {
+    let result = storage
+        .upsert_review_artifact(NewReviewArtifact {
             session_id: local_session_id.to_string(),
             tool_call_id,
             kind: review_artifact_kind::IMAGE.to_string(),
@@ -2507,7 +2495,7 @@ async fn display_image_artifact_for_local_session(
         })
         .await
         .map_err(|_| AcpClientRequestError::invalid_params("Failed to persist image evidence"))?;
-    Ok(artifact)
+    Ok(result.artifact)
 }
 
 struct ImageSnapshot {
@@ -3003,15 +2991,6 @@ fn acp_content_blocks(blocks: &[MessageContentBlock]) -> Vec<Value> {
             }
         })
         .collect()
-}
-
-fn prompt_blocks_with_display_image_guidance(
-    blocks: &[MessageContentBlock],
-) -> Vec<MessageContentBlock> {
-    let mut guided = Vec::with_capacity(blocks.len() + 1);
-    guided.push(MessageContentBlock::text(DISPLAY_IMAGE_GUIDANCE));
-    guided.extend(blocks.iter().cloned());
-    guided
 }
 
 fn cancelled_permission_response() -> Value {
@@ -4270,16 +4249,6 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].kind, review_artifact_kind::IMAGE);
-    }
-
-    #[test]
-    fn display_image_guidance_is_prepended_as_agent_context() {
-        let blocks =
-            prompt_blocks_with_display_image_guidance(&[MessageContentBlock::text("Make a chart")]);
-        let text = text_fallback_from_blocks(&blocks);
-
-        assert!(text.contains("display_image"));
-        assert!(text.contains("Make a chart"));
     }
 
     #[tokio::test]
