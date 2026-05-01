@@ -13,7 +13,7 @@ use axum::{
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{any, get, post},
+    routing::{any, get, patch, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -29,11 +29,12 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         continuity_state, permission_mode, review_artifact_kind, role, status,
-        text_fallback_from_blocks, ActiveTurn, CreateSessionRequest, CreateWorkspaceRequest,
-        DiffFallbackResponse, InboxItem, Message, MessageContentBlock, PermissionRequest,
-        PromptRequest, QueuedPrompt, ResolvePermissionRequest, ReviewArtifact,
-        ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity, SessionDetail,
-        SessionListItem, SetSessionConfigOptionRequest, SkillSummary, TimelineItem, Workspace,
+        text_fallback_from_blocks, ActiveTurn, CreatePromptTemplateRequest, CreateSessionRequest,
+        CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message, MessageContentBlock,
+        PermissionRequest, PromptRequest, PromptTemplate, QueuedPrompt, ResolvePermissionRequest,
+        ReviewArtifact, ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity,
+        SessionDetail, SessionListItem, SetSessionConfigOptionRequest, SkillSummary, TimelineItem,
+        UpdatePromptTemplateRequest, Workspace,
     },
     storage::Storage,
 };
@@ -97,6 +98,18 @@ pub fn api_router(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/sessions",
             get(list_workspace_sessions).post(create_session),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/agents/{agent_id}/prompt-templates",
+            get(list_prompt_templates).post(create_prompt_template),
+        )
+        .route(
+            "/api/prompt-templates/{template_id}",
+            patch(update_prompt_template).delete(delete_prompt_template),
+        )
+        .route(
+            "/api/prompt-templates/{template_id}/use",
+            post(record_prompt_template_use),
         )
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
@@ -359,6 +372,120 @@ async fn list_workspace_sessions(
 async fn list_workspaces(State(state): State<AppState>) -> AppResult<Json<Vec<Workspace>>> {
     let workspaces = state.storage.list_workspaces().await?;
     Ok(Json(workspaces))
+}
+
+async fn list_prompt_templates(
+    State(state): State<AppState>,
+    Path((workspace_id, agent_id)): Path<(String, String)>,
+) -> AppResult<Json<Vec<PromptTemplate>>> {
+    validate_prompt_template_scope(&state, &workspace_id, &agent_id).await?;
+    Ok(Json(
+        state
+            .storage
+            .list_prompt_templates(&workspace_id, &agent_id)
+            .await?,
+    ))
+}
+
+async fn create_prompt_template(
+    State(state): State<AppState>,
+    Path((workspace_id, agent_id)): Path<(String, String)>,
+    Json(payload): Json<CreatePromptTemplateRequest>,
+) -> AppResult<Json<PromptTemplate>> {
+    validate_prompt_template_scope(&state, &workspace_id, &agent_id).await?;
+    let title = validate_prompt_template_text("Prompt template title", &payload.title)?;
+    let body = validate_prompt_template_text("Prompt template body", &payload.body)?;
+    Ok(Json(
+        state
+            .storage
+            .create_prompt_template(
+                &workspace_id,
+                &agent_id,
+                &title,
+                &body,
+                &payload.tags,
+                payload.position,
+            )
+            .await?,
+    ))
+}
+
+async fn update_prompt_template(
+    State(state): State<AppState>,
+    Path(template_id): Path<String>,
+    Json(payload): Json<UpdatePromptTemplateRequest>,
+) -> AppResult<Json<PromptTemplate>> {
+    let title = payload
+        .title
+        .as_deref()
+        .map(|value| validate_prompt_template_text("Prompt template title", value))
+        .transpose()?;
+    let body = payload
+        .body
+        .as_deref()
+        .map(|value| validate_prompt_template_text("Prompt template body", value))
+        .transpose()?;
+    let template = state
+        .storage
+        .update_prompt_template(
+            &template_id,
+            title.as_deref(),
+            body.as_deref(),
+            payload.tags.as_deref(),
+            payload.position,
+        )
+        .await
+        .map_err(|_| AppError::NotFound("Prompt template not found".to_string()))?;
+    Ok(Json(template))
+}
+
+async fn delete_prompt_template(
+    State(state): State<AppState>,
+    Path(template_id): Path<String>,
+) -> AppResult<Json<PromptTemplate>> {
+    let template = state
+        .storage
+        .archive_prompt_template(&template_id)
+        .await
+        .map_err(|_| AppError::NotFound("Prompt template not found".to_string()))?;
+    Ok(Json(template))
+}
+
+async fn record_prompt_template_use(
+    State(state): State<AppState>,
+    Path(template_id): Path<String>,
+) -> AppResult<Json<PromptTemplate>> {
+    let template = state
+        .storage
+        .record_prompt_template_use(&template_id)
+        .await
+        .map_err(|_| AppError::NotFound("Prompt template not found".to_string()))?;
+    Ok(Json(template))
+}
+
+async fn validate_prompt_template_scope(
+    state: &AppState,
+    workspace_id: &str,
+    agent_id: &str,
+) -> AppResult<()> {
+    state
+        .storage
+        .get_workspace(workspace_id)
+        .await
+        .map_err(|_| AppError::NotFound("Workspace not found".to_string()))?;
+    state
+        .agents
+        .resolve_agent_id(Some(agent_id))
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    Ok(())
+}
+
+fn validate_prompt_template_text(label: &str, value: &str) -> AppResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest(format!("{label} is required.")));
+    }
+    Ok(trimmed.to_string())
 }
 
 async fn create_workspace(
@@ -1436,6 +1563,191 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("Unsupported image type"));
+    }
+
+    #[tokio::test]
+    async fn prompt_template_routes_manage_workspace_agent_templates() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let other_workspace = state
+            .storage
+            .create_workspace(other_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let create_body = serde_json::json!({
+            "title": "Review",
+            "body": "Please review the current diff",
+            "tags": ["review", "Review"]
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/workspaces/{}/agents/{}/prompt-templates",
+                        workspace.id, CODEX_AGENT_ID
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: Value = serde_json::from_slice(&body).unwrap();
+        let template_id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["workspaceId"], workspace.id);
+        assert_eq!(created["agentId"], CODEX_AGENT_ID);
+        assert_eq!(created["tags"], serde_json::json!(["review"]));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workspaces/{}/agents/{}/prompt-templates",
+                        workspace.id, CODEX_AGENT_ID
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let list: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workspaces/{}/agents/{}/prompt-templates",
+                        other_workspace.id, CODEX_AGENT_ID
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let other_workspace_list: Value = serde_json::from_slice(&body).unwrap();
+        assert!(other_workspace_list.as_array().unwrap().is_empty());
+
+        let update_body = serde_json::json!({
+            "title": "Review diff",
+            "body": "Please review git diff",
+            "position": 0
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/prompt-templates/{template_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(update_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let updated: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(updated["title"], "Review diff");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/prompt-templates/{template_id}/use"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let used: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(used["useCount"], 1);
+        assert!(used["lastUsedAt"].as_str().is_some());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/prompt-templates/{template_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workspaces/{}/agents/{}/prompt-templates",
+                        workspace.id, CODEX_AGENT_ID
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let list_after_delete: Value = serde_json::from_slice(&body).unwrap();
+        assert!(list_after_delete.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prompt_template_create_rejects_empty_body() {
+        let (state, _db_dir) = test_state().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/workspaces/{}/agents/{}/prompt-templates",
+                        workspace.id, CODEX_AGENT_ID
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"title": "Review", "body": ""}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("body"));
     }
 
     async fn test_state() -> (AppState, tempfile::TempDir) {

@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   PermissionRequest,
   PermissionModeId,
+  PromptTemplate,
   QueuedPrompt,
   ReviewArtifact,
   ActiveTurn,
@@ -83,6 +84,35 @@ export const api = {
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),
+  promptTemplates: (workspaceId: string, agentId: string) =>
+    request<PromptTemplate[]>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/prompt-templates`
+    ),
+  createPromptTemplate: (
+    workspaceId: string,
+    agentId: string,
+    template: { title: string; body: string; tags?: string[]; position?: number }
+  ) =>
+    request<PromptTemplate>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/prompt-templates`,
+      {
+        method: "POST",
+        body: JSON.stringify(template)
+      }
+    ),
+  updatePromptTemplate: (templateId: string, template: { title?: string; body?: string; tags?: string[]; position?: number }) =>
+    request<PromptTemplate>(`/api/prompt-templates/${encodeURIComponent(templateId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(template)
+    }),
+  deletePromptTemplate: (templateId: string) =>
+    request<PromptTemplate>(`/api/prompt-templates/${encodeURIComponent(templateId)}`, {
+      method: "DELETE"
+    }),
+  usePromptTemplate: (templateId: string) =>
+    request<PromptTemplate>(`/api/prompt-templates/${encodeURIComponent(templateId)}/use`, {
+      method: "POST"
+    }),
   restoreSession: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${sessionId}/restore`, {
       method: "POST"

@@ -14,10 +14,11 @@ use crate::models::{
     continuity_state, permission_status, queued_prompt_status, role, status, tool_call_status,
     turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message, MessageContentBlock,
     MessageRow, NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow,
-    QueuedPrompt, QueuedPromptRow, ReviewArtifact, ReviewArtifactRow, ReviewArtifactSummary,
-    Session, SessionConfigOption, SessionConfigSelectOption, SessionConfigState, SessionContinuity,
-    SessionCurrentModel, SessionDetail, SessionListItem, SessionListPermission, TimelineItem,
-    ToolCallRow, UpsertToolCall, Workspace,
+    PromptTemplate, PromptTemplateRow, QueuedPrompt, QueuedPromptRow, ReviewArtifact,
+    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
+    SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
+    SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
+    UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -214,6 +215,187 @@ impl Storage {
         .await?;
 
         Ok(workspace)
+    }
+
+    pub async fn list_prompt_templates(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<Vec<PromptTemplate>> {
+        let rows = sqlx::query_as::<_, PromptTemplateRow>(
+            r#"
+            SELECT id, workspace_id, agent_id, title, body, tags_json, position, use_count, last_used_at, created_at, updated_at, archived_at
+            FROM prompt_templates
+            WHERE workspace_id = ?
+                AND agent_id = ?
+                AND archived_at IS NULL
+            ORDER BY position ASC,
+                CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END ASC,
+                last_used_at DESC,
+                updated_at DESC,
+                id ASC
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(agent_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(prompt_template_from_row).collect()
+    }
+
+    pub async fn get_prompt_template(&self, id: &str) -> anyhow::Result<PromptTemplate> {
+        let row = sqlx::query_as::<_, PromptTemplateRow>(
+            r#"
+            SELECT id, workspace_id, agent_id, title, body, tags_json, position, use_count, last_used_at, created_at, updated_at, archived_at
+            FROM prompt_templates
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        prompt_template_from_row(row)
+    }
+
+    pub async fn create_prompt_template(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        title: &str,
+        body: &str,
+        tags: &[String],
+        position: Option<i64>,
+    ) -> anyhow::Result<PromptTemplate> {
+        let id = Uuid::new_v4().to_string();
+        let now = now();
+        let tags_json = serde_json::to_string(&normalize_prompt_template_tags(tags))?;
+        let position = match position {
+            Some(position) => position,
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT COALESCE(MAX(position), 0) + 1
+                    FROM prompt_templates
+                    WHERE workspace_id = ? AND agent_id = ? AND archived_at IS NULL
+                    "#,
+                )
+                .bind(workspace_id)
+                .bind(agent_id)
+                .fetch_one(&self.pool)
+                .await?
+            }
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_templates (id, workspace_id, agent_id, title, body, tags_json, position, use_count, last_used_at, created_at, updated_at, archived_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL)
+            "#,
+        )
+        .bind(&id)
+        .bind(workspace_id)
+        .bind(agent_id)
+        .bind(title)
+        .bind(body)
+        .bind(tags_json)
+        .bind(position)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_prompt_template(&id).await
+    }
+
+    pub async fn update_prompt_template(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        body: Option<&str>,
+        tags: Option<&[String]>,
+        position: Option<i64>,
+    ) -> anyhow::Result<PromptTemplate> {
+        let current = self.get_prompt_template(id).await?;
+        if current.archived_at.is_some() {
+            anyhow::bail!("prompt template is archived");
+        }
+        let next_title = title.unwrap_or(&current.title);
+        let next_body = body.unwrap_or(&current.body);
+        let next_tags = tags
+            .map(normalize_prompt_template_tags)
+            .unwrap_or(current.tags);
+        let tags_json = serde_json::to_string(&next_tags)?;
+        let next_position = position.unwrap_or(current.position);
+        let updated_at = now();
+
+        sqlx::query(
+            r#"
+            UPDATE prompt_templates
+            SET title = ?,
+                body = ?,
+                tags_json = ?,
+                position = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(next_title)
+        .bind(next_body)
+        .bind(tags_json)
+        .bind(next_position)
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_prompt_template(id).await
+    }
+
+    pub async fn archive_prompt_template(&self, id: &str) -> anyhow::Result<PromptTemplate> {
+        let archived_at = now();
+        let result = sqlx::query(
+            r#"
+            UPDATE prompt_templates
+            SET archived_at = ?,
+                updated_at = ?
+            WHERE id = ? AND archived_at IS NULL
+            "#,
+        )
+        .bind(&archived_at)
+        .bind(&archived_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("prompt template not found");
+        }
+
+        self.get_prompt_template(id).await
+    }
+
+    pub async fn record_prompt_template_use(&self, id: &str) -> anyhow::Result<PromptTemplate> {
+        let used_at = now();
+        let result = sqlx::query(
+            r#"
+            UPDATE prompt_templates
+            SET use_count = use_count + 1,
+                last_used_at = ?,
+                updated_at = ?
+            WHERE id = ? AND archived_at IS NULL
+            "#,
+        )
+        .bind(&used_at)
+        .bind(&used_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("prompt template not found");
+        }
+
+        self.get_prompt_template(id).await
     }
 
     #[cfg(test)]
@@ -2386,6 +2568,46 @@ fn queued_prompt_from_row(row: QueuedPromptRow) -> anyhow::Result<QueuedPrompt> 
     })
 }
 
+fn prompt_template_from_row(row: PromptTemplateRow) -> anyhow::Result<PromptTemplate> {
+    let tags = row
+        .tags_json
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(serde_json::from_str::<Vec<String>>)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(PromptTemplate {
+        id: row.id,
+        workspace_id: row.workspace_id,
+        agent_id: row.agent_id,
+        title: row.title,
+        body: row.body,
+        tags,
+        position: row.position,
+        use_count: row.use_count,
+        last_used_at: row.last_used_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        archived_at: row.archived_at,
+    })
+}
+
+fn normalize_prompt_template_tags(tags: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        let key = tag.to_ascii_lowercase();
+        if seen.insert(key) {
+            normalized.push(tag.to_string());
+        }
+    }
+    normalized
+}
+
 fn parse_content_blocks(
     blocks_json: Option<&str>,
     fallback: &str,
@@ -2678,6 +2900,111 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn stores_prompt_templates_by_workspace_and_agent() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let first_workspace = storage
+            .create_workspace(
+                first_dir.path().to_string_lossy(),
+                Some("First".to_string()),
+            )
+            .await
+            .unwrap();
+        let second_workspace = storage
+            .create_workspace(
+                second_dir.path().to_string_lossy(),
+                Some("Second".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let codex_first = storage
+            .create_prompt_template(
+                &first_workspace.id,
+                crate::config::CODEX_AGENT_ID,
+                "Review",
+                "Please review the diff",
+                &["review".to_string(), "Review".to_string()],
+                Some(2),
+            )
+            .await
+            .unwrap();
+        storage
+            .create_prompt_template(
+                &first_workspace.id,
+                crate::config::CLAUDE_AGENT_ID,
+                "Claude",
+                "Summarize this workspace",
+                &[],
+                Some(1),
+            )
+            .await
+            .unwrap();
+        storage
+            .create_prompt_template(
+                &second_workspace.id,
+                crate::config::CODEX_AGENT_ID,
+                "Other",
+                "Run tests",
+                &[],
+                Some(1),
+            )
+            .await
+            .unwrap();
+
+        let scoped = storage
+            .list_prompt_templates(&first_workspace.id, crate::config::CODEX_AGENT_ID)
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, codex_first.id);
+        assert_eq!(scoped[0].tags, vec!["review"]);
+
+        let used = storage
+            .record_prompt_template_use(&codex_first.id)
+            .await
+            .unwrap();
+        assert_eq!(used.use_count, 1);
+        assert!(used.last_used_at.is_some());
+
+        let updated = storage
+            .update_prompt_template(
+                &codex_first.id,
+                Some("Review diff"),
+                Some("Please review current git diff"),
+                Some(&["git".to_string()]),
+                Some(0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.title, "Review diff");
+        assert_eq!(updated.body, "Please review current git diff");
+        assert_eq!(updated.tags, vec!["git"]);
+        assert_eq!(updated.position, 0);
+
+        let archived = storage
+            .archive_prompt_template(&codex_first.id)
+            .await
+            .unwrap();
+        assert!(archived.archived_at.is_some());
+        assert!(storage
+            .record_prompt_template_use(&codex_first.id)
+            .await
+            .is_err());
+        assert!(storage
+            .update_prompt_template(&codex_first.id, Some("Archived"), None, None, None)
+            .await
+            .is_err());
+        assert!(storage
+            .list_prompt_templates(&first_workspace.id, crate::config::CODEX_AGENT_ID)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

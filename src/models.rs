@@ -627,6 +627,58 @@ pub struct PromptRequest {
 }
 
 #[derive(Debug, Clone, FromRow)]
+pub struct PromptTemplateRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub body: String,
+    pub tags_json: Option<String>,
+    pub position: i64,
+    pub use_count: i64,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptTemplate {
+    pub id: String,
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub body: String,
+    pub tags: Vec<String>,
+    pub position: i64,
+    pub use_count: i64,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePromptTemplateRequest {
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub position: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePromptTemplateRequest {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub position: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow)]
 pub struct QueuedPromptRow {
     pub id: String,
     pub session_id: String,

@@ -220,6 +220,21 @@ export type QueuedPrompt = {
   submittedAt?: string | null;
 };
 
+export type PromptTemplate = {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  title: string;
+  body: string;
+  tags: string[];
+  position: number;
+  useCount: number;
+  lastUsedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string | null;
+};
+
 export type ActiveTurn = {
   startedAt: string;
   status: "running" | "stopping" | "stopped" | string;

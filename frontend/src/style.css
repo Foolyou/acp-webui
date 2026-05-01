@@ -1819,6 +1819,61 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.prompt-template-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.45rem;
+  max-width: 100%;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.45rem;
+}
+
+.prompt-template-save {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.prompt-template-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.prompt-template-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 0.42rem 0.48rem;
+}
+
+.prompt-template-copy {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.prompt-template-copy strong,
+.prompt-template-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-template-copy span,
+.prompt-template-empty {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
 .composer-status {
   border-radius: var(--radius-md);
   color: var(--color-text-muted);
@@ -2149,6 +2204,15 @@ pre {
   .queued-count {
     flex: 1 1 auto;
     width: fit-content;
+  }
+
+  .prompt-template-save,
+  .prompt-template-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .prompt-template-item .secondary {
+    width: 100%;
   }
 
   .tool-group-main,

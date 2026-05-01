@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   MessageContentBlock,
   PermissionModeId,
+  PromptTemplate,
   ReviewArtifactSummary,
   SessionDetail,
   SkillSummary
@@ -354,6 +355,7 @@ export function SessionPane({
       <PromptComposer
         busy={busy}
         agentName={agentName}
+        agentId={currentSession.session.agentId}
         agentStatus={agentStatus}
         disabled={!canSend}
         running={running}
@@ -369,6 +371,7 @@ export function SessionPane({
         onStopSession={onStopSession}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
+        workspaceId={currentSession.workspace.id}
       />
     </section>
   );
@@ -696,8 +699,25 @@ function RunningSkeleton({ agentName, waitingApproval }: { agentName: string; wa
   );
 }
 
+export function insertPromptTemplateBody(current: string, body: string) {
+  const templateBody = body.trim();
+  if (!templateBody) return current;
+  if (!current.trim()) return templateBody;
+  return `${current.trimEnd()}\n\n${templateBody}`;
+}
+
+export function defaultPromptTemplateTitle(body: string) {
+  const firstLine = body
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return "Untitled prompt";
+  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
+}
+
 function PromptComposer({
   agentName,
+  agentId,
   agentStatus,
   busy,
   disabled,
@@ -713,9 +733,11 @@ function PromptComposer({
   canStop,
   stoppingTurn,
   onStopSession,
-  waitingApproval
+  waitingApproval,
+  workspaceId
 }: {
   agentName: string;
+  agentId: string;
   agentStatus: AgentRuntimeStatus | null;
   busy: boolean;
   disabled: boolean;
@@ -732,12 +754,20 @@ function PromptComposer({
   stoppingTurn: boolean;
   onStopSession: () => Promise<void>;
   waitingApproval: boolean;
+  workspaceId: string;
 }) {
   const [prompt, setPrompt] = useState("");
   const [composing, setComposing] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [templateTitle, setTemplateTitle] = useState("");
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateBusyId, setTemplateBusyId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imagePromptSupported = agentStatus?.status.promptCapabilities?.image === true;
 
@@ -755,6 +785,27 @@ function PromptComposer({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!templatesOpen) return;
+    let cancelled = false;
+    setTemplatesLoading(true);
+    setTemplatesError(null);
+    api
+      .promptTemplates(workspaceId, agentId)
+      .then((items) => {
+        if (!cancelled) setTemplates(items);
+      })
+      .catch((error) => {
+        if (!cancelled) setTemplatesError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setTemplatesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, templatesOpen, workspaceId]);
 
   async function submitPrompt() {
     const trimmed = prompt.trim();
@@ -796,6 +847,51 @@ function PromptComposer({
   function applySkill(skillName: string) {
     if (!skillMatch) return;
     setPrompt(`${prompt.slice(0, skillMatch.index)}$${skillName} `);
+  }
+
+  async function applyPromptTemplate(template: PromptTemplate) {
+    if (disabled) return;
+    setPrompt((current) => insertPromptTemplateBody(current, template.body));
+    setTemplatesOpen(false);
+    try {
+      const updated = await api.usePromptTemplate(template.id);
+      setTemplates((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch {
+      // Template usage is metadata; inserting the prompt should not be blocked by it.
+    }
+  }
+
+  async function savePromptTemplate() {
+    const body = prompt.trim();
+    if (!body || templateSaving) return;
+    setTemplateSaving(true);
+    setTemplatesError(null);
+    try {
+      const created = await api.createPromptTemplate(workspaceId, agentId, {
+        title: templateTitle.trim() || defaultPromptTemplateTitle(body),
+        body,
+        tags: []
+      });
+      setTemplates((current) => [...current, created]);
+      setTemplateTitle("");
+    } catch (error) {
+      setTemplatesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTemplateSaving(false);
+    }
+  }
+
+  async function deletePromptTemplate(templateId: string) {
+    setTemplateBusyId(templateId);
+    setTemplatesError(null);
+    try {
+      await api.deletePromptTemplate(templateId);
+      setTemplates((current) => current.filter((item) => item.id !== templateId));
+    } catch (error) {
+      setTemplatesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTemplateBusyId(null);
+    }
   }
 
   async function onImageFilesSelected(event: ChangeEvent<HTMLInputElement>) {
@@ -902,6 +998,65 @@ function PromptComposer({
             ))}
           </div>
         ) : null}
+        {templatesOpen ? (
+          <div className="prompt-template-panel">
+            <div className="prompt-template-save">
+              <input
+                aria-label="Prompt template title"
+                onChange={(event) => setTemplateTitle(event.target.value)}
+                placeholder={prompt.trim() ? defaultPromptTemplateTitle(prompt) : "Template title"}
+                value={templateTitle}
+              />
+              <Button
+                className="secondary"
+                isDisabled={!prompt.trim() || templateSaving}
+                onPress={() => {
+                  void savePromptTemplate();
+                }}
+                type="button"
+              >
+                Save current
+              </Button>
+            </div>
+            {templatesError ? <div className="composer-error">{templatesError}</div> : null}
+            {templatesLoading ? <div className="prompt-template-empty">Loading prompts...</div> : null}
+            {!templatesLoading && templates.length === 0 ? (
+              <div className="prompt-template-empty">No saved prompts for this workspace and agent.</div>
+            ) : null}
+            {templates.length ? (
+              <div className="prompt-template-list">
+                {templates.map((template) => (
+                  <div className="prompt-template-item" key={template.id}>
+                    <div className="prompt-template-copy">
+                      <strong>{template.title}</strong>
+                      <span>{template.body}</span>
+                    </div>
+                    <Button
+                      className="secondary small"
+                      isDisabled={disabled}
+                      onPress={() => {
+                        void applyPromptTemplate(template);
+                      }}
+                      type="button"
+                    >
+                      Insert
+                    </Button>
+                    <Button
+                      className="secondary small"
+                      isDisabled={templateBusyId === template.id}
+                      onPress={() => {
+                        void deletePromptTemplate(template.id);
+                      }}
+                      type="button"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {attachments.length ? (
           <div className="composer-attachments">
             {attachments.map((attachment) => (
@@ -922,6 +1077,13 @@ function PromptComposer({
         {attachmentError ? <div className="composer-error">{attachmentError}</div> : null}
         <div className="composer-actions">
           <span className="shortcut-hint">Ctrl Enter</span>
+          <Button
+            className="secondary"
+            onPress={() => setTemplatesOpen((open) => !open)}
+            type="button"
+          >
+            Prompts
+          </Button>
           <Button
             className="secondary"
             isDisabled={disabled || busy || !imagePromptSupported}
