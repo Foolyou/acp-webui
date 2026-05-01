@@ -1238,7 +1238,7 @@ function MessageBubble({ live = false, message }: { live?: boolean; message: Cha
 }
 
 function MessageContent({ message }: { message: ChatMessage }) {
-  const blocks = message.contentBlocks?.length ? message.contentBlocks : message.content ? [{ type: "text" as const, text: message.content }] : [];
+  const blocks = renderableMessageBlocks(message);
   return (
     <div className="message-content structured">
       {blocks.map((block, index) =>
@@ -1253,6 +1253,23 @@ function MessageContent({ message }: { message: ChatMessage }) {
       )}
     </div>
   );
+}
+
+export function renderableMessageBlocks(message: Pick<ChatMessage, "content" | "contentBlocks">) {
+  const blocks = message.contentBlocks?.length
+    ? message.contentBlocks
+    : message.content
+      ? [{ type: "text" as const, text: message.content }]
+      : [];
+  return blocks.reduce<MessageContentBlock[]>((merged, block) => {
+    const previous = merged[merged.length - 1];
+    if (block.type === "text" && previous?.type === "text") {
+      merged[merged.length - 1] = { type: "text", text: previous.text + block.text };
+    } else {
+      merged.push(block);
+    }
+    return merged;
+  }, []);
 }
 
 function ReviewArtifactCard({
