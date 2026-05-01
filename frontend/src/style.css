@@ -1651,13 +1651,13 @@ pre {
 
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.5rem;
   min-width: 0;
 }
 
 .composer textarea {
+  grid-column: 1 / -1;
   min-height: 4.4rem;
   resize: vertical;
 }
@@ -1785,10 +1785,12 @@ pre {
 }
 
 .composer-actions {
+  grid-column: 1 / -1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.65rem;
+  gap: 0.45rem;
   min-width: 0;
 }
 
@@ -2107,13 +2109,8 @@ pre {
     bottom: 6.75rem;
   }
 
-  .composer {
-    align-items: end;
-  }
-
   .composer-actions {
-    display: grid;
-    justify-items: end;
+    gap: 0.65rem;
   }
 
   .shortcut-hint {
