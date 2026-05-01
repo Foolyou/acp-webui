@@ -173,6 +173,24 @@ describe("buildTimelineBlocks", () => {
     ]);
   });
 
+  test("keeps linked image artifacts visible in the timeline", () => {
+    const blocks = buildTimelineBlocks(
+      [
+        toolCall({ id: "tool-1", reviewArtifactIds: [] }),
+        reviewArtifactItem({
+          id: "image-artifact",
+          toolCallId: "acp-tool-1",
+          artifactKind: "image",
+          title: "Generated image"
+        })
+      ],
+      [reviewArtifact({ id: "image-artifact", toolCallId: "acp-tool-1", kind: "image" })]
+    );
+
+    expect(blocks.map((block) => block.kind)).toEqual(["tool_group", "review_artifact"]);
+    expect(blocks[1]).toMatchObject({ kind: "review_artifact", id: "image-artifact" });
+  });
+
   test("folds tool-linked permissions without breaking consecutive groups", () => {
     const blocks = buildTimelineBlocks([
       toolCall({ id: "tool-1", input: { command: "npm test" } }),

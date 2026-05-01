@@ -138,6 +138,9 @@ function shouldFoldReviewArtifact(
   visibleToolCallIds: Set<string>,
   foldedArtifactIds: Set<string>
 ) {
+  if (item.artifactKind === "image") {
+    return false;
+  }
   return foldedArtifactIds.has(item.id) || Boolean(item.toolCallId && visibleToolCallIds.has(item.toolCallId));
 }
 
