@@ -54,6 +54,7 @@ export function buildTimelineBlocks(
       .filter((id): id is string => Boolean(id))
   );
   const foldedArtifactIds = new Set<string>();
+  const imageArtifactToolCallIds = imageToolCallIds(timeline, reviewArtifacts);
 
   for (const item of timeline) {
     if (item.kind !== "tool_call") continue;
@@ -83,6 +84,10 @@ export function buildTimelineBlocks(
         blocks.push({ kind: "message", id: item.id, item });
         break;
       case "tool_call": {
+        if (item.toolCallId && imageArtifactToolCallIds.has(item.toolCallId)) {
+          flushTools();
+          break;
+        }
         const toolItem = toolCallWithPermissionContext(item, permissionsByToolCallId);
         if (shouldFoldPermissionToolCall(toolItem, permissionsByToolCallId)) {
           break;
@@ -142,6 +147,21 @@ function shouldFoldReviewArtifact(
     return false;
   }
   return foldedArtifactIds.has(item.id) || Boolean(item.toolCallId && visibleToolCallIds.has(item.toolCallId));
+}
+
+function imageToolCallIds(timeline: TimelineItem[], reviewArtifacts: ReviewArtifactSummary[]) {
+  const ids = new Set<string>();
+  for (const artifact of reviewArtifacts) {
+    if (artifact.kind === "image" && artifact.toolCallId) {
+      ids.add(artifact.toolCallId);
+    }
+  }
+  for (const item of timeline) {
+    if (item.kind === "review_artifact" && item.artifactKind === "image" && item.toolCallId) {
+      ids.add(item.toolCallId);
+    }
+  }
+  return ids;
 }
 
 function shouldFoldPermission(item: PermissionTimelineItem) {

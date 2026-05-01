@@ -21,13 +21,15 @@ export function ReviewOverlay({ artifact, onClose }: { artifact: ReviewArtifact 
                 </Button>
               </div>
               <div className="modal-body">
-                <div className="review-summary">
-                  <p className="muted">{artifact.summary}</p>
-                  <div className="review-nav">
-                    <span>{artifact.source}</span>
-                    {artifact.toolCallId ? <span>{artifact.toolCallId}</span> : null}
+                {artifact.kind === "image" ? null : (
+                  <div className="review-summary">
+                    <p className="muted">{artifact.summary}</p>
+                    <div className="review-nav">
+                      <span>{artifact.source}</span>
+                      {artifact.toolCallId ? <span>{artifact.toolCallId}</span> : null}
+                    </div>
                   </div>
-                </div>
+                )}
                 <ReviewPayload artifact={artifact} />
               </div>
             </>
@@ -57,18 +59,13 @@ function ReviewPayload({ artifact }: { artifact: ReviewArtifact }) {
 function ImagePayload({ artifact }: { artifact: ReviewArtifact }) {
   const image = imagePreviewFromPayload(artifact.payload, artifact.title);
   if (!image) {
-    return <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>;
+    return <p className="muted">Image preview unavailable.</p>;
   }
+  const description = image.caption ?? artifact.summary ?? image.sourcePath;
   return (
     <div className="review-image">
       <img alt={image.name ?? artifact.title} src={image.src} />
-      {image.caption || image.sourcePath ? (
-        <p className="muted">{image.caption ?? image.sourcePath}</p>
-      ) : null}
-      <details className="raw-details">
-        <summary>Raw</summary>
-        <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>
-      </details>
+      {description ? <p className="muted">{description}</p> : null}
     </div>
   );
 }

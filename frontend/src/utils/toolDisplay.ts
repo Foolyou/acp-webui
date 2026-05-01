@@ -1,5 +1,4 @@
 import type { ReviewArtifactSummary, TimelineItem } from "../types";
-import { payloadText } from "./payload";
 
 export type ToolCallTimelineItem = Extract<TimelineItem, { kind: "tool_call" }>;
 
@@ -12,8 +11,6 @@ export type ToolActivityKind =
   | "mcp"
   | "generic";
 
-export type ToolActivityEvidenceKind = "output" | "diff" | "markdown" | "terminal" | "image" | "artifact" | "diagnostics";
-
 export type ToolCallDisplay = {
   kind: ToolActivityKind;
   actionLabel: string;
@@ -23,22 +20,12 @@ export type ToolCallDisplay = {
   result: string;
   metadata: ToolCallDisplayDetail[];
   outputTail?: string;
-  evidenceActions: ToolActivityEvidenceAction[];
-  diagnostics: {
-    rawInput: unknown;
-    rawOutput?: unknown | null;
-  };
+  detailText: string;
 };
 
 export type ToolCallDisplayDetail = {
   label: string;
   value: string;
-};
-
-export type ToolActivityEvidenceAction = {
-  id: string;
-  kind: ToolActivityEvidenceKind;
-  label: string;
 };
 
 const MAX_SUBJECT_LENGTH = 180;
@@ -87,29 +74,29 @@ export function toolCallDisplay(
   const outputText = outputFromPayload(item.output);
   const result = compactText(item.summary || outputText || resultForStatus(item.status), MAX_RESULT_LENGTH);
   const outputTail = outputText && outputText !== "null" ? compactMultilineTail(outputText) : undefined;
-
-  return {
+  const metadata = uniqueDetails([
+    detail("Command", command ?? (kind === "command" ? contentText : undefined)),
+    detail("Path", path),
+    detail("Query", query),
+    detail("URL", url),
+    detail("Cwd", cwd),
+    detail("Server", server),
+    detail("Tool", tool && tool !== item.toolKind ? tool : item.toolKind)
+  ]);
+  const displayBase = {
     kind,
     actionLabel: actionLabel(kind, item.toolKind),
     subject: compactText(subject, MAX_SUBJECT_LENGTH),
     status: item.status,
     statusLabel: statusLabel(item.status),
     result,
-    metadata: uniqueDetails([
-      detail("Command", command ?? (kind === "command" ? contentText : undefined)),
-      detail("Path", path),
-      detail("Query", query),
-      detail("URL", url),
-      detail("Cwd", cwd),
-      detail("Server", server),
-      detail("Tool", tool && tool !== item.toolKind ? tool : item.toolKind)
-    ]),
-    outputTail,
-    evidenceActions: evidenceActions(item, reviewArtifacts, outputTail),
-    diagnostics: {
-      rawInput: item.input,
-      rawOutput: item.output
-    }
+    metadata,
+    outputTail
+  };
+
+  return {
+    ...displayBase,
+    detailText: toolDetailText(displayBase, reviewArtifacts, item.reviewArtifactIds)
   };
 }
 
@@ -182,86 +169,6 @@ function subjectForKind(
     case "generic":
       return values.fallback;
   }
-}
-
-function evidenceActions(
-  item: ToolCallTimelineItem,
-  reviewArtifacts: ReviewArtifactSummary[],
-  outputTail?: string
-): ToolActivityEvidenceAction[] {
-  const actions = item.reviewArtifactIds.map((artifactId) => {
-    const artifact = reviewArtifacts.find((candidate) => candidate.id === artifactId);
-    const kind = evidenceKind(artifact?.kind);
-    return {
-      id: artifactId,
-      kind,
-      label: evidenceLabel(kind, artifact?.title)
-    };
-  });
-
-  if (outputTail && actions.every((action) => action.kind !== "terminal" && action.kind !== "output")) {
-    actions.unshift({ id: `${item.id}:output`, kind: "output", label: "Output" });
-  }
-
-  actions.push({ id: `${item.id}:diagnostics`, kind: "diagnostics", label: "Diagnostics" });
-  return actions;
-}
-
-function evidenceKind(kind?: string | null): ToolActivityEvidenceKind {
-  switch ((kind ?? "").toLowerCase()) {
-    case "diff":
-      return "diff";
-    case "markdown":
-      return "markdown";
-    case "terminal":
-      return "terminal";
-    case "image":
-      return "image";
-    case "tool_call":
-    case "generic":
-    default:
-      return "artifact";
-  }
-}
-
-function evidenceLabel(kind: ToolActivityEvidenceKind, title?: string | null) {
-  switch (kind) {
-    case "diff":
-      return "Diff";
-    case "markdown":
-      return "Markdown";
-    case "terminal":
-      return "Terminal";
-    case "image":
-      return "Image";
-    case "output":
-      return "Output";
-    case "diagnostics":
-      return "Diagnostics";
-    case "artifact":
-      return artifactEvidenceLabel(title);
-  }
-}
-
-function artifactEvidenceLabel(title?: string | null) {
-  const compact = compactText(title ?? "", 40);
-  if (!compact) {
-    return "Artifact";
-  }
-
-  return isPermissionStatusTitle(compact) ? "Request details" : compact;
-}
-
-function isPermissionStatusTitle(title: string) {
-  const normalized = title.trim().toLowerCase();
-  return (
-    normalized === "permission requested" ||
-    normalized === "permission request" ||
-    normalized === "permission resolved" ||
-    normalized === "approval requested" ||
-    normalized === "approval request" ||
-    normalized === "approval resolved"
-  );
 }
 
 function detail(label: string, value?: string | null): ToolCallDisplayDetail | null {
@@ -414,7 +321,7 @@ function outputFromPayload(payload: unknown) {
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
     if (values.length) return values.join("\n");
   }
-  return payloadText(payload);
+  return "";
 }
 
 function compactText(value: string, maxLength: number) {
@@ -450,4 +357,39 @@ function statusLabel(status: string) {
 function humanize(value: string) {
   const text = value.replace(/[_-]+/g, " ").trim();
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Tool";
+}
+
+function toolDetailText(
+  display: Omit<ToolCallDisplay, "detailText">,
+  reviewArtifacts: ReviewArtifactSummary[],
+  artifactIds: string[]
+) {
+  const lines = [
+    `${display.actionLabel} ${display.subject}`,
+    `Status: ${display.statusLabel}`
+  ];
+
+  if (display.result && display.result.toLowerCase() !== display.statusLabel) {
+    lines.push(`Result: ${display.result}`);
+  }
+
+  for (const item of display.metadata) {
+    lines.push(`${item.label}: ${item.value}`);
+  }
+
+  const linkedArtifacts = artifactIds
+    .map((id) => reviewArtifacts.find((artifact) => artifact.id === id))
+    .filter((artifact): artifact is ReviewArtifactSummary => Boolean(artifact))
+    .filter((artifact) => artifact.kind !== "image")
+    .map((artifact) => compactText(artifact.title || artifact.summary || artifact.kind, MAX_DETAIL_LENGTH));
+
+  if (linkedArtifacts.length) {
+    lines.push(`Evidence: ${Array.from(new Set(linkedArtifacts)).join(", ")}`);
+  }
+
+  if (display.outputTail) {
+    lines.push(`Output:\n${display.outputTail}`);
+  }
+
+  return Array.from(new Set(lines.filter(Boolean))).join("\n");
 }

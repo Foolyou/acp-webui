@@ -574,7 +574,7 @@ function TimelineBlockRow({
     case "message":
       return <MessageBubble message={timelineMessage(block.item)} />;
     case "tool_group":
-      return <ToolGroupRow block={block} onOpenReviewArtifact={onOpenReviewArtifact} />;
+      return <ToolGroupRow block={block} />;
     case "review_artifact": {
       const artifact = reviewArtifacts.find((item) => item.id === block.item.id);
       return (
@@ -605,11 +605,9 @@ function TimelineBlockRow({
 }
 
 function ToolGroupRow({
-  block,
-  onOpenReviewArtifact
+  block
 }: {
   block: Extract<TimelineDisplayBlock, { kind: "tool_group" }>;
-  onOpenReviewArtifact: (artifactId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isMulti = block.entries.length > 1;
@@ -624,22 +622,19 @@ function ToolGroupRow({
         <strong className="tool-group-summary">{block.summary}</strong>
         {block.statusLabel ? <span className={`tool-status ${block.status}`}>{block.statusLabel}</span> : null}
         <Button
+          aria-label={expanded ? "Collapse tool details" : "Expand tool details"}
           aria-expanded={expanded}
           className="secondary small tool-group-toggle"
           type="button"
           onPress={() => setExpanded((current) => !current)}
         >
-          {expanded ? "Hide" : "Details"}
+          <span aria-hidden="true">{expanded ? "v" : ">"}</span>
         </Button>
       </div>
       {expanded ? (
         <div className="tool-group-items">
           {block.entries.map((entry) => (
-            <ToolGroupItem
-              entry={entry}
-              key={entry.item.id}
-              onOpenReviewArtifact={onOpenReviewArtifact}
-            />
+            <ToolGroupItem entry={entry} key={entry.item.id} />
           ))}
         </div>
       ) : null}
@@ -647,20 +642,8 @@ function ToolGroupRow({
   );
 }
 
-function ToolGroupItem({
-  entry,
-  onOpenReviewArtifact
-}: {
-  entry: TimelineToolGroupEntry;
-  onOpenReviewArtifact: (artifactId: string) => void;
-}) {
-  const [outputExpanded, setOutputExpanded] = useState(false);
+function ToolGroupItem({ entry }: { entry: TimelineToolGroupEntry }) {
   const { display, item } = entry;
-  const showOutputTail = Boolean(display.outputTail) && (outputExpanded || item.status === "failed");
-  const artifactActions = display.evidenceActions.filter(
-    (action) => action.kind !== "diagnostics" && action.kind !== "output"
-  );
-  const hasOutputAction = display.evidenceActions.some((action) => action.kind === "output");
 
   return (
     <div className={`tool-item ${display.kind} ${item.status}`}>
@@ -669,29 +652,7 @@ function ToolGroupItem({
         <strong>{display.subject}</strong>
         <span className={`tool-status ${display.status}`}>{display.statusLabel}</span>
       </div>
-      {showOutputTail && display.outputTail ? <pre className="tool-output">{display.outputTail}</pre> : null}
-      <div className="tool-links">
-        {hasOutputAction ? (
-          <Button className="secondary small" onPress={() => setOutputExpanded((current) => !current)}>
-            {outputExpanded ? "Hide output" : "Output"}
-          </Button>
-        ) : null}
-        {artifactActions.map((action) => (
-          <Button className="secondary small" key={action.id} onPress={() => onOpenReviewArtifact(action.id)}>
-            {action.label}
-          </Button>
-        ))}
-        <details className="tool-diagnostics raw-details">
-          <summary>Diagnostics</summary>
-          <pre className="review-pre">
-            {JSON.stringify(
-              { input: display.diagnostics.rawInput, output: display.diagnostics.rawOutput },
-              null,
-              2
-            )}
-          </pre>
-        </details>
-      </div>
+      <pre className="tool-detail-text">{display.detailText}</pre>
     </div>
   );
 }
@@ -1287,15 +1248,24 @@ function ReviewArtifactCard({
   onOpen: (artifactId: string) => void;
 }) {
   const image = imagePreviewFromArtifact(artifact);
+  if (image) {
+    const description = image.caption ?? artifact.summary ?? artifact.title ?? image.sourcePath;
+    return (
+      <Button
+        aria-label={`Open image preview: ${artifact.title}`}
+        className="review-card image-artifact-card"
+        onPress={() => onOpen(artifact.id)}
+      >
+        <figure className="artifact-image-preview">
+          <img alt={image.name ?? artifact.title} src={image.src} />
+          {description ? <figcaption>{description}</figcaption> : null}
+        </figure>
+      </Button>
+    );
+  }
   return (
     <Button className="review-card" onPress={() => onOpen(artifact.id)}>
       <span className="message-role">{artifact.kind}</span>
-      {image ? (
-        <figure className="artifact-image-preview">
-          <img alt={image.name ?? artifact.title} src={image.src} />
-          {image.caption || image.sourcePath ? <figcaption>{image.caption ?? image.sourcePath}</figcaption> : null}
-        </figure>
-      ) : null}
       <strong>{artifact.title}</strong>
       <span>{artifact.summary}</span>
       <small>

@@ -173,7 +173,7 @@ describe("buildTimelineBlocks", () => {
     ]);
   });
 
-  test("keeps linked image artifacts visible in the timeline", () => {
+  test("renders linked image artifacts without duplicate tool rows", () => {
     const blocks = buildTimelineBlocks(
       [
         toolCall({ id: "tool-1", reviewArtifactIds: [] }),
@@ -187,8 +187,30 @@ describe("buildTimelineBlocks", () => {
       [reviewArtifact({ id: "image-artifact", toolCallId: "acp-tool-1", kind: "image" })]
     );
 
-    expect(blocks.map((block) => block.kind)).toEqual(["tool_group", "review_artifact"]);
+    expect(blocks.map((block) => block.kind)).toEqual(["review_artifact"]);
+    expect(blocks[0]).toMatchObject({ kind: "review_artifact", id: "image-artifact" });
+  });
+
+  test("image artifact blocks split surrounding ordinary tool groups", () => {
+    const blocks = buildTimelineBlocks(
+      [
+        toolCall({ id: "tool-before", toolCallId: "tool-before", input: { command: "npm test" } }),
+        toolCall({ id: "image-tool", toolCallId: "image-tool", toolKind: "mcp__display_image" }),
+        reviewArtifactItem({
+          id: "image-artifact",
+          toolCallId: "image-tool",
+          artifactKind: "image",
+          title: "Generated image"
+        }),
+        toolCall({ id: "tool-after", toolCallId: "tool-after", input: { command: "npm run build" } })
+      ],
+      [reviewArtifact({ id: "image-artifact", toolCallId: "image-tool", kind: "image" })]
+    );
+
+    expect(blocks.map((block) => block.kind)).toEqual(["tool_group", "review_artifact", "tool_group"]);
+    expect(blocks[0]).toMatchObject({ kind: "tool_group", summary: "Ran npm test" });
     expect(blocks[1]).toMatchObject({ kind: "review_artifact", id: "image-artifact" });
+    expect(blocks[2]).toMatchObject({ kind: "tool_group", summary: "Ran npm run build" });
   });
 
   test("folds tool-linked permissions without breaking consecutive groups", () => {

@@ -49,7 +49,8 @@ describe("toolCallDisplay", () => {
     expect(display.actionLabel).toBe("Ran");
     expect(display.subject).toBe("npm run build");
     expect(display.metadata).toContainEqual({ label: "Command", value: "npm run build" });
-    expect(display.evidenceActions.at(-1)).toMatchObject({ kind: "diagnostics", label: "Diagnostics" });
+    expect(display.detailText).toContain("Ran npm run build");
+    expect(display.detailText).not.toContain("{");
   });
 
   test("extracts command activity from nested sparse ACP content", () => {
@@ -161,42 +162,28 @@ describe("toolCallDisplay", () => {
     expect(display.kind).toBe("command");
     expect(display.statusLabel).toBe("failed");
     expect(display.outputTail).toBe("line 2\nline 3\nline 4\nline 5\nline 6\nline 7");
-    expect(display.evidenceActions[0]).toMatchObject({ kind: "output", label: "Output" });
+    expect(display.detailText).toContain("Output:\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7");
   });
 
-  test("maps linked review artifacts to typed evidence actions", () => {
+  test("summarizes linked non-image review artifacts in detail text", () => {
     const display = toolCallDisplay(
       toolCall({ reviewArtifactIds: ["artifact-1", "artifact-2"] }),
       [artifact({ id: "artifact-1", kind: "diff" }), artifact({ id: "artifact-2", kind: "markdown" })]
     );
 
-    expect(display.evidenceActions).toContainEqual({ id: "artifact-1", kind: "diff", label: "Diff" });
-    expect(display.evidenceActions).toContainEqual({ id: "artifact-2", kind: "markdown", label: "Markdown" });
+    expect(display.detailText).toContain("Evidence: Workspace diff");
   });
 
-  test("maps linked image artifacts to image evidence actions", () => {
+  test("omits linked image artifacts from ordinary tool detail text", () => {
     const display = toolCallDisplay(
       toolCall({ reviewArtifactIds: ["artifact-1"] }),
       [artifact({ id: "artifact-1", kind: "image", title: "Preview" })]
     );
 
-    expect(display.evidenceActions).toContainEqual({ id: "artifact-1", kind: "image", label: "Image" });
+    expect(display.detailText).not.toContain("Preview");
   });
 
-  test("uses action labels for permission status artifacts", () => {
-    const display = toolCallDisplay(
-      toolCall({ reviewArtifactIds: ["artifact-1"] }),
-      [artifact({ id: "artifact-1", kind: "generic", title: "Permission requested" })]
-    );
-
-    expect(display.evidenceActions).toContainEqual({
-      id: "artifact-1",
-      kind: "artifact",
-      label: "Request details"
-    });
-  });
-
-  test("falls back to generic activity and diagnostics", () => {
+  test("falls back to generic activity with readable detail text", () => {
     const input = { payload: { opaque: true } };
     const output = { text: "opaque output" };
     const display = toolCallDisplay(
@@ -214,7 +201,8 @@ describe("toolCallDisplay", () => {
     expect(display.subject).toBe("Do custom work");
     expect(display.result).toBe("custom_tool completed");
     expect(display.outputTail).toBe("opaque output");
-    expect(display.diagnostics.rawInput).toBe(input);
-    expect(display.diagnostics.rawOutput).toBe(output);
+    expect(display.detailText).toContain("Custom tool Do custom work");
+    expect(display.detailText).toContain("Output:\nopaque output");
+    expect(display.detailText).not.toContain(JSON.stringify(input));
   });
 });
