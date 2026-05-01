@@ -1,4 +1,5 @@
 /.data/
+/frontend/.data/
 /target/
 /frontend/dist/
 /frontend/node_modules/
