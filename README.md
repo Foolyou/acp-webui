@@ -147,6 +147,21 @@ cargo run -- \
   --codex-acp-arg @zed-industries/codex-acp
 ```
 
+On Linux, start or restart both development servers on loopback:
+
+```bash
+./scripts/run-linux-dev.sh
+```
+
+Useful variants:
+
+```bash
+./scripts/run-linux-dev.sh --install-frontend-deps
+./scripts/run-linux-dev.sh --no-run
+./scripts/run-linux-dev.sh --tailscale
+./scripts/run-linux-dev.sh --tailscale-ip 100.x.y.z --trusted-client <trusted-client-cidr>
+```
+
 The backend serves API endpoints under `/api/*`. Development builds serve the production frontend from `frontend/dist` when it exists. During frontend development, use the Vite dev server and point it at the backend API.
 
 To run both development servers on your local Tailscale IPv4 address with Vite hot reload:
