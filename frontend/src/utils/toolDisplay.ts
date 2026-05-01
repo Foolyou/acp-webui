@@ -12,7 +12,7 @@ export type ToolActivityKind =
   | "mcp"
   | "generic";
 
-export type ToolActivityEvidenceKind = "output" | "diff" | "markdown" | "terminal" | "artifact" | "diagnostics";
+export type ToolActivityEvidenceKind = "output" | "diff" | "markdown" | "terminal" | "image" | "artifact" | "diagnostics";
 
 export type ToolCallDisplay = {
   kind: ToolActivityKind;
@@ -215,6 +215,8 @@ function evidenceKind(kind?: string | null): ToolActivityEvidenceKind {
       return "markdown";
     case "terminal":
       return "terminal";
+    case "image":
+      return "image";
     case "tool_call":
     case "generic":
     default:
@@ -230,6 +232,8 @@ function evidenceLabel(kind: ToolActivityEvidenceKind, title?: string | null) {
       return "Markdown";
     case "terminal":
       return "Terminal";
+    case "image":
+      return "Image";
     case "output":
       return "Output";
     case "diagnostics":

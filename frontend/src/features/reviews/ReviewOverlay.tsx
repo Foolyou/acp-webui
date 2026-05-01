@@ -1,6 +1,7 @@
 import { Button, Dialog, Heading, Modal, ModalOverlay } from "react-aria-components";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import type { ReviewArtifact } from "../../types";
+import { imagePreviewFromPayload } from "../../utils/imagePreview";
 import { payloadText } from "../../utils/payload";
 
 export function ReviewOverlay({ artifact, onClose }: { artifact: ReviewArtifact | null; onClose: () => void }) {
@@ -47,7 +48,29 @@ function ReviewPayload({ artifact }: { artifact: ReviewArtifact }) {
   if (artifact.kind === "terminal") {
     return <pre className="review-pre">{payloadText(artifact.payload)}</pre>;
   }
+  if (artifact.kind === "image") {
+    return <ImagePayload artifact={artifact} />;
+  }
   return <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>;
+}
+
+function ImagePayload({ artifact }: { artifact: ReviewArtifact }) {
+  const image = imagePreviewFromPayload(artifact.payload, artifact.title);
+  if (!image) {
+    return <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>;
+  }
+  return (
+    <div className="review-image">
+      <img alt={image.name ?? artifact.title} src={image.src} />
+      {image.caption || image.sourcePath ? (
+        <p className="muted">{image.caption ?? image.sourcePath}</p>
+      ) : null}
+      <details className="raw-details">
+        <summary>Raw</summary>
+        <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>
+      </details>
+    </div>
+  );
 }
 
 function DiffPayload({ payload }: { payload: unknown }) {

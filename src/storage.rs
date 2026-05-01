@@ -11,11 +11,11 @@ use uuid::Uuid;
 use serde_json::Value;
 
 use crate::models::{
-    continuity_state, permission_status, queued_prompt_status, role, status, tool_call_status,
-    turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message, MessageContentBlock,
-    MessageRow, NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow,
-    PromptTemplate, PromptTemplateRow, QueuedPrompt, QueuedPromptRow, ReviewArtifact,
-    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
+    continuity_state, permission_status, queued_prompt_status, review_artifact_kind, role, status,
+    tool_call_status, turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message,
+    MessageContentBlock, MessageRow, NewReviewArtifact, PermissionOption, PermissionRequest,
+    PermissionRequestRow, PromptTemplate, PromptTemplateRow, QueuedPrompt, QueuedPromptRow,
+    ReviewArtifact, ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
     SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
     SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
     UpsertToolCall, Workspace,
@@ -2326,6 +2326,7 @@ fn row_to_review_artifact(row: ReviewArtifactRow) -> anyhow::Result<ReviewArtifa
 }
 
 fn row_to_review_artifact_summary(row: ReviewArtifactRow) -> ReviewArtifactSummary {
+    let preview = review_artifact_preview(&row.kind, &row.payload_json);
     ReviewArtifactSummary {
         id: row.id,
         session_id: row.session_id,
@@ -2333,9 +2334,24 @@ fn row_to_review_artifact_summary(row: ReviewArtifactRow) -> ReviewArtifactSumma
         kind: row.kind,
         title: row.title,
         summary: row.summary,
+        preview,
         source: row.source,
         created_at: row.created_at,
     }
+}
+
+fn review_artifact_preview(kind: &str, payload_json: &str) -> Option<Value> {
+    if kind != review_artifact_kind::IMAGE {
+        return None;
+    }
+    let payload: Value = serde_json::from_str(payload_json).ok()?;
+    Some(serde_json::json!({
+        "mimeType": payload.get("mimeType").cloned().unwrap_or(Value::Null),
+        "data": payload.get("data").cloned().unwrap_or(Value::Null),
+        "name": payload.get("name").cloned().unwrap_or(Value::Null),
+        "caption": payload.get("caption").cloned().unwrap_or(Value::Null),
+        "sourcePath": payload.get("sourcePath").cloned().unwrap_or(Value::Null)
+    }))
 }
 
 fn dedupe_review_artifact_summaries(

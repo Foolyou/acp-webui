@@ -17,6 +17,7 @@ import type {
   SessionDetail,
   SkillSummary
 } from "../../types";
+import { imagePreviewFromArtifact } from "../../utils/imagePreview";
 import {
   fallbackPermissionModes,
   connectionStatusForMode,
@@ -332,6 +333,7 @@ export function SessionPane({
             block={block}
             key={`${block.kind}-${block.id}`}
             onOpenReviewArtifact={onOpenReviewArtifact}
+            reviewArtifacts={currentSession.reviewArtifacts}
           />
         ))}
         {running && !liveAssistant ? <RunningSkeleton agentName={agentName} waitingApproval={waitingApproval} /> : null}
@@ -561,17 +563,20 @@ function ModelSelector({
 
 function TimelineBlockRow({
   block,
-  onOpenReviewArtifact
+  onOpenReviewArtifact,
+  reviewArtifacts
 }: {
   block: TimelineDisplayBlock;
   onOpenReviewArtifact: (artifactId: string) => void;
+  reviewArtifacts: ReviewArtifactSummary[];
 }) {
   switch (block.kind) {
     case "message":
       return <MessageBubble message={timelineMessage(block.item)} />;
     case "tool_group":
       return <ToolGroupRow block={block} onOpenReviewArtifact={onOpenReviewArtifact} />;
-    case "review_artifact":
+    case "review_artifact": {
+      const artifact = reviewArtifacts.find((item) => item.id === block.item.id);
       return (
         <ReviewArtifactCard
           artifact={{
@@ -581,12 +586,14 @@ function TimelineBlockRow({
             kind: block.item.artifactKind,
             title: block.item.title,
             summary: block.item.summary,
+            preview: artifact?.preview,
             source: block.item.source,
             createdAt: block.item.timestamp
           }}
           onOpen={onOpenReviewArtifact}
         />
       );
+    }
     case "permission":
       return (
         <div className="timeline-event permission-event">
@@ -1279,9 +1286,16 @@ function ReviewArtifactCard({
   artifact: ReviewArtifactSummary;
   onOpen: (artifactId: string) => void;
 }) {
+  const image = imagePreviewFromArtifact(artifact);
   return (
     <Button className="review-card" onPress={() => onOpen(artifact.id)}>
       <span className="message-role">{artifact.kind}</span>
+      {image ? (
+        <figure className="artifact-image-preview">
+          <img alt={image.name ?? artifact.title} src={image.src} />
+          {image.caption || image.sourcePath ? <figcaption>{image.caption ?? image.sourcePath}</figcaption> : null}
+        </figure>
+      ) : null}
       <strong>{artifact.title}</strong>
       <span>{artifact.summary}</span>
       <small>

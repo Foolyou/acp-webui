@@ -24,7 +24,10 @@ use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
-    acp::{AgentRuntimeManager, AgentRuntimeStatus, CodexRuntime, ConnectionStatus, RealtimeEvent},
+    acp::{
+        persist_image_artifacts_from_text, AgentRuntimeManager, AgentRuntimeStatus, CodexRuntime,
+        ConnectionStatus, RealtimeEvent,
+    },
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
@@ -1315,8 +1318,16 @@ async fn run_prompt_turn(
                     }
                     let _ = events_tx.send(RealtimeEvent::AssistantMessage {
                         session_id: session_id.clone(),
-                        content: outcome.content,
+                        content: outcome.content.clone(),
                     });
+                    persist_image_artifacts_from_text(
+                        &storage,
+                        &events_tx,
+                        &session_id,
+                        None,
+                        &outcome.content,
+                    )
+                    .await;
                 }
                 match storage.pending_permission_for_session(&session_id).await {
                     Ok(Some(_)) => {

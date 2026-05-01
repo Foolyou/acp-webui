@@ -141,6 +141,7 @@ export type ReviewArtifactSummary = {
   kind: string;
   title: string;
   summary: string;
+  preview?: unknown | null;
   source: string;
   createdAt: string;
 };

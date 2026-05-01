@@ -440,6 +440,7 @@ pub struct ReviewArtifactSummary {
     pub kind: String,
     pub title: String,
     pub summary: String,
+    pub preview: Option<Value>,
     pub source: String,
     pub created_at: String,
 }
@@ -774,6 +775,7 @@ pub mod permission_status {
 
 pub mod review_artifact_kind {
     pub const DIFF: &str = "diff";
+    pub const IMAGE: &str = "image";
     pub const MARKDOWN: &str = "markdown";
     pub const TERMINAL: &str = "terminal";
     pub const TOOL_CALL: &str = "tool_call";

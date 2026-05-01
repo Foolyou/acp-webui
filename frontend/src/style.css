@@ -1401,6 +1401,29 @@ pre {
   text-align: left;
 }
 
+.artifact-image-preview {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0;
+  max-width: min(34rem, 100%);
+}
+
+.artifact-image-preview img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 20rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-subtle);
+  object-fit: contain;
+}
+
+.artifact-image-preview figcaption {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
 .review-card strong,
 .review-card span,
 .review-card small,
@@ -2003,6 +2026,22 @@ pre {
 
 .review-summary p {
   margin: 0;
+}
+
+.review-image {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.review-image img {
+  display: block;
+  max-width: 100%;
+  max-height: min(62dvh, 34rem);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-subtle);
+  object-fit: contain;
 }
 
 .tool-summary,

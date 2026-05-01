@@ -174,6 +174,15 @@ describe("toolCallDisplay", () => {
     expect(display.evidenceActions).toContainEqual({ id: "artifact-2", kind: "markdown", label: "Markdown" });
   });
 
+  test("maps linked image artifacts to image evidence actions", () => {
+    const display = toolCallDisplay(
+      toolCall({ reviewArtifactIds: ["artifact-1"] }),
+      [artifact({ id: "artifact-1", kind: "image", title: "Preview" })]
+    );
+
+    expect(display.evidenceActions).toContainEqual({ id: "artifact-1", kind: "image", label: "Image" });
+  });
+
   test("uses action labels for permission status artifacts", () => {
     const display = toolCallDisplay(
       toolCall({ reviewArtifactIds: ["artifact-1"] }),

@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -16,6 +17,11 @@ use tokio::{
     process::{Child, Command},
     sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
 };
+
+const DISPLAY_IMAGE_GUIDANCE: &str = "This client can render workspace images inline. When you create, edit, find, capture, or reference an image file that the user should inspect, call the display_image tool with the image path. Prefer showing the image inline over only telling the user its directory or file path.";
+const MAX_DISPLAY_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+const SUPPORTED_DISPLAY_IMAGE_MIME_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 use crate::{
     config::{AgentConfig, Config, ResolvedAgentLaunchProfile, CODEX_AGENT_ID},
@@ -582,6 +588,17 @@ impl AgentRuntime {
             .lock()
             .await
             .remove(&acp_session_id);
+        let prompt_blocks = if self
+            .status
+            .read()
+            .await
+            .prompt_capabilities
+            .embedded_context
+        {
+            prompt_blocks_with_display_image_guidance(&prompt_blocks)
+        } else {
+            prompt_blocks
+        };
 
         let result = peer
             .request(
@@ -788,6 +805,32 @@ impl AgentRuntime {
                     "clientCapabilities": {
                         "fs": {
                             "readTextFile": true
+                        },
+                        "_meta": {
+                            "acp-webui": {
+                                "displayImage": {
+                                    "name": "display_image",
+                                    "description": DISPLAY_IMAGE_GUIDANCE,
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {
+                                                "type": "string",
+                                                "description": "Workspace-contained image path to display inline."
+                                            },
+                                            "title": {
+                                                "type": "string",
+                                                "description": "Optional concise image title."
+                                            },
+                                            "caption": {
+                                                "type": "string",
+                                                "description": "Optional short caption for the user."
+                                            }
+                                        },
+                                        "required": ["path"]
+                                    }
+                                }
+                            }
                         }
                     },
                     "clientInfo": {
@@ -1564,6 +1607,9 @@ async fn handle_incoming_message(
         "fs/read_text_file" => {
             handle_read_text_file(message, writer_tx, storage, session_map).await;
         }
+        "display_image" | "acp-webui/display_image" | "_acp-webui/display_image" => {
+            handle_display_image(message, writer_tx, events_tx, storage, session_map).await;
+        }
         _ => {
             if message.get("id").is_some() {
                 send_error_response(
@@ -1753,6 +1799,20 @@ async fn handle_session_update(
                         tracing::error!(?error, ?update, "failed to persist review artifact");
                     }
                 }
+            }
+            persist_display_image_from_tool_update(storage, events_tx, &local_session_id, update)
+                .await;
+            if let Some(text) = text_from_content(update.get("content"))
+                .or_else(|| text_from_content(update.get("output")))
+            {
+                persist_image_artifacts_from_text(
+                    storage,
+                    events_tx,
+                    &local_session_id,
+                    tool_call_id(update).as_deref(),
+                    &text,
+                )
+                .await;
             }
         }
         "config_option_update" => {
@@ -2087,6 +2147,8 @@ fn review_kind_for_update(update: &Value) -> String {
         .to_ascii_lowercase();
     if explicit.contains("diff") {
         review_artifact_kind::DIFF.to_string()
+    } else if explicit.contains("image") || explicit.contains("display_image") {
+        review_artifact_kind::IMAGE.to_string()
     } else if explicit.contains("markdown") {
         review_artifact_kind::MARKDOWN.to_string()
     } else if explicit.contains("terminal")
@@ -2134,9 +2196,23 @@ fn artifact_summary(artifact: &ReviewArtifact) -> ReviewArtifactSummary {
         kind: artifact.kind.clone(),
         title: artifact.title.clone(),
         summary: artifact.summary.clone(),
+        preview: review_artifact_preview(&artifact.kind, &artifact.payload),
         source: artifact.source.clone(),
         created_at: artifact.created_at.clone(),
     }
+}
+
+fn review_artifact_preview(kind: &str, payload: &Value) -> Option<Value> {
+    if kind != review_artifact_kind::IMAGE {
+        return None;
+    }
+    Some(json!({
+        "mimeType": payload.get("mimeType").cloned().unwrap_or(Value::Null),
+        "data": payload.get("data").cloned().unwrap_or(Value::Null),
+        "name": payload.get("name").cloned().unwrap_or(Value::Null),
+        "caption": payload.get("caption").cloned().unwrap_or(Value::Null),
+        "sourcePath": payload.get("sourcePath").cloned().unwrap_or(Value::Null)
+    }))
 }
 
 async fn handle_permission_request(
@@ -2235,6 +2311,424 @@ async fn handle_read_text_file(
             send_error_response(request_id, error.code, error.message, writer_tx).await;
         }
     }
+}
+
+async fn handle_display_image(
+    message: Value,
+    writer_tx: &mpsc::Sender<Value>,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    storage: &Storage,
+    session_map: &Arc<RwLock<HashMap<String, String>>>,
+) {
+    let request_id = message.get("id").cloned().unwrap_or(Value::Null);
+    match display_image_for_session(&message["params"], storage, session_map, "display_image").await
+    {
+        Ok(artifact) => {
+            let summary = artifact_summary(&artifact);
+            let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
+                artifact: summary.clone(),
+            });
+            send_success_response(
+                request_id,
+                json!({
+                    "displayed": true,
+                    "artifactId": artifact.id,
+                    "kind": artifact.kind,
+                    "title": artifact.title,
+                    "summary": artifact.summary,
+                    "source": summary.source
+                }),
+                writer_tx,
+            )
+            .await;
+        }
+        Err(error) => {
+            send_error_response(request_id, error.code, error.message, writer_tx).await;
+        }
+    }
+}
+
+async fn persist_display_image_from_tool_update(
+    storage: &Storage,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    local_session_id: &str,
+    update: &Value,
+) {
+    if !looks_like_display_image_call(update) {
+        return;
+    }
+    let Some(path) = find_string_field(update, &["path", "imagePath", "file"]) else {
+        return;
+    };
+    match display_image_artifact_for_local_session(
+        storage,
+        local_session_id,
+        tool_call_id(update),
+        &path,
+        find_string_field(update, &["title", "name"]).as_deref(),
+        find_string_field(update, &["caption", "description"]).as_deref(),
+        "display_image",
+    )
+    .await
+    {
+        Ok(artifact) => {
+            let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
+                artifact: artifact_summary(&artifact),
+            });
+        }
+        Err(error) => {
+            tracing::debug!(?error.message, "ignored invalid display_image tool artifact");
+        }
+    }
+}
+
+pub async fn persist_image_artifacts_from_text(
+    storage: &Storage,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    local_session_id: &str,
+    tool_call_id: Option<&str>,
+    text: &str,
+) {
+    let mut created = 0usize;
+    for path in candidate_image_paths(text) {
+        if created >= 3 {
+            break;
+        }
+        match display_image_artifact_for_local_session(
+            storage,
+            local_session_id,
+            tool_call_id.map(ToString::to_string),
+            &path,
+            None,
+            None,
+            "path_enrichment",
+        )
+        .await
+        {
+            Ok(artifact) => {
+                created += 1;
+                let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
+                    artifact: artifact_summary(&artifact),
+                });
+            }
+            Err(error) => {
+                tracing::debug!(?error.message, path, "ignored text image path candidate");
+            }
+        }
+    }
+}
+
+async fn display_image_for_session(
+    params: &Value,
+    storage: &Storage,
+    session_map: &Arc<RwLock<HashMap<String, String>>>,
+    source: &str,
+) -> Result<ReviewArtifact, AcpClientRequestError> {
+    let acp_session_id = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|session_id| !session_id.trim().is_empty())
+        .ok_or_else(|| AcpClientRequestError::invalid_params("sessionId is required"))?;
+    let path = params
+        .get("path")
+        .or_else(|| params.get("imagePath"))
+        .or_else(|| params.get("file"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| AcpClientRequestError::invalid_params("path is required"))?;
+    let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned() else {
+        return Err(AcpClientRequestError::resource_not_found(
+            "ACP session is not registered",
+        ));
+    };
+    display_image_artifact_for_local_session(
+        storage,
+        &local_session_id,
+        params
+            .get("toolCallId")
+            .or_else(|| params.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        path,
+        params.get("title").and_then(Value::as_str),
+        params.get("caption").and_then(Value::as_str),
+        source,
+    )
+    .await
+}
+
+async fn display_image_artifact_for_local_session(
+    storage: &Storage,
+    local_session_id: &str,
+    tool_call_id: Option<String>,
+    path: &str,
+    title: Option<&str>,
+    caption: Option<&str>,
+    source: &str,
+) -> Result<ReviewArtifact, AcpClientRequestError> {
+    let session = storage
+        .get_session(local_session_id)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Session not found"))?;
+    let workspace = storage
+        .get_workspace(&session.workspace_id)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Workspace not found"))?;
+    let snapshot = snapshot_workspace_image(&workspace.path, path).await?;
+    let title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&snapshot.name)
+        .to_string();
+    let caption = caption
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let summary = caption
+        .clone()
+        .unwrap_or_else(|| format!("Image: {}", snapshot.name));
+    let artifact = storage
+        .create_review_artifact(NewReviewArtifact {
+            session_id: local_session_id.to_string(),
+            tool_call_id,
+            kind: review_artifact_kind::IMAGE.to_string(),
+            title,
+            summary,
+            payload: json!({
+                "type": "image",
+                "mimeType": snapshot.mime_type,
+                "data": snapshot.data,
+                "name": snapshot.name,
+                "caption": caption,
+                "sourcePath": snapshot.relative_path,
+                "sizeBytes": snapshot.size_bytes
+            }),
+            source: source.to_string(),
+        })
+        .await
+        .map_err(|_| AcpClientRequestError::invalid_params("Failed to persist image evidence"))?;
+    Ok(artifact)
+}
+
+struct ImageSnapshot {
+    mime_type: String,
+    data: String,
+    name: String,
+    relative_path: String,
+    size_bytes: u64,
+}
+
+async fn snapshot_workspace_image(
+    workspace_path: &str,
+    requested_path: &str,
+) -> Result<ImageSnapshot, AcpClientRequestError> {
+    let workspace_root = tokio::fs::canonicalize(workspace_path)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Workspace not found"))?;
+    let requested_path = normalize_requested_path(&workspace_root, requested_path);
+    let canonical_target = tokio::fs::canonicalize(&requested_path)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Image file not found"))?;
+
+    if !path_is_inside(&canonical_target, &workspace_root) {
+        return Err(AcpClientRequestError::resource_not_found(
+            "Image file is outside the session workspace",
+        ));
+    }
+    let metadata = tokio::fs::metadata(&canonical_target)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Image file not found"))?;
+    if !metadata.is_file() {
+        return Err(AcpClientRequestError::invalid_params(
+            "Image path must refer to a file",
+        ));
+    }
+    if metadata.len() > MAX_DISPLAY_IMAGE_BYTES {
+        return Err(AcpClientRequestError::invalid_params(format!(
+            "Image files must be {} MB or smaller",
+            MAX_DISPLAY_IMAGE_BYTES / 1024 / 1024
+        )));
+    }
+    let bytes = tokio::fs::read(&canonical_target)
+        .await
+        .map_err(|_| AcpClientRequestError::resource_not_found("Image file is not readable"))?;
+    let Some(mime_type) = image_mime_type(&canonical_target, &bytes) else {
+        return Err(AcpClientRequestError::invalid_params(
+            "Unsupported image type",
+        ));
+    };
+    if !SUPPORTED_DISPLAY_IMAGE_MIME_TYPES.contains(&mime_type.as_str()) {
+        return Err(AcpClientRequestError::invalid_params(
+            "Unsupported image type",
+        ));
+    }
+    let name = canonical_target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let relative_path = canonical_target
+        .strip_prefix(&workspace_root)
+        .ok()
+        .and_then(|path| path.to_str())
+        .unwrap_or(&name)
+        .replace('\\', "/");
+
+    Ok(ImageSnapshot {
+        mime_type,
+        data: BASE64_STANDARD.encode(bytes),
+        name,
+        relative_path,
+        size_bytes: metadata.len(),
+    })
+}
+
+fn image_mime_type(path: &Path, bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png".to_string());
+    }
+    if bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff] {
+        return Some("image/jpeg".to_string());
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif".to_string());
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp".to_string());
+    }
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "webp" => Some("image/webp".to_string()),
+        _ => None,
+    }
+}
+
+fn looks_like_display_image_call(value: &Value) -> bool {
+    let mut text = String::new();
+    collect_string_values(value, 0, &mut text);
+    let text = text.to_ascii_lowercase();
+    text.contains("display_image")
+        || text.contains("display image")
+        || text.contains("acp-webui/display_image")
+}
+
+fn find_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    if !value.is_object() && !value.is_array() {
+        return None;
+    }
+    find_string_field_inner(value, keys, 0)
+}
+
+fn find_string_field_inner(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
+    if depth > 5 {
+        return None;
+    }
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(text) = map
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    return Some(text.to_string());
+                }
+            }
+            for key in [
+                "input",
+                "params",
+                "arguments",
+                "toolCall",
+                "data",
+                "content",
+                "output",
+            ] {
+                if let Some(found) = map
+                    .get(key)
+                    .and_then(|value| find_string_field_inner(value, keys, depth + 1))
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| find_string_field_inner(item, keys, depth + 1)),
+        _ => None,
+    }
+}
+
+fn collect_string_values(value: &Value, depth: usize, output: &mut String) {
+    if depth > 5 {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            output.push(' ');
+            output.push_str(text);
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_string_values(item, depth + 1, output);
+            }
+        }
+        Value::Object(map) => {
+            for (key, value) in map {
+                output.push(' ');
+                output.push_str(key);
+                collect_string_values(value, depth + 1, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn candidate_image_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for raw in text.split_whitespace() {
+        let candidate = raw
+            .trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '`' | '\''
+                        | '"'
+                        | ','
+                        | ';'
+                        | ':'
+                        | '.'
+                        | ')'
+                        | '('
+                        | '['
+                        | ']'
+                        | '<'
+                        | '>'
+                        | '!'
+                )
+            })
+            .trim();
+        if candidate.is_empty() || candidate.contains("://") {
+            continue;
+        }
+        let lowercase = candidate.to_ascii_lowercase();
+        if [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+            .iter()
+            .any(|extension| lowercase.ends_with(extension))
+            && !paths.iter().any(|path| path == candidate)
+        {
+            paths.push(candidate.to_string());
+        }
+    }
+    paths
 }
 
 struct AcpClientRequestError {
@@ -2509,6 +3003,15 @@ fn acp_content_blocks(blocks: &[MessageContentBlock]) -> Vec<Value> {
             }
         })
         .collect()
+}
+
+fn prompt_blocks_with_display_image_guidance(
+    blocks: &[MessageContentBlock],
+) -> Vec<MessageContentBlock> {
+    let mut guided = Vec::with_capacity(blocks.len() + 1);
+    guided.push(MessageContentBlock::text(DISPLAY_IMAGE_GUIDANCE));
+    guided.extend(blocks.iter().cloned());
+    guided
 }
 
 fn cancelled_permission_response() -> Value {
@@ -3638,6 +4141,145 @@ for line in sys.stdin:
         .await;
 
         assert!(response.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn display_image_inside_workspace_creates_image_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("preview.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id.clone(),
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "image-1",
+                "method": "display_image",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": "preview.png",
+                    "caption": "Generated preview"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["displayed"], true);
+        let artifacts = storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, review_artifact_kind::IMAGE);
+        assert!(artifacts[0].preview.is_some());
+        let artifact = storage
+            .get_review_artifact_for_session(&session.id, artifacts[0].id.as_str())
+            .await
+            .unwrap();
+        assert_eq!(artifact.payload["mimeType"], "image/png");
+        assert_eq!(artifact.payload["sourcePath"], "preview.png");
+    }
+
+    #[tokio::test]
+    async fn display_image_rejects_outside_workspace() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("secret.png");
+        std::fs::write(&outside_file, b"\x89PNG\r\n\x1a\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(
+                workspace_dir.path().to_string_lossy(),
+                Some("Test".to_string()),
+            )
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let session_map = Arc::new(RwLock::new(HashMap::from([(
+            "acp-session".to_string(),
+            session.id.clone(),
+        )])));
+
+        let response = dispatch_client_request(
+            &storage,
+            session_map,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "image-1",
+                "method": "display_image",
+                "params": {
+                    "sessionId": "acp-session",
+                    "path": outside_file
+                }
+            }),
+        )
+        .await;
+
+        assert!(response.get("error").is_some());
+        assert!(storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn text_image_path_enrichment_creates_image_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("result.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let (events_tx, _) = broadcast::channel(4);
+
+        persist_image_artifacts_from_text(
+            &storage,
+            &events_tx,
+            &session.id,
+            None,
+            "Open result.png to inspect the image.",
+        )
+        .await;
+
+        let artifacts = storage
+            .list_review_artifact_summaries(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, review_artifact_kind::IMAGE);
+    }
+
+    #[test]
+    fn display_image_guidance_is_prepended_as_agent_context() {
+        let blocks =
+            prompt_blocks_with_display_image_guidance(&[MessageContentBlock::text("Make a chart")]);
+        let text = text_fallback_from_blocks(&blocks);
+
+        assert!(text.contains("display_image"));
+        assert!(text.contains("Make a chart"));
     }
 
     #[tokio::test]
