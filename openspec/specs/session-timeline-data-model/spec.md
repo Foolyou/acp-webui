@@ -35,8 +35,14 @@ The system SHALL persist ACP tool activity as structured tool call records with 
 
 #### Scenario: Tool call display data cannot be derived
 - **WHEN** a tool call payload does not contain recognizable display data
-- **THEN** the timeline item SHALL still expose the existing tool kind or name, title, summary, status, raw input, and raw output
+- **THEN** the timeline item SHALL still expose the existing tool kind or name, neutral fallback title, summary, status, raw input, and raw output
+- **AND** the neutral fallback title SHALL NOT classify the item as permission or approval activity by itself
 - **AND** the browser SHALL be able to render a useful fallback row without failing
+
+#### Scenario: Permission request display data cannot be derived
+- **WHEN** a permission request payload does not contain recognizable command display data
+- **THEN** the permission request projection MAY use a permission-specific fallback title
+- **AND** generic tool call timeline items SHALL continue using neutral fallback display data
 
 ### Requirement: Session continuity is explicit
 The system SHALL expose whether a persisted session can continue using live Codex ACP context.
@@ -98,6 +104,16 @@ The frontend SHALL group consecutive completed normalized tool call timeline ite
 - **WHEN** a realtime timeline item upsert adds or updates a tool call in the current session
 - **THEN** the frontend SHALL recompute the affected display grouping from the normalized timeline
 - **AND** the backend SHALL NOT need to send pre-grouped timeline blocks
+
+#### Scenario: Sparse completed tool calls resemble permission labels
+- **WHEN** consecutive completed `tool_call` timeline items have sparse display data or a legacy title that resembles permission request text
+- **THEN** the frontend SHALL still include those generic tool calls in the collapsed completed tool call group
+- **AND** title text alone SHALL NOT cause a generic completed tool call to be hidden as permission bookkeeping
+
+#### Scenario: Explicit permission bookkeeping appears beside approval state
+- **WHEN** a completed `tool_call` timeline item has explicit permission or approval bookkeeping kind data and the corresponding approval state is represented elsewhere in the timeline
+- **THEN** the frontend SHALL fold that duplicate bookkeeping item out of the default timeline display
+- **AND** surrounding generic completed tool calls SHALL remain eligible for grouping
 
 ### Requirement: Tool call timeline items expose display projection data
 The backend SHALL expose enough structured tool call display data for clients to render concise activity rows without relying only on raw ACP payload inspection.

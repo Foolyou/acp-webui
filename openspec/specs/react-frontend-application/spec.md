@@ -317,6 +317,16 @@ The React frontend SHALL keep completed tool call history visible while reducing
 - **THEN** the React frontend SHALL show each grouped tool call detail in order
 - **AND** the user SHALL be able to inspect the same details available from an ungrouped tool call row
 
+#### Scenario: Sparse completed tool calls remain visible
+- **WHEN** Session Detail contains completed tool call timeline items whose ACP payloads lack title or name metadata
+- **THEN** the React frontend SHALL use fallback display data and keep those tool calls visible through the completed tool call group
+- **AND** it SHALL not hide generic tool calls only because their title resembles permission request text
+
+#### Scenario: Permission bookkeeping remains folded
+- **WHEN** Session Detail contains explicit permission or approval bookkeeping tool call rows that duplicate visible approval state
+- **THEN** the React frontend SHALL fold those bookkeeping rows out of the default conversation display
+- **AND** it SHALL continue to render adjacent generic completed tool calls in collapsed groups
+
 ### Requirement: React frontend renders active elapsed work time
 The React frontend SHALL display active session work duration with clear minute and second units.
 
