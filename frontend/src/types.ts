@@ -2,6 +2,7 @@ export type ConnectionStatus = {
   state: "idle" | "starting" | "ready" | "failed" | "disabled" | string;
   message?: string | null;
   agentInfo?: unknown;
+  promptCapabilities?: AgentPromptCapabilities;
   sessionCapabilities?: AgentSessionCapabilities;
 };
 
@@ -62,6 +63,12 @@ export type AgentSessionCapabilities = {
   closeSession: boolean;
 };
 
+export type AgentPromptCapabilities = {
+  image: boolean;
+  audio: boolean;
+  embeddedContext: boolean;
+};
+
 export type Workspace = {
   id: string;
   name: string;
@@ -89,9 +96,14 @@ export type ChatMessage = {
   sessionId: string;
   role: "user" | "assistant" | "system" | string;
   content: string;
+  contentBlocks?: MessageContentBlock[];
   status: string;
   createdAt: string;
 };
+
+export type MessageContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; mimeType: string; data: string; uri?: string | null; name?: string | null };
 
 export type PermissionOptionKind =
   | "allow_once"
@@ -146,6 +158,7 @@ export type TimelineItem =
       status: string;
       role: "user" | "assistant" | "system" | string;
       content: string;
+      contentBlocks?: MessageContentBlock[];
     }
   | {
       kind: "tool_call";
@@ -200,6 +213,7 @@ export type QueuedPrompt = {
   sessionId: string;
   messageId: string;
   prompt: string;
+  contentBlocks?: MessageContentBlock[];
   status: string;
   position: number;
   createdAt: string;

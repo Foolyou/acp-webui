@@ -17,6 +17,7 @@ export function timelineMessage(item: Extract<TimelineItem, { kind: "message" }>
     sessionId: item.sessionId,
     role: item.role,
     content: item.content,
+    contentBlocks: item.contentBlocks,
     status: item.status,
     createdAt: item.timestamp
   };
@@ -30,6 +31,7 @@ export function messageToTimelineItem(message: ChatMessage): TimelineItem {
     timestamp: message.createdAt,
     status: message.status,
     role: message.role,
-    content: message.content
+    content: message.content,
+    contentBlocks: message.contentBlocks
   };
 }

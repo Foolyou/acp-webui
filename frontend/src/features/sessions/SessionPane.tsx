@@ -7,7 +7,15 @@ import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../.
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { buildTimelineBlocks, type TimelineDisplayBlock, type TimelineToolGroupEntry } from "../../app/timelineBlocks";
 import { MarkdownContent } from "../../components/MarkdownContent";
-import type { AgentRuntimeStatus, ChatMessage, PermissionModeId, ReviewArtifactSummary, SessionDetail, SkillSummary } from "../../types";
+import type {
+  AgentRuntimeStatus,
+  ChatMessage,
+  MessageContentBlock,
+  PermissionModeId,
+  ReviewArtifactSummary,
+  SessionDetail,
+  SkillSummary
+} from "../../types";
 import {
   fallbackPermissionModes,
   connectionStatusForMode,
@@ -20,6 +28,13 @@ import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 const SCROLL_BOTTOM_PROXIMITY_PX = 24;
 const PROGRAMMATIC_SCROLL_WINDOW_MS = 800;
+const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+type ImageAttachment = Extract<MessageContentBlock, { type: "image" }> & {
+  id: string;
+  size: number;
+};
 
 export function SessionPane({
   agentStatus,
@@ -42,7 +57,7 @@ export function SessionPane({
   onRestoreSession: (sessionId: string) => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
   onStopSession: () => Promise<void>;
-  onSendPrompt: (prompt: string) => Promise<void>;
+  onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
 }) {
   const waitingApproval =
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
@@ -388,11 +403,16 @@ function QueuedPromptList({ queuedPrompts }: { queuedPrompts: NonNullable<Sessio
       {queuedPrompts.map((prompt, index) => (
         <div className="queued-prompt" key={prompt.id}>
           <span>#{index + 1}</span>
-          <p>{prompt.prompt}</p>
+          <p>{prompt.prompt || imagePromptSummary(prompt.contentBlocks)}</p>
         </div>
       ))}
     </div>
   );
+}
+
+function imagePromptSummary(blocks?: MessageContentBlock[]) {
+  const imageCount = blocks?.filter((block) => block.type === "image").length ?? 0;
+  return imageCount > 0 ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : "Queued prompt";
 }
 
 function SessionContextHeader({
@@ -699,7 +719,7 @@ function PromptComposer({
   agentStatus: AgentRuntimeStatus | null;
   busy: boolean;
   disabled: boolean;
-  onSendPrompt: (prompt: string) => Promise<void>;
+  onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
   onRestoreSession: () => Promise<void>;
   running: boolean;
   restoreButtonLabel: string | null;
@@ -716,6 +736,10 @@ function PromptComposer({
   const [prompt, setPrompt] = useState("");
   const [composing, setComposing] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const imagePromptSupported = agentStatus?.status.promptCapabilities?.image === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -734,9 +758,18 @@ function PromptComposer({
 
   async function submitPrompt() {
     const trimmed = prompt.trim();
-    if (!trimmed || disabled || busy) return;
-    await onSendPrompt(trimmed);
+    if ((!trimmed && attachments.length === 0) || disabled || busy) return;
+    if (attachments.length > 0 && !imagePromptSupported) {
+      setAttachmentError(`${agentName} does not support image attachments.`);
+      return;
+    }
+    await onSendPrompt(
+      trimmed,
+      attachments.map(({ id: _id, size: _size, ...block }) => block)
+    );
     setPrompt("");
+    setAttachments([]);
+    setAttachmentError(null);
   }
 
   async function onSubmit(event: FormEvent) {
@@ -763,6 +796,23 @@ function PromptComposer({
   function applySkill(skillName: string) {
     if (!skillMatch) return;
     setPrompt(`${prompt.slice(0, skillMatch.index)}$${skillName} `);
+  }
+
+  async function onImageFilesSelected(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!files.length) return;
+    if (!imagePromptSupported) {
+      setAttachmentError(`${agentName} does not support image attachments.`);
+      return;
+    }
+    try {
+      const next = await Promise.all(files.map(readImageAttachment));
+      setAttachments((current) => [...current, ...next]);
+      setAttachmentError(null);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   const status = continuityReason
@@ -808,6 +858,15 @@ function PromptComposer({
         </div>
       ) : null}
       <form className="composer" onSubmit={onSubmit}>
+        <input
+          accept={SUPPORTED_IMAGE_MIME_TYPES.join(",")}
+          className="visually-hidden"
+          disabled={disabled || busy || !imagePromptSupported}
+          multiple
+          onChange={onImageFilesSelected}
+          ref={fileInputRef}
+          type="file"
+        />
         <textarea
           disabled={disabled}
           onChange={(event) => setPrompt(event.target.value)}
@@ -843,8 +902,34 @@ function PromptComposer({
             ))}
           </div>
         ) : null}
+        {attachments.length ? (
+          <div className="composer-attachments">
+            {attachments.map((attachment) => (
+              <div className="composer-attachment" key={attachment.id}>
+                <img alt={attachment.name ?? "Attached image"} src={imageDataUrl(attachment)} />
+                <span>{attachment.name ?? attachment.mimeType}</span>
+                <Button
+                  className="secondary small"
+                  onPress={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                  type="button"
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {attachmentError ? <div className="composer-error">{attachmentError}</div> : null}
         <div className="composer-actions">
           <span className="shortcut-hint">Ctrl Enter</span>
+          <Button
+            className="secondary"
+            isDisabled={disabled || busy || !imagePromptSupported}
+            onPress={() => fileInputRef.current?.click()}
+            type="button"
+          >
+            Image
+          </Button>
           <Button className="primary" isDisabled={disabled || busy} type="submit">
             Send
           </Button>
@@ -854,12 +939,64 @@ function PromptComposer({
   );
 }
 
+function readImageAttachment(file: File): Promise<ImageAttachment> {
+  if (!SUPPORTED_IMAGE_MIME_TYPES.includes(file.type)) {
+    return Promise.reject(new Error(`Unsupported image type ${file.type || "unknown"}.`));
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    return Promise.reject(new Error("Image attachments must be 5 MB or smaller."));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read image attachment."));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const data = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      resolve({
+        id: `${file.name}-${file.size}-${file.lastModified}-${id}`,
+        type: "image",
+        mimeType: file.type,
+        data,
+        name: file.name,
+        size: file.size
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function imageDataUrl(block: Extract<MessageContentBlock, { type: "image" }>) {
+  return `data:${block.mimeType};base64,${block.data}`;
+}
+
 function MessageBubble({ live = false, message }: { live?: boolean; message: ChatMessage }) {
   return (
     <article className={`message ${message.role} ${live ? "live" : ""}`}>
       <div className="message-role">{message.role}</div>
-      <MarkdownContent className="message-content" content={message.content} />
+      <MessageContent message={message} />
     </article>
+  );
+}
+
+function MessageContent({ message }: { message: ChatMessage }) {
+  const blocks = message.contentBlocks?.length ? message.contentBlocks : message.content ? [{ type: "text" as const, text: message.content }] : [];
+  return (
+    <div className="message-content structured">
+      {blocks.map((block, index) =>
+        block.type === "image" ? (
+          <figure className="message-image" key={`${block.type}-${index}`}>
+            <img alt={block.name ?? "Message image"} src={imageDataUrl(block)} />
+            {block.name ? <figcaption>{block.name}</figcaption> : null}
+          </figure>
+        ) : (
+          <MarkdownContent content={block.text} key={`${block.type}-${index}`} />
+        )
+      )}
+    </div>
   );
 }
 

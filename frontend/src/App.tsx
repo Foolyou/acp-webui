@@ -17,7 +17,15 @@ import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
 import { applyRealtimeEvent } from "./realtime";
 import { placeholderContext, router } from "./routes/router";
-import type { AgentRuntimeStatus, AuthStatus, PermissionModeId, PermissionRequest, RealtimeEvent, SessionDetail } from "./types";
+import type {
+  AgentRuntimeStatus,
+  AuthStatus,
+  MessageContentBlock,
+  PermissionModeId,
+  PermissionRequest,
+  RealtimeEvent,
+  SessionDetail
+} from "./types";
 import { fallbackPermissionModes } from "./utils/permissionMode";
 
 function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState {
@@ -455,7 +463,7 @@ export function App() {
   }, [markUnauthorized]);
 
   const sendPrompt = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, contentBlocks?: MessageContentBlock[]) => {
       const sessionId = state.currentSession?.session.id;
       const previousStatus = state.currentSession?.session.status ?? "idle";
       if (!sessionId) return;
@@ -479,7 +487,7 @@ export function App() {
         );
         let response: Awaited<ReturnType<typeof api.prompt>>;
         try {
-          response = await api.prompt(sessionId, prompt);
+          response = await api.prompt(sessionId, prompt, contentBlocks);
         } catch (error) {
           setState((current) =>
             current.currentSession?.session.id === sessionId && current.currentSession.session.status === "running"

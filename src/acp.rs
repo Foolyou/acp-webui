@@ -20,8 +20,9 @@ use tokio::{
 use crate::{
     config::{AgentConfig, Config, ResolvedAgentLaunchProfile, CODEX_AGENT_ID},
     models::{
-        permission_mode, permission_status, review_artifact_kind, role, status, tool_call_status,
-        ActiveTurn, AgentControl, AgentPermissionMode, AgentSessionCapabilities, NewReviewArtifact,
+        permission_mode, permission_status, review_artifact_kind, role, status,
+        text_fallback_from_blocks, tool_call_status, ActiveTurn, AgentControl, AgentPermissionMode,
+        AgentPromptCapabilities, AgentSessionCapabilities, MessageContentBlock, NewReviewArtifact,
         PermissionRequest, QueuedPrompt, ReviewArtifact, ReviewArtifactSummary,
         SessionConfigOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
         TimelineItem, ToolCallRow, UpsertToolCall,
@@ -35,6 +36,7 @@ pub struct ConnectionStatus {
     pub state: String,
     pub message: Option<String>,
     pub agent_info: Option<Value>,
+    pub prompt_capabilities: AgentPromptCapabilities,
     pub session_capabilities: AgentSessionCapabilities,
 }
 
@@ -44,6 +46,7 @@ impl ConnectionStatus {
             state: "idle".to_string(),
             message: Some(format!("{} runtime has not started", agent.title)),
             agent_info: None,
+            prompt_capabilities: AgentPromptCapabilities::none(),
             session_capabilities: AgentSessionCapabilities::none(),
         }
     }
@@ -53,15 +56,21 @@ impl ConnectionStatus {
             state: "starting".to_string(),
             message: Some(format!("Starting {}", agent.title)),
             agent_info: None,
+            prompt_capabilities: AgentPromptCapabilities::none(),
             session_capabilities: AgentSessionCapabilities::none(),
         }
     }
 
-    fn ready(agent_info: Option<Value>, session_capabilities: AgentSessionCapabilities) -> Self {
+    fn ready(
+        agent_info: Option<Value>,
+        prompt_capabilities: AgentPromptCapabilities,
+        session_capabilities: AgentSessionCapabilities,
+    ) -> Self {
         Self {
             state: "ready".to_string(),
             message: None,
             agent_info,
+            prompt_capabilities,
             session_capabilities,
         }
     }
@@ -71,6 +80,7 @@ impl ConnectionStatus {
             state: "failed".to_string(),
             message: Some(message.into()),
             agent_info: None,
+            prompt_capabilities: AgentPromptCapabilities::none(),
             session_capabilities: AgentSessionCapabilities::none(),
         }
     }
@@ -80,6 +90,7 @@ impl ConnectionStatus {
             state: "disabled".to_string(),
             message: Some(message.into()),
             agent_info: None,
+            prompt_capabilities: AgentPromptCapabilities::none(),
             session_capabilities: AgentSessionCapabilities::none(),
         }
     }
@@ -351,6 +362,7 @@ impl AgentRuntime {
             storage,
             status: Arc::new(RwLock::new(ConnectionStatus::ready(
                 Some(json!({"name": format!("test-{agent_name}")})),
+                AgentPromptCapabilities::none(),
                 session_capabilities,
             ))),
             peer: RwLock::new(None),
@@ -437,6 +449,10 @@ impl AgentRuntime {
 
     pub async fn session_capabilities(&self) -> AgentSessionCapabilities {
         self.status.read().await.session_capabilities.clone()
+    }
+
+    pub async fn prompt_capabilities(&self) -> AgentPromptCapabilities {
+        self.status.read().await.prompt_capabilities.clone()
     }
 
     pub async fn can_load_session(&self) -> bool {
@@ -555,7 +571,7 @@ impl AgentRuntime {
     pub async fn prompt(
         &self,
         acp_session_id: String,
-        prompt: String,
+        prompt_blocks: Vec<MessageContentBlock>,
     ) -> anyhow::Result<PromptOutcome> {
         let peer = self.ensure_ready().await?;
         self.assistant_buffers
@@ -572,12 +588,7 @@ impl AgentRuntime {
                 "session/prompt",
                 json!({
                     "sessionId": acp_session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
+                    "prompt": acp_content_blocks(&prompt_blocks)
                 }),
             )
             .await;
@@ -789,8 +800,10 @@ impl AgentRuntime {
             .await?;
 
         let agent_info = result.get("agentInfo").cloned();
+        let prompt_capabilities = prompt_capabilities_from_initialize(&result);
         let session_capabilities = session_capabilities_from_initialize(&result);
-        *self.status.write().await = ConnectionStatus::ready(agent_info, session_capabilities);
+        *self.status.write().await =
+            ConnectionStatus::ready(agent_info, prompt_capabilities, session_capabilities);
         *self.peer.write().await = Some(peer);
         self.emit_status().await;
 
@@ -1267,6 +1280,28 @@ fn session_capabilities_from_initialize(result: &Value) -> AgentSessionCapabilit
     }
 }
 
+fn prompt_capabilities_from_initialize(result: &Value) -> AgentPromptCapabilities {
+    let prompt_capabilities = result
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("promptCapabilities"))
+        .unwrap_or(&Value::Null);
+
+    AgentPromptCapabilities {
+        image: prompt_capabilities
+            .get("image")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        audio: prompt_capabilities
+            .get("audio")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        embedded_context: prompt_capabilities
+            .get("embeddedContext")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
 fn capability_field_enabled(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(enabled)) => *enabled,
@@ -1598,7 +1633,9 @@ async fn handle_session_update(
 
     match update_type {
         "agent_message_chunk" => {
-            if let Some(text) = text_from_content(update.get("content")) {
+            let blocks = content_blocks_from_content(update.get("content"));
+            if !blocks.is_empty() {
+                let text = text_fallback_from_blocks(&blocks);
                 assistant_buffers
                     .lock()
                     .await
@@ -1614,13 +1651,15 @@ async fn handle_session_update(
                         assistant_message_ids,
                         acp_session_id,
                         &local_session_id,
-                        &text,
+                        &blocks,
                     )
                     .await;
-                    let _ = events_tx.send(RealtimeEvent::TextDelta {
-                        session_id: local_session_id,
-                        delta: text,
-                    });
+                    if !text.is_empty() {
+                        let _ = events_tx.send(RealtimeEvent::TextDelta {
+                            session_id: local_session_id,
+                            delta: text,
+                        });
+                    }
                 } else if restore_session_map
                     .read()
                     .await
@@ -1642,13 +1681,16 @@ async fn handle_session_update(
                 .get(acp_session_id)
                 .cloned()
             {
-                if let Some(text) = text_from_content(update.get("content")) {
+                let blocks = content_blocks_from_content(update.get("content"));
+                if !blocks.is_empty() {
+                    let text = text_fallback_from_blocks(&blocks);
                     persist_replayed_message(
                         storage,
                         events_tx,
                         &local_session_id,
                         role::USER,
                         &text,
+                        &blocks,
                     )
                     .await;
                 } else {
@@ -1816,9 +1858,16 @@ async fn persist_replayed_message(
     local_session_id: &str,
     message_role: &str,
     content: &str,
+    content_blocks: &[MessageContentBlock],
 ) {
     match storage
-        .create_message_if_missing(local_session_id, message_role, content, status::IDLE)
+        .create_message_if_missing_with_content_blocks(
+            local_session_id,
+            message_role,
+            content,
+            content_blocks,
+            status::IDLE,
+        )
         .await
     {
         Ok(Some(message)) => {
@@ -1830,6 +1879,7 @@ async fn persist_replayed_message(
                     status: message.status.clone(),
                     role: message.role.clone(),
                     content: message.content.clone(),
+                    content_blocks: message.content_blocks.clone(),
                 },
             });
         }
@@ -1851,8 +1901,9 @@ async fn persist_live_assistant_chunk(
     assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
     acp_session_id: &str,
     local_session_id: &str,
-    content_delta: &str,
+    content_blocks: &[MessageContentBlock],
 ) {
+    let content_delta = text_fallback_from_blocks(content_blocks);
     let existing_message_id = assistant_message_ids
         .lock()
         .await
@@ -1861,7 +1912,12 @@ async fn persist_live_assistant_chunk(
 
     if let Some(message_id) = existing_message_id {
         if let Err(error) = storage
-            .append_message_content(&message_id, content_delta, status::RUNNING)
+            .append_message_content_blocks(
+                &message_id,
+                &content_delta,
+                content_blocks,
+                status::RUNNING,
+            )
             .await
         {
             tracing::error!(?error, "failed to append assistant message chunk");
@@ -1870,10 +1926,11 @@ async fn persist_live_assistant_chunk(
     }
 
     match storage
-        .create_message(
+        .create_message_with_content_blocks(
             local_session_id,
             role::ASSISTANT,
-            content_delta,
+            &content_delta,
+            content_blocks,
             status::RUNNING,
         )
         .await
@@ -1957,6 +2014,7 @@ async fn flush_assistant_buffer_for_session(
                 status: message.status.clone(),
                 role: message.role.clone(),
                 content: message.content.clone(),
+                content_blocks: message.content_blocks.clone(),
             },
         });
     } else {
@@ -2364,6 +2422,58 @@ fn text_from_content(content: Option<&Value>) -> Option<String> {
     }
 }
 
+fn content_blocks_from_content(content: Option<&Value>) -> Vec<MessageContentBlock> {
+    let Some(content) = content else {
+        return Vec::new();
+    };
+    match content {
+        Value::String(text) => {
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![MessageContentBlock::text(text.to_string())]
+            }
+        }
+        Value::Array(parts) => parts
+            .iter()
+            .flat_map(|part| content_blocks_from_content(Some(part)))
+            .collect(),
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            Some("text") => map
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| vec![MessageContentBlock::text(text.to_string())])
+                .unwrap_or_default(),
+            Some("image") => {
+                let Some(data) = map.get("data").and_then(Value::as_str) else {
+                    return Vec::new();
+                };
+                let Some(mime_type) = map.get("mimeType").and_then(Value::as_str) else {
+                    return Vec::new();
+                };
+                vec![MessageContentBlock::Image {
+                    mime_type: mime_type.to_string(),
+                    data: data.to_string(),
+                    uri: map
+                        .get("uri")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    name: map
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                }]
+            }
+            _ => text_from_content(Some(content))
+                .map(MessageContentBlock::text)
+                .map(|block| vec![block])
+                .unwrap_or_default(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 fn selected_permission_response(option_id: &str) -> Value {
     json!({
         "outcome": {
@@ -2371,6 +2481,34 @@ fn selected_permission_response(option_id: &str) -> Value {
             "optionId": option_id
         }
     })
+}
+
+fn acp_content_blocks(blocks: &[MessageContentBlock]) -> Vec<Value> {
+    blocks
+        .iter()
+        .map(|block| match block {
+            MessageContentBlock::Text { text } => json!({
+                "type": "text",
+                "text": text
+            }),
+            MessageContentBlock::Image {
+                mime_type,
+                data,
+                uri,
+                ..
+            } => {
+                let mut value = json!({
+                    "type": "image",
+                    "mimeType": mime_type,
+                    "data": data
+                });
+                if let Some(uri) = uri {
+                    value["uri"] = Value::String(uri.clone());
+                }
+                value
+            }
+        })
+        .collect()
 }
 
 fn cancelled_permission_response() -> Value {
@@ -3234,6 +3372,56 @@ for line in sys.stdin:
         assert!(!capabilities.close_session);
     }
 
+    #[test]
+    fn prompt_capability_parser_reports_image_support() {
+        let capabilities = prompt_capabilities_from_initialize(&json!({
+            "agentCapabilities": {
+                "promptCapabilities": {
+                    "image": true,
+                    "audio": false,
+                    "embeddedContext": true
+                }
+            }
+        }));
+
+        assert!(capabilities.image);
+        assert!(!capabilities.audio);
+        assert!(capabilities.embedded_context);
+    }
+
+    #[test]
+    fn image_content_blocks_round_trip_to_acp_shape() {
+        let blocks = vec![
+            MessageContentBlock::text("look"),
+            MessageContentBlock::Image {
+                mime_type: "image/png".to_string(),
+                data: "aW1hZ2U=".to_string(),
+                uri: Some("upload://image.png".to_string()),
+                name: Some("image.png".to_string()),
+            },
+        ];
+
+        let acp_blocks = acp_content_blocks(&blocks);
+        assert_eq!(acp_blocks[0], json!({"type": "text", "text": "look"}));
+        assert_eq!(acp_blocks[1]["type"], "image");
+        assert_eq!(acp_blocks[1]["mimeType"], "image/png");
+        assert_eq!(acp_blocks[1]["data"], "aW1hZ2U=");
+
+        let parsed = content_blocks_from_content(Some(&json!(acp_blocks)));
+        assert_eq!(
+            parsed,
+            vec![
+                MessageContentBlock::text("look"),
+                MessageContentBlock::Image {
+                    mime_type: "image/png".to_string(),
+                    data: "aW1hZ2U=".to_string(),
+                    uri: Some("upload://image.png".to_string()),
+                    name: None,
+                },
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn fake_acp_initialize_advertises_read_text_file_capability() {
         let dir = tempfile::tempdir().unwrap();
@@ -3486,7 +3674,7 @@ for line in sys.stdin:
 
         let mut rx = events_tx.subscribe();
         let outcome = runtime
-            .prompt(acp_session_id, "Say hello".to_string())
+            .prompt(acp_session_id, vec![MessageContentBlock::text("Say hello")])
             .await
             .unwrap();
 
@@ -3548,7 +3736,10 @@ for line in sys.stdin:
             .await;
 
         let outcome = runtime
-            .prompt(acp_session_id, "Trigger non-text".to_string())
+            .prompt(
+                acp_session_id,
+                vec![MessageContentBlock::text("Trigger non-text")],
+            )
             .await
             .unwrap();
 
@@ -3706,7 +3897,10 @@ for line in sys.stdin:
             .await;
 
         let outcome = runtime
-            .prompt(acp_session_id, "Trigger non-text".to_string())
+            .prompt(
+                acp_session_id,
+                vec![MessageContentBlock::text("Trigger non-text")],
+            )
             .await
             .unwrap();
 
@@ -3753,7 +3947,10 @@ for line in sys.stdin:
 
         let mut rx = events_tx.subscribe();
         let outcome = runtime
-            .prompt(acp_session_id, "Trigger non-text".to_string())
+            .prompt(
+                acp_session_id,
+                vec![MessageContentBlock::text("Trigger non-text")],
+            )
             .await
             .unwrap();
         assert_eq!(outcome.content, "");
@@ -3813,7 +4010,10 @@ for line in sys.stdin:
 
         let mut rx = events_tx.subscribe();
         let outcome = runtime
-            .prompt(acp_session_id, "Interleave".to_string())
+            .prompt(
+                acp_session_id,
+                vec![MessageContentBlock::text("Interleave")],
+            )
             .await
             .unwrap();
 
@@ -3891,7 +4091,10 @@ for line in sys.stdin:
         let prompt_runtime = runtime.clone();
         let prompt_handle = tokio::spawn(async move {
             prompt_runtime
-                .prompt(acp_session_id, "Needs approval".to_string())
+                .prompt(
+                    acp_session_id,
+                    vec![MessageContentBlock::text("Needs approval")],
+                )
                 .await
                 .unwrap()
         });
@@ -3961,7 +4164,10 @@ for line in sys.stdin:
             let prompt_runtime = runtime.clone();
             let prompt_handle = tokio::spawn(async move {
                 prompt_runtime
-                    .prompt(acp_session_id, "Needs approval".to_string())
+                    .prompt(
+                        acp_session_id,
+                        vec![MessageContentBlock::text("Needs approval")],
+                    )
                     .await
                     .unwrap()
             });
@@ -4027,7 +4233,10 @@ for line in sys.stdin:
         let prompt_runtime = runtime.clone();
         let prompt_handle = tokio::spawn(async move {
             prompt_runtime
-                .prompt(acp_session_id, "Needs queued approval".to_string())
+                .prompt(
+                    acp_session_id,
+                    vec![MessageContentBlock::text("Needs queued approval")],
+                )
                 .await
                 .unwrap()
         });

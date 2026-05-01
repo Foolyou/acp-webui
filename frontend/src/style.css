@@ -1210,6 +1210,33 @@ pre {
   line-height: 1.5;
 }
 
+.message-content.structured {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.message-image {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0;
+  max-width: min(32rem, 100%);
+}
+
+.message-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  object-fit: contain;
+}
+
+.message-image figcaption {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
 .markdown-content {
   display: grid;
   gap: 0.45rem;
@@ -1633,6 +1660,51 @@ pre {
 .composer textarea {
   min-height: 4.4rem;
   resize: vertical;
+}
+
+.composer-attachments,
+.composer-error {
+  grid-column: 1 / -1;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.composer-attachment {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 0.32rem;
+}
+
+.composer-attachment img {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.composer-attachment span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-error {
+  color: var(--color-danger);
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .composer-wrap.blocked textarea {

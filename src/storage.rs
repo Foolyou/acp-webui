@@ -12,12 +12,12 @@ use serde_json::Value;
 
 use crate::models::{
     continuity_state, permission_status, queued_prompt_status, role, status, tool_call_status,
-    turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message, NewReviewArtifact,
-    PermissionOption, PermissionRequest, PermissionRequestRow, QueuedPrompt, ReviewArtifact,
-    ReviewArtifactRow, ReviewArtifactSummary, Session, SessionConfigOption,
-    SessionConfigSelectOption, SessionConfigState, SessionContinuity, SessionCurrentModel,
-    SessionDetail, SessionListItem, SessionListPermission, TimelineItem, ToolCallRow,
-    UpsertToolCall, Workspace,
+    turn_status, ActiveTurn, AgentControlSelection, InboxItem, Message, MessageContentBlock,
+    MessageRow, NewReviewArtifact, PermissionOption, PermissionRequest, PermissionRequestRow,
+    QueuedPrompt, QueuedPromptRow, ReviewArtifact, ReviewArtifactRow, ReviewArtifactSummary,
+    Session, SessionConfigOption, SessionConfigSelectOption, SessionConfigState, SessionContinuity,
+    SessionCurrentModel, SessionDetail, SessionListItem, SessionListPermission, TimelineItem,
+    ToolCallRow, UpsertToolCall, Workspace,
 };
 
 const APPROVAL_EXPIRED_MESSAGE: &str =
@@ -809,19 +809,39 @@ impl Storage {
         content: &str,
         message_status: &str,
     ) -> anyhow::Result<Message> {
+        self.create_message_with_content_blocks(
+            session_id,
+            message_role,
+            content,
+            &[MessageContentBlock::text(content.to_string())],
+            message_status,
+        )
+        .await
+    }
+
+    pub async fn create_message_with_content_blocks(
+        &self,
+        session_id: &str,
+        message_role: &str,
+        content: &str,
+        content_blocks: &[MessageContentBlock],
+        message_status: &str,
+    ) -> anyhow::Result<Message> {
         let id = Uuid::new_v4().to_string();
         let now = now();
+        let blocks_json = serde_json::to_string(content_blocks)?;
 
         sqlx::query(
             r#"
-            INSERT INTO messages (id, session_id, role, content, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, content, content_blocks_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(session_id)
         .bind(message_role)
         .bind(content)
+        .bind(blocks_json)
         .bind(message_status)
         .bind(&now)
         .execute(&self.pool)
@@ -850,21 +870,27 @@ impl Storage {
         self.get_message(id).await
     }
 
-    pub async fn append_message_content(
+    pub async fn append_message_content_blocks(
         &self,
         id: &str,
         content_delta: &str,
+        content_blocks: &[MessageContentBlock],
         message_status: &str,
     ) -> anyhow::Result<Message> {
+        let mut message = self.get_message(id).await?;
+        message.content_blocks.extend_from_slice(content_blocks);
+        let blocks_json = serde_json::to_string(&message.content_blocks)?;
         sqlx::query(
             r#"
             UPDATE messages
             SET content = content || ?,
+                content_blocks_json = ?,
                 status = ?
             WHERE id = ?
             "#,
         )
         .bind(content_delta)
+        .bind(blocks_json)
         .bind(message_status)
         .bind(id)
         .execute(&self.pool)
@@ -873,14 +899,32 @@ impl Storage {
         self.get_message(id).await
     }
 
+    #[cfg(test)]
     pub async fn create_queued_prompt(
         &self,
         session_id: &str,
         message_id: &str,
         prompt: &str,
     ) -> anyhow::Result<QueuedPrompt> {
+        self.create_queued_prompt_with_content_blocks(
+            session_id,
+            message_id,
+            prompt,
+            &[MessageContentBlock::text(prompt.to_string())],
+        )
+        .await
+    }
+
+    pub async fn create_queued_prompt_with_content_blocks(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        prompt: &str,
+        content_blocks: &[MessageContentBlock],
+    ) -> anyhow::Result<QueuedPrompt> {
         let id = Uuid::new_v4().to_string();
         let created_at = now();
+        let blocks_json = serde_json::to_string(content_blocks)?;
         let position = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COALESCE(MAX(position), 0) + 1
@@ -894,14 +938,15 @@ impl Storage {
 
         sqlx::query(
             r#"
-            INSERT INTO queued_prompts (id, session_id, message_id, prompt, status, position, created_at, submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO queued_prompts (id, session_id, message_id, prompt, content_blocks_json, status, position, created_at, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
             "#,
         )
         .bind(&id)
         .bind(session_id)
         .bind(message_id)
         .bind(prompt)
+        .bind(blocks_json)
         .bind(queued_prompt_status::QUEUED)
         .bind(position)
         .bind(&created_at)
@@ -913,9 +958,9 @@ impl Storage {
     }
 
     pub async fn get_queued_prompt(&self, id: &str) -> anyhow::Result<QueuedPrompt> {
-        let prompt = sqlx::query_as::<_, QueuedPrompt>(
+        let row = sqlx::query_as::<_, QueuedPromptRow>(
             r#"
-            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            SELECT id, session_id, message_id, prompt, content_blocks_json, status, position, created_at, submitted_at
             FROM queued_prompts
             WHERE id = ?
             "#,
@@ -924,13 +969,13 @@ impl Storage {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(prompt)
+        queued_prompt_from_row(row)
     }
 
     pub async fn list_queued_prompts(&self, session_id: &str) -> anyhow::Result<Vec<QueuedPrompt>> {
-        let prompts = sqlx::query_as::<_, QueuedPrompt>(
+        let rows = sqlx::query_as::<_, QueuedPromptRow>(
             r#"
-            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            SELECT id, session_id, message_id, prompt, content_blocks_json, status, position, created_at, submitted_at
             FROM queued_prompts
             WHERE session_id = ? AND status = ?
             ORDER BY position ASC, created_at ASC, id ASC
@@ -941,16 +986,16 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(prompts)
+        rows.into_iter().map(queued_prompt_from_row).collect()
     }
 
     pub async fn next_queued_prompt(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<QueuedPrompt>> {
-        let prompt = sqlx::query_as::<_, QueuedPrompt>(
+        let row = sqlx::query_as::<_, QueuedPromptRow>(
             r#"
-            SELECT id, session_id, message_id, prompt, status, position, created_at, submitted_at
+            SELECT id, session_id, message_id, prompt, content_blocks_json, status, position, created_at, submitted_at
             FROM queued_prompts
             WHERE session_id = ? AND status = ?
             ORDER BY position ASC, created_at ASC, id ASC
@@ -962,7 +1007,7 @@ impl Storage {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(prompt)
+        row.map(queued_prompt_from_row).transpose()
     }
 
     pub async fn mark_queued_prompt_submitted(&self, id: &str) -> anyhow::Result<QueuedPrompt> {
@@ -1009,6 +1054,24 @@ impl Storage {
         content: &str,
         message_status: &str,
     ) -> anyhow::Result<Option<Message>> {
+        self.create_message_if_missing_with_content_blocks(
+            session_id,
+            message_role,
+            content,
+            &[MessageContentBlock::text(content.to_string())],
+            message_status,
+        )
+        .await
+    }
+
+    pub async fn create_message_if_missing_with_content_blocks(
+        &self,
+        session_id: &str,
+        message_role: &str,
+        content: &str,
+        content_blocks: &[MessageContentBlock],
+        message_status: &str,
+    ) -> anyhow::Result<Option<Message>> {
         let existing = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)
@@ -1026,15 +1089,21 @@ impl Storage {
             return Ok(None);
         }
 
-        self.create_message(session_id, message_role, content, message_status)
-            .await
-            .map(Some)
+        self.create_message_with_content_blocks(
+            session_id,
+            message_role,
+            content,
+            content_blocks,
+            message_status,
+        )
+        .await
+        .map(Some)
     }
 
     pub async fn get_message(&self, id: &str) -> anyhow::Result<Message> {
-        let message = sqlx::query_as::<_, Message>(
+        let row = sqlx::query_as::<_, MessageRow>(
             r#"
-            SELECT id, session_id, role, content, status, created_at
+            SELECT id, session_id, role, content, content_blocks_json, status, created_at
             FROM messages
             WHERE id = ?
             "#,
@@ -1043,13 +1112,13 @@ impl Storage {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(message)
+        message_from_row(row)
     }
 
     pub async fn list_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
-        let messages = sqlx::query_as::<_, Message>(
+        let rows = sqlx::query_as::<_, MessageRow>(
             r#"
-            SELECT id, session_id, role, content, status, created_at
+            SELECT id, session_id, role, content, content_blocks_json, status, created_at
             FROM messages
             WHERE session_id = ?
             ORDER BY created_at ASC
@@ -1059,7 +1128,7 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(messages)
+        rows.into_iter().map(message_from_row).collect()
     }
 
     #[cfg(test)]
@@ -2213,6 +2282,7 @@ fn build_timeline(
                 status: message.status.clone(),
                 role: message.role.clone(),
                 content: message.content.clone(),
+                content_blocks: message.content_blocks.clone(),
             },
         });
     }
@@ -2286,6 +2356,51 @@ fn build_timeline(
 struct TimelineSortItem {
     timestamp: String,
     item: TimelineItem,
+}
+
+fn message_from_row(row: MessageRow) -> anyhow::Result<Message> {
+    let content_blocks = parse_content_blocks(row.content_blocks_json.as_deref(), &row.content)?;
+    Ok(Message {
+        id: row.id,
+        session_id: row.session_id,
+        role: row.role,
+        content: row.content,
+        content_blocks,
+        status: row.status,
+        created_at: row.created_at,
+    })
+}
+
+fn queued_prompt_from_row(row: QueuedPromptRow) -> anyhow::Result<QueuedPrompt> {
+    let content_blocks = parse_content_blocks(row.content_blocks_json.as_deref(), &row.prompt)?;
+    Ok(QueuedPrompt {
+        id: row.id,
+        session_id: row.session_id,
+        message_id: row.message_id,
+        prompt: row.prompt,
+        content_blocks,
+        status: row.status,
+        position: row.position,
+        created_at: row.created_at,
+        submitted_at: row.submitted_at,
+    })
+}
+
+fn parse_content_blocks(
+    blocks_json: Option<&str>,
+    fallback: &str,
+) -> anyhow::Result<Vec<MessageContentBlock>> {
+    if let Some(blocks_json) = blocks_json.filter(|value| !value.trim().is_empty()) {
+        let blocks: Vec<MessageContentBlock> = serde_json::from_str(blocks_json)?;
+        if !blocks.is_empty() {
+            return Ok(blocks);
+        }
+    }
+    if fallback.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![MessageContentBlock::text(fallback.to_string())])
+    }
 }
 
 pub fn parse_permission_options(options_json: &Value) -> Vec<PermissionOption> {
@@ -2434,6 +2549,53 @@ mod tests {
         assert_eq!(detail.messages.len(), 2);
         assert_eq!(detail.messages[0].content, "Hello");
         assert_eq!(detail.messages[1].content, "Hi");
+        assert_eq!(
+            detail.messages[0].content_blocks,
+            vec![MessageContentBlock::text("Hello")]
+        );
+    }
+
+    #[tokio::test]
+    async fn stores_structured_message_content_blocks() {
+        let storage = Storage::connect("sqlite::memory:").await.unwrap();
+        storage.migrate().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "acp-session-1".to_string())
+            .await
+            .unwrap();
+        let blocks = vec![
+            MessageContentBlock::text("look"),
+            MessageContentBlock::Image {
+                mime_type: "image/png".to_string(),
+                data: "aW1hZ2U=".to_string(),
+                uri: None,
+                name: Some("image.png".to_string()),
+            },
+        ];
+
+        storage
+            .create_message_with_content_blocks(
+                &session.id,
+                role::USER,
+                "look",
+                &blocks,
+                status::IDLE,
+            )
+            .await
+            .unwrap();
+
+        let detail = storage.session_detail(&session.id).await.unwrap();
+        assert_eq!(detail.messages[0].content_blocks, blocks);
+        assert!(matches!(
+            &detail.timeline[0],
+            TimelineItem::Message { content_blocks, .. } if content_blocks.len() == 2
+        ));
     }
 
     #[tokio::test]

@@ -28,14 +28,20 @@ use crate::{
     auth::{AuthService, AuthStatus},
     error::{AppError, AppResult},
     models::{
-        continuity_state, permission_mode, review_artifact_kind, role, status, ActiveTurn,
-        CreateSessionRequest, CreateWorkspaceRequest, DiffFallbackResponse, InboxItem, Message,
-        PermissionRequest, PromptRequest, QueuedPrompt, ResolvePermissionRequest, ReviewArtifact,
+        continuity_state, permission_mode, review_artifact_kind, role, status,
+        text_fallback_from_blocks, ActiveTurn, CreateSessionRequest, CreateWorkspaceRequest,
+        DiffFallbackResponse, InboxItem, Message, MessageContentBlock, PermissionRequest,
+        PromptRequest, QueuedPrompt, ResolvePermissionRequest, ReviewArtifact,
         ReviewArtifactSummary, Session, SessionConfigState, SessionContinuity, SessionDetail,
         SessionListItem, SetSessionConfigOptionRequest, SkillSummary, TimelineItem, Workspace,
     },
     storage::Storage,
 };
+
+const MAX_PROMPT_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_PROMPT_IMAGE_TOTAL_BYTES: usize = 10 * 1024 * 1024;
+const SUPPORTED_PROMPT_IMAGE_MIME_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 #[cfg(feature = "embedded-frontend")]
 use axum::{body::Body, http::Uri, response::Response};
@@ -719,9 +725,12 @@ async fn submit_prompt(
     Path(session_id): Path<String>,
     Json(payload): Json<PromptRequest>,
 ) -> AppResult<Json<PromptAcceptedResponse>> {
-    let prompt = payload.prompt.trim().to_string();
-    if prompt.is_empty() {
-        return Err(AppError::BadRequest("Prompt cannot be empty".to_string()));
+    let prompt_blocks = prompt_blocks_from_request(payload)?;
+    let prompt = text_fallback_from_blocks(&prompt_blocks);
+    if prompt_blocks.is_empty() {
+        return Err(AppError::BadRequest(
+            "Prompt or image attachment is required".to_string(),
+        ));
     }
 
     let session = state
@@ -758,6 +767,15 @@ async fn submit_prompt(
         ));
     };
     let runtime = state.runtime_for_existing_session(&session).await?;
+    if prompt_blocks
+        .iter()
+        .any(|block| matches!(block, MessageContentBlock::Image { .. }))
+        && !runtime.prompt_capabilities().await.image
+    {
+        return Err(AppError::Conflict(
+            "This agent does not support image prompt attachments.".to_string(),
+        ));
+    }
 
     let should_queue = has_pending_permission
         || matches!(
@@ -768,12 +786,23 @@ async fn submit_prompt(
     if should_queue {
         let message = state
             .storage
-            .create_message(&session.id, role::USER, &prompt, "queued")
+            .create_message_with_content_blocks(
+                &session.id,
+                role::USER,
+                &prompt,
+                &prompt_blocks,
+                "queued",
+            )
             .await
             .map_err(AppError::Other)?;
         let queued_prompt = state
             .storage
-            .create_queued_prompt(&session.id, &message.id, &prompt)
+            .create_queued_prompt_with_content_blocks(
+                &session.id,
+                &message.id,
+                &prompt,
+                &prompt_blocks,
+            )
             .await
             .map_err(AppError::Other)?;
         let queued_prompts = state.storage.list_queued_prompts(&session.id).await?;
@@ -794,7 +823,13 @@ async fn submit_prompt(
 
     let message = state
         .storage
-        .create_message(&session.id, role::USER, &prompt, status::IDLE)
+        .create_message_with_content_blocks(
+            &session.id,
+            role::USER,
+            &prompt,
+            &prompt_blocks,
+            status::IDLE,
+        )
         .await
         .map_err(AppError::Other)?;
     let active_turn = state.storage.start_active_turn(&session.id).await?;
@@ -814,7 +849,7 @@ async fn submit_prompt(
         state.events_tx.clone(),
         session.id.clone(),
         acp_session_id,
-        prompt,
+        prompt_blocks,
     ));
 
     Ok(Json(PromptAcceptedResponse {
@@ -823,6 +858,50 @@ async fn submit_prompt(
         queued_prompts: state.storage.list_queued_prompts(&session.id).await?,
         active_turn: Some(active_turn),
     }))
+}
+
+fn prompt_blocks_from_request(payload: PromptRequest) -> AppResult<Vec<MessageContentBlock>> {
+    let mut blocks = Vec::new();
+    let text = payload.prompt.trim().to_string();
+    if !text.is_empty() {
+        blocks.push(MessageContentBlock::text(text));
+    }
+    blocks.extend(payload.content_blocks);
+    validate_prompt_blocks(&blocks)?;
+    Ok(blocks)
+}
+
+fn validate_prompt_blocks(blocks: &[MessageContentBlock]) -> AppResult<()> {
+    let mut total_image_bytes = 0usize;
+    for block in blocks {
+        match block {
+            MessageContentBlock::Text { .. } => {}
+            MessageContentBlock::Image {
+                mime_type, data, ..
+            } => {
+                if !SUPPORTED_PROMPT_IMAGE_MIME_TYPES.contains(&mime_type.as_str()) {
+                    return Err(AppError::BadRequest(format!(
+                        "Unsupported image type `{mime_type}`."
+                    )));
+                }
+                let estimated_bytes = (data.len() * 3) / 4;
+                if estimated_bytes > MAX_PROMPT_IMAGE_BYTES {
+                    return Err(AppError::BadRequest(format!(
+                        "Image attachments must be {} MB or smaller.",
+                        MAX_PROMPT_IMAGE_BYTES / 1024 / 1024
+                    )));
+                }
+                total_image_bytes = total_image_bytes.saturating_add(estimated_bytes);
+            }
+        }
+    }
+    if total_image_bytes > MAX_PROMPT_IMAGE_TOTAL_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "Image attachments must be {} MB or smaller in total.",
+            MAX_PROMPT_IMAGE_TOTAL_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
 }
 
 impl AppState {
@@ -1062,11 +1141,11 @@ async fn run_prompt_turn(
     events_tx: broadcast::Sender<RealtimeEvent>,
     session_id: String,
     acp_session_id: String,
-    prompt: String,
+    prompt_blocks: Vec<MessageContentBlock>,
 ) {
-    let mut next_prompt = Some(prompt);
-    while let Some(prompt) = next_prompt.take() {
-        match runtime.prompt(acp_session_id.clone(), prompt).await {
+    let mut next_prompt = Some(prompt_blocks);
+    while let Some(prompt_blocks) = next_prompt.take() {
+        match runtime.prompt(acp_session_id.clone(), prompt_blocks).await {
             Ok(outcome) => {
                 match storage.get_session(&session_id).await {
                     Ok(session)
@@ -1134,7 +1213,7 @@ async fn run_prompt_turn(
                         });
                         match dispatch_next_queued_prompt(&storage, &events_tx, &session_id).await {
                             Ok(Some(queued_prompt)) => {
-                                next_prompt = Some(queued_prompt.prompt);
+                                next_prompt = Some(queued_prompt.content_blocks);
                                 continue;
                             }
                             Ok(None) => {}
@@ -1276,6 +1355,7 @@ fn message_timeline_item(message: &Message) -> TimelineItem {
         status: message.status.clone(),
         role: message.role.clone(),
         content: message.content.clone(),
+        content_blocks: message.content_blocks.clone(),
     }
 }
 
@@ -1324,6 +1404,39 @@ mod tests {
         },
         storage::NewPermissionRequest,
     };
+
+    #[test]
+    fn prompt_block_validation_accepts_supported_images() {
+        let blocks = prompt_blocks_from_request(PromptRequest {
+            prompt: "inspect".to_string(),
+            content_blocks: vec![MessageContentBlock::Image {
+                mime_type: "image/png".to_string(),
+                data: "aW1hZ2U=".to_string(),
+                uri: None,
+                name: Some("image.png".to_string()),
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[1], MessageContentBlock::Image { .. }));
+    }
+
+    #[test]
+    fn prompt_block_validation_rejects_unsupported_images() {
+        let error = prompt_blocks_from_request(PromptRequest {
+            prompt: String::new(),
+            content_blocks: vec![MessageContentBlock::Image {
+                mime_type: "image/svg+xml".to_string(),
+                data: "PHN2Zy8+".to_string(),
+                uri: None,
+                name: None,
+            }],
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Unsupported image type"));
+    }
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
         test_state_with_auth(Some("test-token".to_string()), true, vec![]).await

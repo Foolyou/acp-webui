@@ -93,6 +93,24 @@ impl AgentSessionCapabilities {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPromptCapabilities {
+    pub image: bool,
+    pub audio: bool,
+    pub embedded_context: bool,
+}
+
+impl AgentPromptCapabilities {
+    pub fn none() -> Self {
+        Self {
+            image: false,
+            audio: false,
+            embedded_context: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionContinuity {
@@ -204,13 +222,64 @@ impl SessionContinuity {
     }
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum MessageContentBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        mime_type: String,
+        data: String,
+        uri: Option<String>,
+        name: Option<String>,
+    },
+}
+
+impl MessageContentBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn text_value(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } => Some(text),
+            Self::Image { .. } => None,
+        }
+    }
+}
+
+pub fn text_fallback_from_blocks(blocks: &[MessageContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(MessageContentBlock::text_value)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct MessageRow {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub content_blocks_json: Option<String>,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     pub session_id: String,
     pub role: String,
     pub content: String,
+    pub content_blocks: Vec<MessageContentBlock>,
     pub status: String,
     pub created_at: String,
 }
@@ -311,6 +380,7 @@ pub enum TimelineItem {
         status: String,
         role: String,
         content: String,
+        content_blocks: Vec<MessageContentBlock>,
     },
     ToolCall {
         id: String,
@@ -550,16 +620,33 @@ pub struct SkillSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptRequest {
+    #[serde(default)]
     pub prompt: String,
+    #[serde(default)]
+    pub content_blocks: Vec<MessageContentBlock>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, FromRow)]
+pub struct QueuedPromptRow {
+    pub id: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub prompt: String,
+    pub content_blocks_json: Option<String>,
+    pub status: String,
+    pub position: i64,
+    pub created_at: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedPrompt {
     pub id: String,
     pub session_id: String,
     pub message_id: String,
     pub prompt: String,
+    pub content_blocks: Vec<MessageContentBlock>,
     pub status: String,
     pub position: i64,
     pub created_at: String,

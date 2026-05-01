@@ -7,6 +7,7 @@ import type {
   QueuedPrompt,
   ReviewArtifact,
   ActiveTurn,
+  MessageContentBlock,
   SessionConfigState,
   SessionListItem,
   SessionDetail,
@@ -91,7 +92,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ value })
     }),
-  prompt: (sessionId: string, prompt: string) =>
+  prompt: (sessionId: string, prompt: string, contentBlocks?: MessageContentBlock[]) =>
     request<{
       message: ChatMessage;
       queuedPrompt?: QueuedPrompt | null;
@@ -99,7 +100,7 @@ export const api = {
       activeTurn?: ActiveTurn | null;
     }>(`/api/sessions/${sessionId}/prompt`, {
       method: "POST",
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, ...(contentBlocks?.length ? { contentBlocks } : {}) })
     }),
   cancelSession: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${sessionId}/cancel`, {
