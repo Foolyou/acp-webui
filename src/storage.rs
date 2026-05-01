@@ -570,31 +570,6 @@ impl Storage {
         Ok(has_activity != 0)
     }
 
-    pub async fn update_session_agent_session_id(
-        &self,
-        id: &str,
-        acp_session_id: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE sessions
-            SET
-                acp_session_id = ?,
-                external_session_id = ?,
-                updated_at = ?
-            WHERE id = ?
-            "#,
-        )
-        .bind(acp_session_id)
-        .bind(acp_session_id)
-        .bind(now())
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     pub async fn list_session_items(&self) -> anyhow::Result<Vec<SessionListItem>> {
         self.list_session_items_query(None).await
     }

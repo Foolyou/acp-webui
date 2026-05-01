@@ -508,49 +508,6 @@ async fn restore_session(
         session_id: session_id.clone(),
     });
 
-    if continuity.state == continuity_state::RESTORE_FAILED
-        && !state.storage.session_has_activity(&session_id).await?
-    {
-        let new_session = match runtime.new_session(workspace_path.clone()).await {
-            Ok(new_session) => new_session,
-            Err(error) => {
-                let message = format!("Failed to restart empty session: {error}");
-                state
-                    .storage
-                    .mark_session_restore_failed(&session_id, &message)
-                    .await?;
-                let _ = state.events_tx.send(RealtimeEvent::SessionRestoreFailed {
-                    session_id: session_id.clone(),
-                    message: message.clone(),
-                });
-                return Err(AppError::Conflict(message));
-            }
-        };
-        state
-            .storage
-            .update_session_agent_session_id(&session_id, &new_session.session_id)
-            .await?;
-        if new_session.config_options.is_some() {
-            state
-                .storage
-                .update_session_config_options(&session_id, new_session.config_options)
-                .await?;
-        }
-        runtime
-            .register_session(new_session.session_id, session_id.clone())
-            .await;
-        state
-            .storage
-            .mark_session_restore_succeeded(&session_id)
-            .await?;
-        let _ = state
-            .events_tx
-            .send(RealtimeEvent::SessionRestoreSucceeded {
-                session_id: session_id.clone(),
-            });
-        return Ok(Json(state.session_detail(&session_id).await?));
-    }
-
     match runtime
         .load_session(external_session_id, session_id.clone(), workspace_path)
         .await
@@ -939,6 +896,10 @@ impl AppState {
             });
         }
 
+        if !self.storage.session_has_activity(&session.id).await? {
+            return Ok(SessionContinuity::view_only(empty_session_restore_reason()));
+        }
+
         let external_session_id = session
             .external_session_id
             .as_deref()
@@ -1001,6 +962,11 @@ fn agent_unavailable_reason(agent_name: &str, status: &ConnectionStatus) -> Stri
         "{agent_name} is {}{suffix}. This session history is available for review, but the live {agent_name} runtime context is not available. Prompts are disabled until the agent runtime is ready.",
         status.state
     )
+}
+
+fn empty_session_restore_reason() -> String {
+    "This session has no conversation history to restore. Start a new session to continue working."
+        .to_string()
 }
 
 async fn resolve_permission(
@@ -2733,6 +2699,16 @@ for line in sys.stdin:
             )
             .await
             .unwrap();
+        state
+            .storage
+            .create_message(
+                &restore_session.id,
+                role::USER,
+                "restore history",
+                status::IDLE,
+            )
+            .await
+            .unwrap();
         let response = app
             .clone()
             .oneshot(
@@ -3548,6 +3524,11 @@ for line in sys.stdin:
             .create_session(&workspace.id, "acp-session".to_string())
             .await
             .unwrap();
+        state
+            .storage
+            .create_message(&session.id, role::USER, "restore history", status::IDLE)
+            .await
+            .unwrap();
         let app = api_router(state);
 
         let response = app
@@ -3569,6 +3550,49 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
+    async fn session_detail_projects_empty_session_as_view_only() {
+        let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
+            load_session: true,
+            resume_session: false,
+            list_sessions: true,
+            close_session: false,
+        })
+        .await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = state
+            .storage
+            .create_workspace(workspace_dir.path().to_string_lossy(), None)
+            .await
+            .unwrap();
+        let session = state
+            .storage
+            .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{}", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["continuity"]["state"], "view_only");
+        assert_eq!(json["continuity"]["restorable"], false);
+        assert!(json["continuity"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no conversation"));
+    }
+
+    #[tokio::test]
     async fn prompt_is_rejected_before_restore_and_accepted_after_runtime_registration() {
         let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
             load_session: true,
@@ -3586,6 +3610,11 @@ for line in sys.stdin:
         let session = state
             .storage
             .create_session(&workspace.id, "acp-session".to_string())
+            .await
+            .unwrap();
+        state
+            .storage
+            .create_message(&session.id, role::USER, "continue", status::IDLE)
             .await
             .unwrap();
         let app = api_router(state.clone());
@@ -3650,6 +3679,11 @@ for line in sys.stdin:
             .create_session(&workspace.id, "acp-session".to_string())
             .await
             .unwrap();
+        state
+            .storage
+            .create_message(&session.id, role::USER, "restore me", status::IDLE)
+            .await
+            .unwrap();
         let app = api_router(state.clone());
 
         let response = app
@@ -3675,7 +3709,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn restore_failed_empty_session_restarts_without_replaying_history() {
+    async fn empty_session_is_not_restorable() {
         let (state, _db_dir) = test_state_with_fake_agents().await;
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace = state
@@ -3714,26 +3748,14 @@ for line in sys.stdin:
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let restored = state.storage.get_session(&session.id).await.unwrap();
-        assert_eq!(restored.acp_session_id.as_deref(), Some("shared-session"));
-        assert!(
-            state
-                .agents
-                .runtime(CLAUDE_AGENT_ID)
-                .await
-                .unwrap()
-                .has_registered_session(Some("shared-session"))
-                .await
-        );
-        assert!(state
-            .storage
-            .list_messages(&session.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("no conversation"));
         let detail = state.session_detail(&session.id).await.unwrap();
-        assert!(detail.continuity.continuable);
+        assert!(!detail.continuity.continuable);
+        assert!(!detail.continuity.restorable);
+        assert_eq!(detail.continuity.state, "view_only");
     }
 
     #[tokio::test]
