@@ -1455,7 +1455,7 @@ pre {
 }
 
 .tool-group-main {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.42rem;
 }
 
@@ -1472,6 +1472,13 @@ pre {
 
 .tool-group-row.running .tool-activity-dot {
   background: var(--color-accent);
+}
+
+.tool-group-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.42rem;
+  min-width: 0;
 }
 
 .tool-group-summary {
@@ -1493,15 +1500,22 @@ pre {
   padding-left: 0.55rem;
 }
 
-.tool-group-toggle {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
+.tool-group-toggle-text {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
   white-space: nowrap;
+}
+
+.tool-group-toggle-text:hover,
+.tool-group-toggle-text:focus-visible {
+  color: var(--color-text);
 }
 
 .tool-group-items {
@@ -2318,7 +2332,6 @@ pre {
   }
 
   .tool-group-main .tool-status,
-  .tool-group-toggle,
   .tool-item-main .tool-status {
     grid-column: 2;
     width: fit-content;

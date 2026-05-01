@@ -619,17 +619,26 @@ function ToolGroupRow({
     <article className={className}>
       <div className="tool-row-main tool-group-main">
         <span className="tool-activity-dot" aria-hidden="true" />
-        <strong className="tool-group-summary">{block.summary}</strong>
+        <span className="tool-group-label">
+          <strong className="tool-group-summary">{block.summary}</strong>
+          <span
+            aria-label={expanded ? "Collapse tool details" : "Expand tool details"}
+            aria-expanded={expanded}
+            className="tool-group-toggle-text"
+            onClick={() => setExpanded((current) => !current)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setExpanded((current) => !current);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            {expanded ? "collapse" : "expand"}
+          </span>
+        </span>
         {block.statusLabel ? <span className={`tool-status ${block.status}`}>{block.statusLabel}</span> : null}
-        <Button
-          aria-label={expanded ? "Collapse tool details" : "Expand tool details"}
-          aria-expanded={expanded}
-          className="secondary small tool-group-toggle"
-          type="button"
-          onPress={() => setExpanded((current) => !current)}
-        >
-          <span aria-hidden="true">{expanded ? "v" : ">"}</span>
-        </Button>
       </div>
       {expanded ? (
         <div className="tool-group-items">
