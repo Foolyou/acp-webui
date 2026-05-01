@@ -768,6 +768,9 @@ function PromptComposer({
   const [templateTitle, setTemplateTitle] = useState("");
   const [templateSaving, setTemplateSaving] = useState(false);
   const [templateBusyId, setTemplateBusyId] = useState<string | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [editingTemplateTitle, setEditingTemplateTitle] = useState("");
+  const [editingTemplateBody, setEditingTemplateBody] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imagePromptSupported = agentStatus?.status.promptCapabilities?.image === true;
 
@@ -887,6 +890,32 @@ function PromptComposer({
     try {
       await api.deletePromptTemplate(templateId);
       setTemplates((current) => current.filter((item) => item.id !== templateId));
+      if (editingTemplateId === templateId) {
+        setEditingTemplateId(null);
+      }
+    } catch (error) {
+      setTemplatesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTemplateBusyId(null);
+    }
+  }
+
+  function editPromptTemplate(template: PromptTemplate) {
+    setEditingTemplateId(template.id);
+    setEditingTemplateTitle(template.title);
+    setEditingTemplateBody(template.body);
+  }
+
+  async function savePromptTemplateEdit(templateId: string) {
+    const title = editingTemplateTitle.trim();
+    const body = editingTemplateBody.trim();
+    if (!title || !body || templateBusyId) return;
+    setTemplateBusyId(templateId);
+    setTemplatesError(null);
+    try {
+      const updated = await api.updatePromptTemplate(templateId, { title, body });
+      setTemplates((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setEditingTemplateId(null);
     } catch (error) {
       setTemplatesError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1004,6 +1033,12 @@ function PromptComposer({
               <input
                 aria-label="Prompt template title"
                 onChange={(event) => setTemplateTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void savePromptTemplate();
+                  }
+                }}
                 placeholder={prompt.trim() ? defaultPromptTemplateTitle(prompt) : "Template title"}
                 value={templateTitle}
               />
@@ -1027,30 +1062,88 @@ function PromptComposer({
               <div className="prompt-template-list">
                 {templates.map((template) => (
                   <div className="prompt-template-item" key={template.id}>
-                    <div className="prompt-template-copy">
-                      <strong>{template.title}</strong>
-                      <span>{template.body}</span>
+                    {editingTemplateId === template.id ? (
+                      <div className="prompt-template-edit">
+                        <input
+                          aria-label="Edit prompt template title"
+                          onChange={(event) => setEditingTemplateTitle(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void savePromptTemplateEdit(template.id);
+                            }
+                          }}
+                          value={editingTemplateTitle}
+                        />
+                        <textarea
+                          aria-label="Edit prompt template body"
+                          onChange={(event) => setEditingTemplateBody(event.target.value)}
+                          rows={3}
+                          value={editingTemplateBody}
+                        />
+                      </div>
+                    ) : (
+                      <div className="prompt-template-copy">
+                        <strong>{template.title}</strong>
+                        <span>{template.body}</span>
+                      </div>
+                    )}
+                    <div className="prompt-template-actions">
+                      <Button
+                        className="secondary small"
+                        isDisabled={templateBusyId === template.id}
+                        onPress={() => {
+                          void deletePromptTemplate(template.id);
+                        }}
+                        type="button"
+                      >
+                        Delete
+                      </Button>
+                      {editingTemplateId === template.id ? (
+                        <Button
+                          className="secondary small"
+                          onPress={() => setEditingTemplateId(null)}
+                          type="button"
+                        >
+                          Cancel
+                        </Button>
+                      ) : (
+                        <Button
+                          className="secondary small"
+                          onPress={() => editPromptTemplate(template)}
+                          type="button"
+                        >
+                          Edit
+                        </Button>
+                      )}
+                      {editingTemplateId === template.id ? (
+                        <Button
+                          className="secondary small"
+                          isDisabled={
+                            templateBusyId === template.id ||
+                            !editingTemplateTitle.trim() ||
+                            !editingTemplateBody.trim()
+                          }
+                          onPress={() => {
+                            void savePromptTemplateEdit(template.id);
+                          }}
+                          type="button"
+                        >
+                          Save
+                        </Button>
+                      ) : (
+                        <Button
+                          className="secondary small"
+                          isDisabled={disabled}
+                          onPress={() => {
+                            void applyPromptTemplate(template);
+                          }}
+                          type="button"
+                        >
+                          Use
+                        </Button>
+                      )}
                     </div>
-                    <Button
-                      className="secondary small"
-                      isDisabled={disabled}
-                      onPress={() => {
-                        void applyPromptTemplate(template);
-                      }}
-                      type="button"
-                    >
-                      Insert
-                    </Button>
-                    <Button
-                      className="secondary small"
-                      isDisabled={templateBusyId === template.id}
-                      onPress={() => {
-                        void deletePromptTemplate(template.id);
-                      }}
-                      type="button"
-                    >
-                      Delete
-                    </Button>
                   </div>
                 ))}
               </div>

@@ -1846,7 +1846,7 @@ pre {
 
 .prompt-template-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.45rem;
   min-width: 0;
@@ -1860,6 +1860,26 @@ pre {
   display: grid;
   gap: 0.08rem;
   min-width: 0;
+}
+
+.prompt-template-edit {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.prompt-template-edit textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+}
+
+.prompt-template-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  min-width: max-content;
 }
 
 .prompt-template-copy strong,
@@ -2203,13 +2223,18 @@ pre {
     width: fit-content;
   }
 
-  .prompt-template-save,
-  .prompt-template-item {
+  .prompt-template-save {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .prompt-template-item .secondary {
-    width: 100%;
+  .prompt-template-item {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .prompt-template-actions {
+    justify-content: flex-start;
+    min-width: 0;
   }
 
   .tool-group-main,
