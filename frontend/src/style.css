@@ -1162,7 +1162,9 @@ pre {
 .review-card,
 .timeline-event {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.35rem;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--color-border);
@@ -1205,6 +1207,7 @@ pre {
 }
 
 .message-content {
+  width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
   line-height: 1.5;
@@ -1212,6 +1215,7 @@ pre {
 
 .message-content.structured {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.55rem;
 }
 
@@ -1239,7 +1243,9 @@ pre {
 
 .markdown-content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.45rem;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
 }
