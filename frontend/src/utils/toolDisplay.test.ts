@@ -78,6 +78,33 @@ describe("toolCallDisplay", () => {
     expect(display.metadata).toContainEqual({ label: "Command", value: "npm test && npm run build" });
   });
 
+  test("renders sparse ACP raw output as command output instead of unknown wrapper text", () => {
+    const display = toolCallDisplay(
+      toolCall({
+        toolKind: "unknown",
+        title: "Tool call",
+        summary: "tool_call_update completed",
+        input: {
+          rawOutput: "Exit code: 0\nWall time: 0.4 seconds\nOutput:\nREADME.md\nsrc/main.rs",
+          sessionUpdate: "tool_call_update",
+          status: "completed",
+          toolCallId: "call-1"
+        },
+        reviewArtifactIds: ["artifact-1"]
+      }),
+      [artifact({ id: "artifact-1", kind: "tool_call", title: "Tool call" })]
+    );
+
+    expect(display.kind).toBe("command");
+    expect(display.actionLabel).toBe("Ran");
+    expect(display.subject).toBe("command");
+    expect(display.result).toBe("Exit code: 0, Wall time: 0.4 seconds");
+    expect(display.metadata).not.toContainEqual({ label: "Tool", value: "unknown" });
+    expect(display.detailText).toContain("Output:\nExit code: 0\nWall time: 0.4 seconds\nOutput:\nREADME.md\nsrc/main.rs");
+    expect(display.detailText).not.toContain("tool_call_update completed");
+    expect(display.detailText).not.toContain("Evidence: Tool call");
+  });
+
   test("renders file reads with path subjects", () => {
     const display = toolCallDisplay(
       toolCall({

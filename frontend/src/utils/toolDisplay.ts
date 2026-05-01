@@ -40,6 +40,7 @@ export function toolCallDisplay(
 ): ToolCallDisplay {
   const input = asRecord(item.input);
   const contentText = findContentText(item.input);
+  const rawOutput = findString(item.input, ["rawOutput"]);
   const command = findString(item.input, ["command", "cmd", "script", "shell", "commandLine"]) ?? shellCommandFromContent(contentText);
   const toolText = [
     item.toolKind,
@@ -49,7 +50,8 @@ export function toolCallDisplay(
     stringField(input, "type"),
     stringField(input, "name"),
     stringField(input, "tool"),
-    contentText
+    contentText,
+    rawOutput ? "raw output terminal command" : undefined
   ]
     .filter(Boolean)
     .join(" ")
@@ -64,15 +66,18 @@ export function toolCallDisplay(
   const subject = subjectForKind(kind, {
     command,
     contentText,
-    fallback: item.title || item.toolKind,
+    fallback: fallbackSubject(item.title, item.toolKind, rawOutput),
     path,
     query,
     server,
     tool,
     url
   });
-  const outputText = outputFromPayload(item.output);
-  const result = compactText(item.summary || outputText || resultForStatus(item.status), MAX_RESULT_LENGTH);
+  const outputText = outputFromPayload(item.output) || rawOutput || "";
+  const result = compactText(
+    meaningfulSummary(item.summary) || commandOutputSummary(outputText) || resultForStatus(item.status),
+    MAX_RESULT_LENGTH
+  );
   const outputTail = outputText && outputText !== "null" ? compactMultilineTail(outputText) : undefined;
   const metadata = uniqueDetails([
     detail("Command", command ?? (kind === "command" ? contentText : undefined)),
@@ -81,7 +86,7 @@ export function toolCallDisplay(
     detail("URL", url),
     detail("Cwd", cwd),
     detail("Server", server),
-    detail("Tool", tool && tool !== item.toolKind ? tool : item.toolKind)
+      detail("Tool", usefulToolName(tool && tool !== item.toolKind ? tool : item.toolKind))
   ]);
   const displayBase = {
     kind,
@@ -224,6 +229,42 @@ function findString(value: unknown, keys: string[], depth = 0): string | undefin
     if (found) return found;
   }
   return undefined;
+}
+
+function fallbackSubject(title: string, toolKind: string, rawOutput?: string) {
+  if (rawOutput && isGenericToolTitle(title)) return "command";
+  if (!isGenericToolTitle(title)) return title;
+  const tool = usefulToolName(toolKind);
+  return tool ?? "tool";
+}
+
+function usefulToolName(value?: string | null) {
+  const text = value?.trim();
+  if (!text || text.toLowerCase() === "unknown") return undefined;
+  return text;
+}
+
+function isGenericToolTitle(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  return !normalized || normalized === "tool call" || normalized === "unknown";
+}
+
+function meaningfulSummary(value?: string | null) {
+  const text = value?.trim();
+  if (!text) return undefined;
+  if (/^tool_call(?:_update)?\s+(?:completed|updated|running|failed)\b/i.test(text)) return undefined;
+  return text;
+}
+
+function commandOutputSummary(value: string) {
+  const lines = value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const exit = lines.find((line) => /^Exit code:/i.test(line));
+  const wallTime = lines.find((line) => /^Wall time:/i.test(line));
+  return [exit, wallTime].filter(Boolean).join(", ") || undefined;
 }
 
 function findContentText(value: unknown, depth = 0): string | undefined {
@@ -382,9 +423,10 @@ function toolDetailText(
     .filter((artifact): artifact is ReviewArtifactSummary => Boolean(artifact))
     .filter((artifact) => artifact.kind !== "image")
     .map((artifact) => compactText(artifact.title || artifact.summary || artifact.kind, MAX_DETAIL_LENGTH));
+  const usefulArtifacts = linkedArtifacts.filter((title) => !isGenericToolTitle(title));
 
-  if (linkedArtifacts.length) {
-    lines.push(`Evidence: ${Array.from(new Set(linkedArtifacts)).join(", ")}`);
+  if (usefulArtifacts.length) {
+    lines.push(`Evidence: ${Array.from(new Set(usefulArtifacts)).join(", ")}`);
   }
 
   if (display.outputTail) {
