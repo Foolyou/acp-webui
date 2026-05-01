@@ -1,23 +1,37 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "react-aria-components";
 
+type FullscreenDocument = Document & {
+  webkitExitFullscreen?: () => Promise<void> | void;
+  webkitFullscreenElement?: Element | null;
+  webkitFullscreenEnabled?: boolean;
+};
+
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
 export function FullscreenButton() {
   const [active, setActive] = useState(false);
-  const [available, setAvailable] = useState(false);
+  const [available, setAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
     const syncFullscreenState = () => {
-      setActive(Boolean(document.fullscreenElement));
-      setAvailable(Boolean(document.fullscreenEnabled && document.documentElement.requestFullscreen));
+      setActive(Boolean(fullscreenElement()));
+      setAvailable(isFullscreenAvailable());
     };
 
     syncFullscreenState();
     document.addEventListener("fullscreenchange", syncFullscreenState);
     document.addEventListener("fullscreenerror", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenerror", syncFullscreenState);
 
     return () => {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
       document.removeEventListener("fullscreenerror", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenerror", syncFullscreenState);
     };
   }, []);
 
@@ -27,25 +41,29 @@ export function FullscreenButton() {
     }
 
     try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
+      if (!fullscreenElement()) {
+        await requestFullscreen(document.documentElement);
         return;
       }
 
-      await document.exitFullscreen();
+      await exitFullscreen();
     } catch {
-      setActive(Boolean(document.fullscreenElement));
+      setActive(Boolean(fullscreenElement()));
     }
   }, [available]);
 
-  const label = !available ? "Fullscreen unavailable" : active ? "Exit fullscreen" : "Enter fullscreen";
+  if (available === false) {
+    return null;
+  }
+
+  const label = active ? "Exit fullscreen" : "Enter fullscreen";
 
   return (
     <Button
       aria-label={label}
       className={`icon-button fullscreen-toggle ${active ? "active" : ""}`}
       data-tooltip={label}
-      isDisabled={!available}
+      isDisabled={available !== true}
       onPress={() => {
         void toggleFullscreen();
       }}
@@ -57,4 +75,31 @@ export function FullscreenButton() {
       <span className="visually-hidden">{label}</span>
     </Button>
   );
+}
+
+function fullscreenDocument() {
+  return document as FullscreenDocument;
+}
+
+function fullscreenElement() {
+  const doc = fullscreenDocument();
+  return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+function isFullscreenAvailable() {
+  const doc = fullscreenDocument();
+  const root = document.documentElement as FullscreenElement;
+  return Boolean((document.fullscreenEnabled || doc.webkitFullscreenEnabled) && (root.requestFullscreen || root.webkitRequestFullscreen));
+}
+
+function requestFullscreen(element: HTMLElement) {
+  const target = element as FullscreenElement;
+  const request = target.requestFullscreen ?? target.webkitRequestFullscreen;
+  return request?.call(target);
+}
+
+function exitFullscreen() {
+  const doc = fullscreenDocument();
+  const exit = document.exitFullscreen ?? doc.webkitExitFullscreen;
+  return exit?.call(document);
 }

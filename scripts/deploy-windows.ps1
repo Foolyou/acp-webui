@@ -92,6 +92,40 @@ function Format-CommandForDisplay {
     return ((@($Executable) + $Arguments) | ForEach-Object { Format-ArgumentForDisplay $_ }) -join " "
 }
 
+function Test-WildcardBindHost {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Address
+    )
+
+    return $Address -eq "0.0.0.0" -or $Address -eq "::" -or $Address -eq "[::]" -or $Address -eq "*"
+}
+
+function Test-LoopbackBindHost {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Address
+    )
+
+    $Parsed = [System.Net.IPAddress]::None
+    return [System.Net.IPAddress]::TryParse($Address, [ref]$Parsed) -and [System.Net.IPAddress]::IsLoopback($Parsed)
+}
+
+function Test-TailscaleIPv4 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Address
+    )
+
+    $Parsed = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$Parsed)) {
+        return $false
+    }
+
+    $Bytes = $Parsed.GetAddressBytes()
+    return $Bytes.Length -eq 4 -and $Bytes[0] -eq 100 -and $Bytes[1] -ge 64 -and $Bytes[1] -le 127
+}
+
 function New-RemoteSession {
     $SessionParams = @{
         ComputerName = $ComputerName
@@ -294,6 +328,15 @@ if ($UseTailscaleBind -and $PSBoundParameters.ContainsKey("BindHost")) {
     throw "Use -BindTailscale or -TailscaleIp without -BindHost; the script resolves the remote Tailscale bind address."
 }
 
+if (-not $UseTailscaleBind) {
+    if (Test-WildcardBindHost $BindHost) {
+        throw "Refusing to bind to all interfaces ($BindHost). Use 127.0.0.1, -BindTailscale, or -TailscaleIp."
+    }
+    if (-not (Test-LoopbackBindHost $BindHost) -and -not (Test-TailscaleIPv4 $BindHost)) {
+        throw "Refusing to bind to $BindHost. Project services may bind only to 127.0.0.1 or an explicit Tailscale IPv4 address."
+    }
+}
+
 if ($UseTailscaleBind -and $DisableAuth) {
     throw "-DisableAuth cannot be used with Tailscale binding because acp-webui only permits disabled auth on loopback binds."
 }
@@ -365,6 +408,16 @@ $PrepareRemoteScript = {
 
         $Bytes = $Parsed.GetAddressBytes()
         return $Bytes.Length -eq 4 -and $Bytes[0] -eq 100 -and $Bytes[1] -ge 64 -and $Bytes[1] -le 127
+    }
+
+    function Test-LoopbackBindHost {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Address
+        )
+
+        $Parsed = [System.Net.IPAddress]::None
+        return [System.Net.IPAddress]::TryParse($Address, [ref]$Parsed) -and [System.Net.IPAddress]::IsLoopback($Parsed)
     }
 
     function Get-TailscaleIPv4 {
@@ -554,6 +607,12 @@ $PrepareRemoteScript = {
         Get-TailscaleIPv4 -RequestedIp $Config.TailscaleIp
     } else {
         $Config.BindHost
+    }
+    if (Test-WildcardBindHost $ResolvedBindHost) {
+        throw "Refusing to bind to all interfaces ($ResolvedBindHost). Use 127.0.0.1, -BindTailscale, or -TailscaleIp."
+    }
+    if (-not (Test-LoopbackBindHost $ResolvedBindHost) -and -not (Test-TailscaleIPv4 $ResolvedBindHost)) {
+        throw "Refusing to bind to $ResolvedBindHost. Project services may bind only to 127.0.0.1 or an explicit Tailscale IPv4 address."
     }
     $CheckAllPortAddresses = [bool]$Config.BindTailscale
 

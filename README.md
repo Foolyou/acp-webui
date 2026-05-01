@@ -192,7 +192,7 @@ To stop current local project services, build the embedded release binary, and r
 .\scripts\build-run-release.ps1
 ```
 
-The script stops listeners on the local project backend and Vite dev ports, stops release binaries running from this repository, builds the frontend and embedded release binary, then starts the release binary in the foreground. By default it binds to `127.0.0.1:7635`.
+The script stops listeners on the local project backend and Vite dev ports, stops release binaries running from this repository, builds the frontend and embedded release binary, then starts the release binary in the background. By default it binds to `127.0.0.1:7635`.
 
 To bind only to the local Tailscale IPv4 address:
 
@@ -202,10 +202,19 @@ To bind only to the local Tailscale IPv4 address:
 
 In Tailscale mode (`-BindTailscale`, or the shorter `-Tailscale` alias) the script detects the local `100.64.0.0/10` address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
 
+To publish the local release through Tailscale Serve:
+
+```powershell
+.\scripts\build-run-release.ps1 -TailscaleServe
+```
+
+Tailscale Serve mode binds the release server to `127.0.0.1`, starts it in the background, clears any foreground `tailscale serve` process created by a previous manual command, and configures a persistent `tailscale serve --bg` proxy to the loopback server. Use this mode for the `https://<machine>.<tailnet>.ts.net/` URL shown by `tailscale serve status`.
+
 Useful variants:
 
 ```powershell
 .\scripts\build-run-release.ps1 -SkipBuild
+.\scripts\build-run-release.ps1 -TailscaleServe -SkipBuild
 .\scripts\build-run-release.ps1 -TailscaleIp 100.x.y.z
 .\scripts\build-run-release.ps1 -BindTailscale -TrustedClients <trusted-client-cidr>
 .\scripts\build-run-release.ps1 -NoRun

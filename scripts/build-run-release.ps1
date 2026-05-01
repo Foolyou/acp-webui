@@ -9,7 +9,9 @@ background on the local machine.
 
 By default it binds to 127.0.0.1. Pass -BindTailscale to resolve the local
 Tailscale IPv4 address and bind only to that address, or pass -TailscaleIp with
-an explicit 100.64.0.0/10 address.
+an explicit 100.64.0.0/10 address. Pass -TailscaleServe to bind the release
+server to 127.0.0.1 and configure `tailscale serve --bg` for tailnet HTTPS
+access.
 
 The script always clears the configured backend release port and frontend dev
 port before building so running dev services do not survive the release launch.
@@ -19,6 +21,9 @@ param(
     [string]$BindHost = "127.0.0.1",
     [Alias("Tailscale")]
     [switch]$BindTailscale,
+    [switch]$TailscaleServe,
+    [switch]$NoTailscaleServeReset,
+    [int]$TailscaleServeHttpsPort = 443,
     [string]$TailscaleIp,
     [int]$BindPort = 7635,
     [int]$FrontendPort = 5777,
@@ -339,6 +344,83 @@ function Wait-ForHttpOk {
     throw "Timed out waiting for $Url."
 }
 
+function Get-TailscaleCommand {
+    $Command = Get-Command tailscale -ErrorAction SilentlyContinue
+    if ($null -eq $Command) {
+        throw "tailscale command not found. Install Tailscale or run without -TailscaleServe."
+    }
+
+    return $Command.Source
+}
+
+function Get-TailscaleServeProcessIds {
+    try {
+        $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    } catch {
+        Write-Verbose "Failed to enumerate Tailscale serve processes: $($_.Exception.Message)"
+        return @()
+    }
+
+    return @($Processes | Where-Object {
+        $ProcessId = [int]$_.ProcessId
+        $Name = "$($_.Name)".ToLowerInvariant()
+        $CommandLine = "$($_.CommandLine)"
+        $Name -eq "tailscale.exe" -and
+            $ProcessId -gt 0 -and
+            $ProcessId -ne $PID -and
+            $CommandLine -match '(^|\s)serve(\s|$)'
+    } | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Clear-TailscaleServeConfig {
+    param(
+        [switch]$SkipReset
+    )
+
+    $Tailscale = Get-TailscaleCommand
+    $ForegroundProcessIds = @(Get-TailscaleServeProcessIds)
+    foreach ($ProcessId in $ForegroundProcessIds) {
+        Write-Host "Stopping foreground tailscale serve process $ProcessId..."
+        Stop-ProcessTreeById $ProcessId
+    }
+
+    if ($SkipReset) {
+        return
+    }
+
+    Write-Host "Resetting tailscale serve config..."
+    $Output = & $Tailscale serve reset 2>&1
+    $ExitCode = $LASTEXITCODE
+    foreach ($Line in $Output) {
+        Write-Verbose $Line
+    }
+    if ($ExitCode -ne 0) {
+        throw "tailscale serve reset failed with exit code $ExitCode."
+    }
+}
+
+function Start-TailscaleServe {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetUrl,
+        [Parameter(Mandatory = $true)]
+        [int]$HttpsPort
+    )
+
+    $Tailscale = Get-TailscaleCommand
+    Write-Host "Starting tailscale serve background proxy..."
+    $Output = & $Tailscale serve --bg "--https=$HttpsPort" $TargetUrl 2>&1
+    $ExitCode = $LASTEXITCODE
+    foreach ($Line in $Output) {
+        Write-Host $Line
+    }
+    if ($ExitCode -ne 0) {
+        throw "tailscale serve failed with exit code $ExitCode."
+    }
+
+    return (& $Tailscale serve status 2>$null) -join [Environment]::NewLine
+}
+
 function Test-ProcessPathUnder {
     param(
         [string]$ProcessPath,
@@ -476,16 +558,36 @@ function Format-CommandForDisplay {
 }
 
 $UseTailscaleBind = $BindTailscale -or -not [string]::IsNullOrWhiteSpace($TailscaleIp)
+if ($TailscaleServe -and $UseTailscaleBind) {
+    throw "Use -TailscaleServe by itself; it binds the release server to 127.0.0.1 and exposes it through tailscale serve."
+}
+if ($TailscaleServe -and $PSBoundParameters.ContainsKey("BindHost") -and $BindHost -ne "127.0.0.1") {
+    throw "Use -TailscaleServe without -BindHost, or pass -BindHost 127.0.0.1. Tailscale Serve mode must not bind the app to a tailnet or wildcard address."
+}
 if ($UseTailscaleBind -and $PSBoundParameters.ContainsKey("BindHost")) {
     throw "Use -BindTailscale or -TailscaleIp without -BindHost; the script resolves the local Tailscale bind address."
 }
+if ($TailscaleServeHttpsPort -le 0 -or $TailscaleServeHttpsPort -gt 65535) {
+    throw "-TailscaleServeHttpsPort must be between 1 and 65535."
+}
+if ($TailscaleServe -and $Foreground) {
+    throw "-TailscaleServe requires background mode so the script can configure the tailscale serve proxy after startup."
+}
 
-$ResolvedBindHost = if ($UseTailscaleBind) {
+$ResolvedBindHost = if ($TailscaleServe) {
+    "127.0.0.1"
+} elseif ($UseTailscaleBind) {
     Get-TailscaleIPv4 $TailscaleIp
 } else {
     $BindHost
 }
 
+if (Test-WildcardBindHost $ResolvedBindHost) {
+    throw "Refusing to bind to all interfaces ($ResolvedBindHost). Use 127.0.0.1, -TailscaleServe, -BindTailscale, or -TailscaleIp."
+}
+if (-not (Test-LoopbackBindHost $ResolvedBindHost) -and -not (Test-TailscaleIPv4 $ResolvedBindHost)) {
+    throw "Refusing to bind to $ResolvedBindHost. Project services may bind only to 127.0.0.1 or an explicit Tailscale IPv4 address."
+}
 if ($DisableAuth -and -not (Test-LoopbackBindHost $ResolvedBindHost)) {
     throw "-DisableAuth is only allowed when binding to a loopback address."
 }
@@ -494,11 +596,17 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 if (-not $NoStopExisting) {
     Stop-ProjectServices -ResolvedBindHost $ResolvedBindHost
+    if ($TailscaleServe) {
+        Clear-TailscaleServeConfig -SkipReset:$NoTailscaleServeReset
+    }
 } else {
     $PortListeners = @(Get-PortListenConnections -Port $BindPort -BindHost $ResolvedBindHost)
     if ($PortListeners.Count -gt 0) {
         $Summary = Format-PortListenConnections $PortListeners
         throw "Port $ResolvedBindHost`:$BindPort is already in use ($Summary). Remove -NoStopExisting to stop it first."
+    }
+    if ($TailscaleServe) {
+        Clear-TailscaleServeConfig -SkipReset:$NoTailscaleServeReset
     }
 }
 
@@ -568,7 +676,9 @@ foreach ($Arg in $ExtraArgs) {
 }
 
 $Url = "http://$ResolvedBindHost`:$BindPort"
-if ($UseTailscaleBind) {
+if ($TailscaleServe) {
+    Write-Host "Tailscale Serve mode: binding release server to loopback and publishing through tailscale serve."
+} elseif ($UseTailscaleBind) {
     Write-Host "Tailscale bind address: $ResolvedBindHost"
 } else {
     Write-Host "Bind address: $ResolvedBindHost"
@@ -600,6 +710,13 @@ $ReleaseProcess = Start-Process `
 
 Wait-ForHttpOk -Url "$Url/api/auth/status" -TimeoutSeconds $StartupTimeoutSeconds
 Write-Host "Release server: $Url"
+if ($TailscaleServe) {
+    $ServeStatus = Start-TailscaleServe -TargetUrl $Url -HttpsPort $TailscaleServeHttpsPort
+    if (-not [string]::IsNullOrWhiteSpace($ServeStatus)) {
+        Write-Host "Tailscale Serve:"
+        Write-Host $ServeStatus
+    }
+}
 Write-Host "Release PID: $($ReleaseProcess.Id)"
 Write-Host "Logs:"
 Write-Host "  stdout: $ReleaseOut"
