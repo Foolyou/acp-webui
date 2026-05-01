@@ -896,10 +896,6 @@ impl AppState {
             });
         }
 
-        if !self.storage.session_has_activity(&session.id).await? {
-            return Ok(SessionContinuity::view_only(empty_session_restore_reason()));
-        }
-
         let external_session_id = session
             .external_session_id
             .as_deref()
@@ -962,11 +958,6 @@ fn agent_unavailable_reason(agent_name: &str, status: &ConnectionStatus) -> Stri
         "{agent_name} is {}{suffix}. This session history is available for review, but the live {agent_name} runtime context is not available. Prompts are disabled until the agent runtime is ready.",
         status.state
     )
-}
-
-fn empty_session_restore_reason() -> String {
-    "This session has no conversation history to restore. Start a new session to continue working."
-        .to_string()
 }
 
 async fn resolve_permission(
@@ -1093,15 +1084,20 @@ async fn run_prompt_turn(
                     }
                 }
                 if !outcome.content.is_empty() {
-                    match storage
-                        .create_message(
-                            &session_id,
-                            role::ASSISTANT,
-                            &outcome.content,
-                            status::IDLE,
-                        )
-                        .await
-                    {
+                    let persisted_message = match outcome.message_id.as_deref() {
+                        Some(message_id) => storage.get_message(message_id).await,
+                        None => {
+                            storage
+                                .create_message(
+                                    &session_id,
+                                    role::ASSISTANT,
+                                    &outcome.content,
+                                    status::IDLE,
+                                )
+                                .await
+                        }
+                    };
+                    match persisted_message {
                         Ok(message) => {
                             let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert {
                                 item: message_timeline_item(&message),
@@ -3550,7 +3546,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn session_detail_projects_empty_session_as_view_only() {
+    async fn session_detail_projects_empty_session_as_loadable_when_agent_can_load() {
         let (state, _db_dir) = test_state_with_capabilities(AgentSessionCapabilities {
             load_session: true,
             resume_session: false,
@@ -3584,12 +3580,8 @@ for line in sys.stdin:
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["continuity"]["state"], "view_only");
-        assert_eq!(json["continuity"]["restorable"], false);
-        assert!(json["continuity"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("no conversation"));
+        assert_eq!(json["continuity"]["state"], "loadable");
+        assert_eq!(json["continuity"]["restorable"], true);
     }
 
     #[tokio::test]
@@ -3709,7 +3701,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn empty_session_is_not_restorable() {
+    async fn empty_session_restore_can_replay_agent_history() {
         let (state, _db_dir) = test_state_with_fake_agents().await;
         let workspace_dir = tempfile::tempdir().unwrap();
         let workspace = state
@@ -3727,14 +3719,6 @@ for line in sys.stdin:
             )
             .await
             .unwrap();
-        state
-            .storage
-            .mark_session_restore_failed(
-                &session.id,
-                "Failed to restore session: JSON-RPC error -32603: Internal error",
-            )
-            .await
-            .unwrap();
         let app = api_router(state.clone());
 
         let response = app
@@ -3748,14 +3732,21 @@ for line in sys.stdin:
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["error"].as_str().unwrap().contains("no conversation"));
+        assert_eq!(json["continuity"]["state"], "restored");
+        assert!(json["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "message"
+                && item["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Restored by claude")));
         let detail = state.session_detail(&session.id).await.unwrap();
-        assert!(!detail.continuity.continuable);
-        assert!(!detail.continuity.restorable);
-        assert_eq!(detail.continuity.state, "view_only");
+        assert!(detail.continuity.continuable);
     }
 
     #[tokio::test]

@@ -197,6 +197,7 @@ pub enum RealtimeEvent {
 #[derive(Debug, Clone)]
 pub struct PromptOutcome {
     pub content: String,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +216,7 @@ pub struct AgentRuntime {
     session_map: Arc<RwLock<HashMap<String, String>>>,
     restore_session_map: Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
+    assistant_message_ids: Arc<Mutex<HashMap<String, String>>>,
     events_tx: broadcast::Sender<RealtimeEvent>,
 }
 
@@ -266,6 +268,7 @@ impl AgentRuntime {
             session_map: Arc::new(RwLock::new(HashMap::new())),
             restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
+            assistant_message_ids: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
         })
     }
@@ -314,6 +317,7 @@ impl AgentRuntime {
             session_map: Arc::new(RwLock::new(HashMap::new())),
             restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
+            assistant_message_ids: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
         })
     }
@@ -353,6 +357,7 @@ impl AgentRuntime {
             session_map: Arc::new(RwLock::new(HashMap::new())),
             restore_session_map: Arc::new(RwLock::new(HashMap::new())),
             assistant_buffers: Arc::new(Mutex::new(HashMap::new())),
+            assistant_message_ids: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
         })
     }
@@ -501,6 +506,7 @@ impl AgentRuntime {
                 &self.events_tx,
                 &self.storage,
                 &self.assistant_buffers,
+                &self.assistant_message_ids,
                 true,
                 false,
             )
@@ -556,20 +562,25 @@ impl AgentRuntime {
             .lock()
             .await
             .insert(acp_session_id.clone(), String::new());
+        self.assistant_message_ids
+            .lock()
+            .await
+            .remove(&acp_session_id);
 
-        peer.request(
-            "session/prompt",
-            json!({
-                "sessionId": acp_session_id,
-                "prompt": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }),
-        )
-        .await?;
+        let result = peer
+            .request(
+                "session/prompt",
+                json!({
+                    "sessionId": acp_session_id,
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }),
+            )
+            .await;
 
         let content = self
             .assistant_buffers
@@ -577,8 +588,41 @@ impl AgentRuntime {
             .await
             .remove(&acp_session_id)
             .unwrap_or_default();
+        let message_id = self
+            .assistant_message_ids
+            .lock()
+            .await
+            .remove(&acp_session_id);
 
-        Ok(PromptOutcome { content })
+        match result {
+            Ok(_) => {
+                if let Some(message_id) = &message_id {
+                    if let Err(error) = self
+                        .storage
+                        .update_message_status(message_id, status::IDLE)
+                        .await
+                    {
+                        tracing::error!(?error, "failed to mark assistant message idle");
+                    }
+                }
+                Ok(PromptOutcome {
+                    content,
+                    message_id,
+                })
+            }
+            Err(error) => {
+                if let Some(message_id) = &message_id {
+                    if let Err(update_error) = self
+                        .storage
+                        .update_message_status(message_id, status::FAILED)
+                        .await
+                    {
+                        tracing::error!(?update_error, "failed to mark assistant message failed");
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn stop_session_turn(&self, acp_session_id: String) -> anyhow::Result<()> {
@@ -721,6 +765,7 @@ impl AgentRuntime {
             self.session_map.clone(),
             self.restore_session_map.clone(),
             self.assistant_buffers.clone(),
+            self.assistant_message_ids.clone(),
         )
         .await?;
 
@@ -1264,6 +1309,7 @@ impl JsonRpcPeer {
         session_map: Arc<RwLock<HashMap<String, String>>>,
         restore_session_map: Arc<RwLock<HashMap<String, String>>>,
         assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
+        assistant_message_ids: Arc<Mutex<HashMap<String, String>>>,
     ) -> anyhow::Result<Arc<Self>> {
         let stdin = child
             .stdin
@@ -1322,6 +1368,7 @@ impl JsonRpcPeer {
                                     &session_map,
                                     &restore_session_map,
                                     &assistant_buffers,
+                                    &assistant_message_ids,
                                     &reader_permission_responders,
                                 )
                                 .await;
@@ -1439,6 +1486,7 @@ async fn handle_incoming_message(
     session_map: &Arc<RwLock<HashMap<String, String>>>,
     restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+    assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
     permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
     if message.get("id").is_some()
@@ -1462,6 +1510,7 @@ async fn handle_incoming_message(
                 session_map,
                 restore_session_map,
                 assistant_buffers,
+                assistant_message_ids,
             )
             .await;
         }
@@ -1531,6 +1580,7 @@ async fn handle_session_update(
     session_map: &Arc<RwLock<HashMap<String, String>>>,
     restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+    assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
 ) {
     let params = &message["params"];
     let Some(acp_session_id) = params.get("sessionId").and_then(Value::as_str) else {
@@ -1559,6 +1609,14 @@ async fn handle_session_update(
                 if let Some(local_session_id) =
                     session_map.read().await.get(acp_session_id).cloned()
                 {
+                    persist_live_assistant_chunk(
+                        storage,
+                        assistant_message_ids,
+                        acp_session_id,
+                        &local_session_id,
+                        &text,
+                    )
+                    .await;
                     let _ = events_tx.send(RealtimeEvent::TextDelta {
                         session_id: local_session_id,
                         delta: text,
@@ -1618,6 +1676,7 @@ async fn handle_session_update(
                 events_tx,
                 storage,
                 assistant_buffers,
+                assistant_message_ids,
                 restore_session_id.is_some(),
                 restore_session_id.is_none(),
             )
@@ -1787,12 +1846,57 @@ async fn persist_replayed_message(
     }
 }
 
+async fn persist_live_assistant_chunk(
+    storage: &Storage,
+    assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
+    acp_session_id: &str,
+    local_session_id: &str,
+    content_delta: &str,
+) {
+    let existing_message_id = assistant_message_ids
+        .lock()
+        .await
+        .get(acp_session_id)
+        .cloned();
+
+    if let Some(message_id) = existing_message_id {
+        if let Err(error) = storage
+            .append_message_content(&message_id, content_delta, status::RUNNING)
+            .await
+        {
+            tracing::error!(?error, "failed to append assistant message chunk");
+        }
+        return;
+    }
+
+    match storage
+        .create_message(
+            local_session_id,
+            role::ASSISTANT,
+            content_delta,
+            status::RUNNING,
+        )
+        .await
+    {
+        Ok(message) => {
+            assistant_message_ids
+                .lock()
+                .await
+                .insert(acp_session_id.to_string(), message.id);
+        }
+        Err(error) => {
+            tracing::error!(?error, "failed to persist assistant message chunk");
+        }
+    }
+}
+
 async fn flush_assistant_buffer_for_session(
     acp_session_id: &str,
     local_session_id: &str,
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+    assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
     dedupe: bool,
     emit_assistant_message: bool,
 ) {
@@ -1807,7 +1911,20 @@ async fn flush_assistant_buffer_for_session(
         std::mem::take(buffer)
     };
 
-    let message = if dedupe {
+    let persisted_message_id = assistant_message_ids.lock().await.remove(acp_session_id);
+
+    let message = if let Some(message_id) = persisted_message_id {
+        match storage
+            .update_message_status(&message_id, status::IDLE)
+            .await
+        {
+            Ok(message) => Some(message),
+            Err(error) => {
+                tracing::error!(?error, "failed to finish assistant message segment");
+                return;
+            }
+        }
+    } else if dedupe {
         match storage
             .create_message_if_missing(local_session_id, role::ASSISTANT, &content, status::IDLE)
             .await
@@ -2486,6 +2603,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let restore_session_map = Arc::new(RwLock::new(HashMap::new()));
         let assistant_buffers = Arc::new(Mutex::new(HashMap::new()));
+        let assistant_message_ids = Arc::new(Mutex::new(HashMap::new()));
         let permission_responders = Arc::new(Mutex::new(HashMap::new()));
 
         handle_incoming_message(
@@ -2497,6 +2615,7 @@ mod tests {
             &session_map,
             &restore_session_map,
             &assistant_buffers,
+            &assistant_message_ids,
             &permission_responders,
         )
         .await;
@@ -2578,6 +2697,7 @@ mod tests {
         )])));
         let restore_session_map = Arc::new(RwLock::new(HashMap::new()));
         let assistant_buffers = Arc::new(Mutex::new(HashMap::new()));
+        let assistant_message_ids = Arc::new(Mutex::new(HashMap::new()));
         let (events_tx, mut events_rx) = broadcast::channel(4);
 
         handle_session_update(
@@ -2608,6 +2728,7 @@ mod tests {
             &session_map,
             &restore_session_map,
             &assistant_buffers,
+            &assistant_message_ids,
         )
         .await;
 
@@ -3336,9 +3457,14 @@ for line in sys.stdin:
         let dir = tempfile::tempdir().unwrap();
         let script = write_fake_acp(&dir);
         let (events_tx, _) = broadcast::channel(16);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
         let runtime = CodexRuntime::start(
             config_for_fake(script, "text"),
-            test_storage().await,
+            storage.clone(),
             events_tx.clone(),
         )
         .await;
@@ -3350,8 +3476,12 @@ for line in sys.stdin:
             .await
             .unwrap()
             .session_id;
+        let session = storage
+            .create_session(&workspace.id, acp_session_id.clone())
+            .await
+            .unwrap();
         runtime
-            .register_session(acp_session_id.clone(), "local-session".to_string())
+            .register_session(acp_session_id.clone(), session.id.clone())
             .await;
 
         let mut rx = events_tx.subscribe();
@@ -3361,6 +3491,21 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "Hello from fake ACP");
+        assert!(outcome.message_id.is_some());
+        assert_eq!(
+            storage
+                .list_messages(&session.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|message| (message.role, message.content, message.status))
+                .collect::<Vec<_>>(),
+            vec![(
+                role::ASSISTANT.to_string(),
+                "Hello from fake ACP".to_string(),
+                status::IDLE.to_string()
+            )]
+        );
 
         let event = timeout(Duration::from_secs(1), async move {
             loop {
@@ -3375,7 +3520,7 @@ for line in sys.stdin:
         .await
         .unwrap();
 
-        assert_eq!(event.0, "local-session");
+        assert_eq!(event.0, session.id);
         assert_eq!(event.1, "Hello from fake ACP");
     }
 
@@ -3673,6 +3818,7 @@ for line in sys.stdin:
             .unwrap();
 
         assert_eq!(outcome.content, "Second segment");
+        assert!(outcome.message_id.is_some());
         assert_eq!(
             storage
                 .list_messages(&session.id)
@@ -3681,7 +3827,7 @@ for line in sys.stdin:
                 .into_iter()
                 .map(|message| message.content)
                 .collect::<Vec<_>>(),
-            vec!["First segment"]
+            vec!["First segment", "Second segment"]
         );
 
         let events = timeout(Duration::from_secs(1), async move {

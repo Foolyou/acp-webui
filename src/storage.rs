@@ -549,27 +549,6 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn session_has_activity(&self, id: &str) -> anyhow::Result<bool> {
-        let has_activity = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT CASE WHEN
-                EXISTS(SELECT 1 FROM messages WHERE session_id = ?)
-                OR EXISTS(SELECT 1 FROM tool_calls WHERE session_id = ?)
-                OR EXISTS(SELECT 1 FROM permission_requests WHERE session_id = ?)
-                OR EXISTS(SELECT 1 FROM review_artifacts WHERE session_id = ?)
-            THEN 1 ELSE 0 END
-            "#,
-        )
-        .bind(id)
-        .bind(id)
-        .bind(id)
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(has_activity != 0)
-    }
-
     pub async fn list_session_items(&self) -> anyhow::Result<Vec<SessionListItem>> {
         self.list_session_items_query(None).await
     }
@@ -863,6 +842,29 @@ impl Storage {
             WHERE id = ?
             "#,
         )
+        .bind(message_status)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_message(id).await
+    }
+
+    pub async fn append_message_content(
+        &self,
+        id: &str,
+        content_delta: &str,
+        message_status: &str,
+    ) -> anyhow::Result<Message> {
+        sqlx::query(
+            r#"
+            UPDATE messages
+            SET content = content || ?,
+                status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(content_delta)
         .bind(message_status)
         .bind(id)
         .execute(&self.pool)

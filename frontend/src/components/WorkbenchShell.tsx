@@ -6,7 +6,6 @@ import { ApprovalSheet } from "../features/approvals/ApprovalSheet";
 import { ReviewOverlay } from "../features/reviews/ReviewOverlay";
 import { BrandBlock } from "./common";
 import { FullscreenButton } from "./FullscreenButton";
-import { StatusDot } from "./status";
 import { WorkbenchNav } from "./WorkbenchNav";
 
 export function WorkbenchShell() {
@@ -14,8 +13,6 @@ export function WorkbenchShell() {
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const showSessionApproval = /\/sessions\/[^/]+$/.test(pathname);
-  const primaryAgent = state.agents.find((agent) => agent.id === "codex") ?? state.agents[0];
-  const mobileStatus = primaryAgent?.status.state ?? state.codex.state;
 
   return (
     <main className="app-shell">
@@ -39,10 +36,6 @@ export function WorkbenchShell() {
             <h1>{selectedWorkspace?.name ?? "Agent Session"}</h1>
           </div>
           <div className="mobile-topbar-actions">
-            <div className="mobile-status">
-              <StatusDot stateText={mobileStatus} />
-              <span>{mobileStatus}</span>
-            </div>
             <FullscreenButton />
           </div>
         </header>
