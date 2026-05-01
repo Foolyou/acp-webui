@@ -32,6 +32,7 @@
 ## Development Servers
 
 - Run the frontend dev server on port `5777`.
+- Hard rule: never bind project services to `0.0.0.0`, `::`, `[::]`, `*`, or any equivalent all-interface address. Bind only to `127.0.0.1` for local-only access or to the machine's explicit Tailscale IP for tailnet access.
 
 ## Hardcoded Paths
 
