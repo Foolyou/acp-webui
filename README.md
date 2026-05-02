@@ -201,13 +201,85 @@ On Windows, run the embedded frontend smoke test:
 
 The smoke test builds the frontend and release binary, starts the binary from a temporary directory that does not contain `frontend/dist`, and verifies that `/`, an embedded asset, and an SPA route load successfully.
 
-To stop current local project services, build the embedded release binary, and run it on this machine:
+To stop current local project services, build the embedded release binary, and
+run it on a Linux machine:
+
+```bash
+./scripts/build-run-release.sh
+```
+
+The Linux script stops listeners on the local project backend and Vite dev
+ports, stops release binaries running from this repository, builds the frontend
+and embedded release binary, then starts the release binary in the background.
+By default it binds to `127.0.0.1:7635`.
+
+Useful variants:
+
+```bash
+./scripts/build-run-release.sh --skip-build
+./scripts/build-run-release.sh --foreground
+./scripts/build-run-release.sh --tailscale
+./scripts/build-run-release.sh --tailscale-serve
+./scripts/build-run-release.sh --no-run
+```
+
+To expose the Linux release through Nginx with HTTPS and Basic Auth:
+
+```bash
+sudo ./scripts/deploy-nginx-basic-auth.sh \
+  --server-name acp.example.com \
+  --basic-user <user> \
+  --certbot-email <email>
+```
+
+The Nginx deployment script starts the embedded release on
+`127.0.0.1:7635`, writes an Nginx reverse-proxy config, creates or updates an
+htpasswd file, validates Nginx with `nginx -t`, reloads Nginx, and optionally
+uses Certbot to issue and activate a Let's Encrypt certificate. Nginx is the
+only intended external entrypoint; do not expose port `7635` directly.
+
+This deployment relies on Nginx Basic Auth as the remote access boundary. ACP
+Web UI trusts loopback clients by default, so proxied requests from Nginx to
+`127.0.0.1` are treated as local by the backend.
+
+Prerequisites:
+
+```bash
+sudo apt install nginx apache2-utils certbot python3-certbot-nginx
+```
+
+On Fedora/RHEL-style systems, install `nginx`, `httpd-tools`, `certbot`, and
+the Nginx Certbot plugin with the system package manager. The script can try to
+install common package names for you:
+
+```bash
+sudo ./scripts/deploy-nginx-basic-auth.sh \
+  --server-name acp.example.com \
+  --basic-user <user> \
+  --certbot-email <email> \
+  --install-packages
+```
+
+Useful variants:
+
+```bash
+./scripts/deploy-nginx-basic-auth.sh --server-name acp.example.com --basic-user <user> --dry-run
+sudo ./scripts/deploy-nginx-basic-auth.sh --server-name acp.example.com --basic-user <user>
+sudo ./scripts/deploy-nginx-basic-auth.sh --server-name acp.example.com --basic-user <user> --basic-password <password>
+sudo ./scripts/deploy-nginx-basic-auth.sh --server-name acp.example.com --basic-user <user> --release-skip-build
+```
+
+To stop current local project services, build the embedded release binary, and
+run it on a Windows machine:
 
 ```powershell
 .\scripts\build-run-release.ps1
 ```
 
-The script stops listeners on the local project backend and Vite dev ports, stops release binaries running from this repository, builds the frontend and embedded release binary, then starts the release binary in the background. By default it binds to `127.0.0.1:7635`.
+The Windows script stops listeners on the local project backend and Vite dev
+ports, stops release binaries running from this repository, builds the frontend
+and embedded release binary, then starts the release binary in the background.
+By default it binds to `127.0.0.1:7635`.
 
 To bind only to the local Tailscale IPv4 address:
 
