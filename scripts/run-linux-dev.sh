@@ -400,6 +400,40 @@ start_background() {
   )
 }
 
+print_pairing_token() {
+  if [[ -n "$pairing_token" ]]; then
+    echo "Pairing token: $pairing_token"
+    return
+  fi
+  if [[ -n "${ACP_WEBUI_PAIRING_TOKEN-}" ]]; then
+    echo "Pairing token: $ACP_WEBUI_PAIRING_TOKEN"
+    return
+  fi
+
+  local generated_token=""
+  local log_path
+  for log_path in "$backend_out" "$backend_err"; do
+    if [[ -f "$log_path" ]]; then
+      generated_token="$(
+        sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g' "$log_path" |
+          sed -n 's/.*Pairing token generated for this daemon session .*token=\([^ ]*\).*/\1/p' |
+          tail -n 1
+      )"
+      [[ -n "$generated_token" ]] && break
+    fi
+  done
+
+  if [[ -z "$generated_token" && -f "$backend_out" ]]; then
+    generated_token="$(sed -n 's/.*token=\([0-9a-fA-F]\{32\}\).*/\1/p' "$backend_out" | tail -n 1)"
+  fi
+
+  if [[ -n "$generated_token" ]]; then
+    echo "Pairing token: $generated_token"
+  else
+    echo "Pairing token: unavailable; see backend logs: $backend_out and $backend_err"
+  fi
+}
+
 parse_args "$@"
 
 validate_port "--frontend-port" "$frontend_port"
@@ -503,6 +537,7 @@ frontend_pid="$(start_background "$frontend_dir" "$frontend_out" "$frontend_err"
 wait_for_http_ok "$backend_url/api/auth/status" "$startup_timeout"
 wait_for_http_ok "$frontend_url" "$startup_timeout"
 
+print_pairing_token
 echo "Backend dev server:  $backend_url"
 echo "Frontend dev server: $frontend_url"
 echo "Backend PID:  $backend_pid"
