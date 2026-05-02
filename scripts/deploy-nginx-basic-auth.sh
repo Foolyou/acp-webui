@@ -218,8 +218,12 @@ generate_password() {
 }
 
 install_supported_packages() {
-  ((install_packages)) || return
-  ((dry_run)) && return
+  if ! ((install_packages)); then
+    return 0
+  fi
+  if ((dry_run)); then
+    return 0
+  fi
 
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
@@ -278,6 +282,17 @@ write_htpasswd() {
   htpasswd -b "${create_flag[@]}" "$target" "$basic_user" "$basic_password" >/dev/null
 }
 
+secure_htpasswd_file() {
+  local target="$1"
+  if getent group www-data >/dev/null 2>&1; then
+    chgrp www-data "$target"
+    chmod 640 "$target"
+    return
+  fi
+
+  chmod 644 "$target"
+}
+
 start_release() {
   ((skip_release_start)) && return
   [[ -x "$release_script" ]] || die "Release script is not executable: $release_script"
@@ -308,7 +323,9 @@ reload_nginx() {
 }
 
 run_certbot() {
-  [[ -n "$certbot_email" ]] || return
+  if [[ -z "$certbot_email" ]]; then
+    return 0
+  fi
   require_command certbot
 
   local args=(
@@ -383,7 +400,7 @@ start_release
 mkdir -p "$(dirname "$nginx_conf")"
 render_template >"$nginx_conf"
 write_htpasswd "$htpasswd_file"
-chmod 640 "$htpasswd_file" || true
+secure_htpasswd_file "$htpasswd_file"
 
 reload_nginx
 run_certbot
