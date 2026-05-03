@@ -403,3 +403,7 @@ The suite also exercises a fake ACP tool call review artifact, opens its session
 - `POST /api/sessions/:session_id/cancel`
 - `POST /api/permission-requests/:permission_id/resolve`
 - `GET /api/ws`
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

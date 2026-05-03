@@ -2,6 +2,7 @@
 name = "acp-webui"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [features]
 embedded-frontend = ["dep:rust-embed"]
