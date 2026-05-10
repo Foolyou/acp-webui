@@ -358,8 +358,9 @@ export function SessionPane({
         busy={busy}
         agentName={agentName}
         agentId={currentSession.session.agentId}
-        agentStatus={agentStatus}
+        agentConnection={agentConnection}
         disabled={!canSend}
+        imagePromptSupported={promptComposerImageSupported(agentConnection)}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
         onRestoreSession={() => onRestoreSession(currentSession.session.id)}
@@ -692,12 +693,17 @@ export function defaultPromptTemplateTitle(body: string) {
   return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
 }
 
+export function promptComposerImageSupported(agentConnection: AgentRuntimeStatus["status"] | null) {
+  return agentConnection?.promptCapabilities?.image === true;
+}
+
 function PromptComposer({
   agentName,
   agentId,
-  agentStatus,
+  agentConnection,
   busy,
   disabled,
+  imagePromptSupported,
   onSendPrompt,
   onRestoreSession,
   running,
@@ -715,9 +721,10 @@ function PromptComposer({
 }: {
   agentName: string;
   agentId: string;
-  agentStatus: AgentRuntimeStatus | null;
+  agentConnection: AgentRuntimeStatus["status"] | null;
   busy: boolean;
   disabled: boolean;
+  imagePromptSupported: boolean;
   onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
   onRestoreSession: () => Promise<void>;
   running: boolean;
@@ -749,7 +756,6 @@ function PromptComposer({
   const [editingTemplateTitle, setEditingTemplateTitle] = useState("");
   const [editingTemplateBody, setEditingTemplateBody] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const imagePromptSupported = agentStatus?.status.promptCapabilities?.image === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -925,8 +931,8 @@ function PromptComposer({
         ? `Stopping ${agentName}${elapsedLabel ? ` after ${elapsedLabel}` : "..."}`
       : running
         ? `${agentName} is working${elapsedLabel ? ` for ${elapsedLabel}` : "..."}`
-        : agentStatus && agentStatus.status.state !== "ready"
-          ? agentStatus.status.message ?? `${agentName} is ${agentStatus.status.state}`
+        : agentConnection && agentConnection.state !== "ready"
+          ? agentConnection.message ?? `${agentName} is ${agentConnection.state}`
           : null;
 
   return (

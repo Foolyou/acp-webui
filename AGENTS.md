@@ -32,6 +32,7 @@
 ## Development Servers
 
 - Run the frontend dev server on port `5777`.
+- Release single-binary runs must use backend port `7635`. If `7635` is occupied, stop the occupying project service/process and retry the same port. If the port is still not released after three retries, stop and notify the user; do not switch to another port on your own.
 - Hard rule: never bind project services to `0.0.0.0`, `::`, `[::]`, `*`, or any equivalent all-interface address. Bind only to `127.0.0.1` for local-only access or to the machine's explicit Tailscale IP for tailnet access.
 
 ## Hardcoded Paths

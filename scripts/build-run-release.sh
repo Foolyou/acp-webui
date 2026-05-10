@@ -39,7 +39,6 @@ Options:
   --codex-acp-arg ARG           Repeatable Codex ACP argument.
   --claude-acp-command COMMAND  Claude ACP command. Default: npx.
   --claude-acp-arg ARG          Repeatable Claude ACP argument.
-  --trusted-client CIDR         Repeatable trusted client CIDR.
   -h, --help                    Show this help.
 EOF
 }
@@ -74,7 +73,6 @@ codex_acp_command="codex-acp"
 claude_acp_command="npx"
 codex_acp_args=()
 claude_acp_args=()
-trusted_clients=()
 extra_args=()
 
 if [[ -f "$HOME/.cargo/env" ]]; then
@@ -266,11 +264,6 @@ parse_args() {
       --claude-acp-arg)
         (($# >= 2)) || die "--claude-acp-arg requires a value."
         claude_acp_args+=("$2")
-        shift 2
-        ;;
-      --trusted-client)
-        (($# >= 2)) || die "--trusted-client requires a value."
-        trusted_clients+=("$2")
         shift 2
         ;;
       --)
@@ -669,9 +662,6 @@ fi
 if ((disable_auth)); then
   run_args+=(--disable-auth)
 fi
-for client in "${trusted_clients[@]}"; do
-  run_args+=(--trusted-client "$client")
-done
 for arg in "${extra_args[@]}"; do
   run_args+=("$arg")
 done

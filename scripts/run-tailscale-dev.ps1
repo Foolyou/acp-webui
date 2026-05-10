@@ -27,8 +27,7 @@ param(
     [string[]]$CodexAcpArgs = @(),
     [string]$ClaudeAcpCommand = "npx",
     [string[]]$ClaudeAcpArgs = @(),
-    [string]$ClaudeCodeExecutable,
-    [string[]]$TrustedClients = @()
+    [string]$ClaudeCodeExecutable
 )
 
 $ErrorActionPreference = "Stop"
@@ -435,10 +434,6 @@ foreach ($Arg in $ClaudeAcpArgs) {
 
 if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
     $BackendArgs += @("--pairing-token", $PairingToken)
-}
-
-foreach ($Client in $TrustedClients) {
-    $BackendArgs += @("--trusted-client", $Client)
 }
 
 $FrontendArgs = @("run", "dev", "--", "--host", $BindHost, "--port", "$FrontendPort", "--strictPort")

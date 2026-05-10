@@ -2,7 +2,7 @@
 
 ACP Web UI already supports a single-binary release with embedded frontend assets and Linux local release startup. The safe public-access deployment shape is to keep the Rust daemon bound to `127.0.0.1` and let Nginx be the only externally reachable process.
 
-Current authentication behavior trusts loopback clients by default. Because Nginx connects to the daemon over loopback, ACP Web UI will treat proxied requests as trusted. Therefore the first reusable Nginx deployment must make Nginx Basic Auth the external authentication boundary and must not suggest that pairing token remains a second remote-authentication layer in this topology.
+Current authentication behavior requires pairing for every browser client unless ACP Web UI authentication is explicitly disabled. Because this deployment is intentionally fronted by Nginx Basic Auth and keeps the daemon bound to loopback, the reusable Nginx deployment starts the loopback-only daemon with `--disable-auth` and makes Nginx Basic Auth the external authentication boundary.
 
 ## Goals / Non-Goals
 
@@ -25,7 +25,7 @@ Current authentication behavior trusts loopback clients by default. Because Ngin
 
 The deployment keeps `acp-webui` on `127.0.0.1:<port>` and configures Nginx to listen on HTTP/HTTPS. Basic Auth is applied at the server level so all frontend routes, API routes, and WebSocket requests require credentials before reaching the upstream.
 
-Alternative considered: require ACP Web UI pairing token behind Nginx. That would need a backend change to stop trusting loopback in reverse-proxy deployments. It is a useful future enhancement, but not required for the first one-command deployment path.
+Alternative considered: require ACP Web UI pairing token in addition to Nginx Basic Auth. That is a useful hardening option, but it makes the first one-command deployment require two independent browser authentication steps. The deployment instead keeps the upstream loopback-only and disables ACP Web UI auth explicitly.
 
 ### Generate a reusable config file instead of patching arbitrary Nginx files
 
@@ -41,13 +41,13 @@ Alternative considered: require HTTPS always. That is safest for internet exposu
 
 ### Reuse existing release script
 
-The Nginx deployment script should call `scripts/build-run-release.sh --bind-host 127.0.0.1 --bind-port <port>` rather than reimplementing release build and process management.
+The Nginx deployment script should call `scripts/build-run-release.sh --bind-host 127.0.0.1 --bind-port <port> --disable-auth` rather than reimplementing release build and process management.
 
 Alternative considered: duplicate release startup logic inside the Nginx script. That would drift from the existing release path and increase maintenance burden.
 
 ## Risks / Trade-offs
 
-- Basic Auth credentials are the only remote authentication layer in this topology → Generate a strong password when one is not supplied, keep ACP Web UI bound to loopback, and document the loopback-trust behavior clearly.
+- Basic Auth credentials are the only browser authentication layer in this topology → Generate a strong password when one is not supplied, keep ACP Web UI bound to loopback, disable ACP Web UI auth only for the loopback upstream, and document that the backend port must not be exposed directly.
 - WebSocket sessions can break behind a basic proxy config → Include `proxy_http_version 1.1`, `Upgrade`, `Connection`, and long proxy timeouts.
 - Certbot can fail if DNS or port 80 is not ready → Make certificate issuance optional and validate Nginx config before attempting it.
 - Distro Nginx layouts differ → Default to common `/etc/nginx/conf.d` while allowing config path overrides.
@@ -64,5 +64,5 @@ Rollback is to remove the generated Nginx config, reload Nginx, and stop the loc
 
 ## Open Questions
 
-- Should a follow-up change add a backend `--trust-loopback false` or `--reverse-proxy-auth-mode` option so pairing token can remain active behind Nginx?
+- Should the deployment script offer an opt-in mode that keeps ACP Web UI pairing active behind Nginx for users who want two browser authentication layers?
 - Should the deployment script eventually create a systemd service for persistent boot-time startup instead of using the existing `nohup` release runner?

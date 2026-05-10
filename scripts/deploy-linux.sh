@@ -39,7 +39,6 @@ Options:
   --opencode-acp-command COMMAND OpenCode ACP command. Default: opencode.
   --opencode-acp-arg ARG         Repeatable OpenCode ACP argument.
   --disable-auth                 Only allowed with loopback bind hosts.
-  --trusted-client CIDR          Repeatable trusted client CIDR.
   --ssh-command COMMAND          SSH command. Default: ssh.
   --scp-command COMMAND          SCP command. Default: scp.
   -h, --help                     Show this help.
@@ -77,7 +76,6 @@ scp_command="scp"
 codex_acp_args=()
 claude_acp_args=()
 opencode_acp_args=()
-trusted_clients=()
 extra_args=()
 
 if [[ -f "$HOME/.cargo/env" ]]; then
@@ -256,11 +254,6 @@ parse_args() {
         disable_auth=1
         shift
         ;;
-      --trusted-client)
-        (($# >= 2)) || die "--trusted-client requires a value."
-        trusted_clients+=("$2")
-        shift 2
-        ;;
       --ssh-command)
         (($# >= 2)) || die "--ssh-command requires a value."
         ssh_command="$2"
@@ -380,9 +373,6 @@ fi
 if ((disable_auth)); then
   append_arg --disable-auth
 fi
-for client in "${trusted_clients[@]}"; do
-  append_arg_pair --trusted-client "$client"
-done
 for arg in "${extra_args[@]}"; do
   append_arg "$arg"
 done

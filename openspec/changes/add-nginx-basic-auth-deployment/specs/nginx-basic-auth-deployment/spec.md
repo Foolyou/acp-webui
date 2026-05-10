@@ -12,6 +12,7 @@ The system SHALL provide a Linux deployment workflow that exposes ACP Web UI thr
 #### Scenario: Backend port is not exposed by the deployment
 - **WHEN** the deployment workflow starts ACP Web UI
 - **THEN** it SHALL pass a loopback bind host to the release runner
+- **AND** it SHALL pass auth disablement to the loopback-only release runner
 - **AND** it SHALL NOT configure ACP Web UI to bind to a wildcard or public network address
 
 ### Requirement: Nginx proxy supports frontend, API, and realtime traffic

@@ -383,7 +383,7 @@ export type SocketState = "connecting" | "connected" | "disconnected";
 export type View = "inbox" | "sessions" | "session";
 
 export type AuthStatus = {
-  access: "anonymous" | "paired_session" | "trusted_ip" | string;
+  access: "anonymous" | "paired_session" | "auth_disabled" | string;
   pairingRequired: boolean;
   clientIp?: string | null;
 };

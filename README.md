@@ -17,8 +17,7 @@ This slice connects a Rust local daemon to ACP agents over stdio. Users can crea
 - Inbox view for sessions waiting on approval
 - Session review artifact cards for ACP tool call evidence
 - Full-screen review drill-downs for artifact details and on-demand workspace diffs
-- Pairing token access control for non-trusted browsers
-- Trusted client IP/CIDR allowlist for deliberate local bypass
+- Pairing token access control for browser access
 - SQLite persistence
 - Per-agent runtime status, launch profile status, and WebSocket live updates
 - Prompt composer `$skill` autocomplete from discovered local Codex skills
@@ -120,7 +119,7 @@ cargo run -- \
 
 Claude is listed in the browser without an extra startup flag and starts when the user creates a Claude session.
 
-The backend protects `/api/*` and `/api/ws` with pairing-token access control. Loopback clients (`127.0.0.1` and `::1`) are trusted by default for local development. Other client IPs must pair with the token shown in the backend terminal unless they are explicitly trusted.
+The backend protects `/api/*` and `/api/ws` with pairing-token access control. Every browser must pair with the token shown in the backend terminal unless auth is explicitly disabled with `--disable-auth`. Loopback clients, Tailscale peers, and Tailscale Serve proxy requests do not bypass pairing.
 
 To use a stable pairing token:
 
@@ -129,15 +128,7 @@ cargo run -- \
   --pairing-token your-local-token
 ```
 
-To trust a specific device or network range, pass explicit trusted clients. Prefer a single IP or `/32` for mobile devices:
-
-```bash
-cargo run -- \
-  --bind-host 0.0.0.0 \
-  --trusted-client <trusted-client-cidr>
-```
-
-`X-Forwarded-For` and `Forwarded` headers are ignored for trusted-client checks in this version. Do not bind to a broad network interface without either pairing token access or explicit trusted clients.
+`X-Forwarded-For` and `Forwarded` headers are ignored for authentication decisions in this version. Do not bind to a broad network interface; use `127.0.0.1` for local-only access or the machine's explicit Tailscale IP for tailnet access.
 
 To use the npm package instead of a binary on PATH:
 
@@ -159,7 +150,7 @@ Useful variants:
 ./scripts/run-linux-dev.sh --install-frontend-deps
 ./scripts/run-linux-dev.sh --no-run
 ./scripts/run-linux-dev.sh --tailscale
-./scripts/run-linux-dev.sh --tailscale-ip 100.x.y.z --trusted-client <trusted-client-cidr>
+./scripts/run-linux-dev.sh --tailscale-ip 100.x.y.z
 ```
 
 The backend serves API endpoints under `/api/*`. Development builds serve the production frontend from `frontend/dist` when it exists. During frontend development, use the Vite dev server and point it at the backend API.
@@ -175,7 +166,6 @@ The script restarts any listeners on the configured dev ports, then starts the b
 Useful variants:
 
 ```powershell
-.\scripts\run-tailscale-dev.ps1 -TrustedClients <trusted-client-cidr>
 .\scripts\run-tailscale-dev.ps1 -PairingToken your-local-token
 .\scripts\run-tailscale-dev.ps1 -InstallFrontendDeps
 ```
@@ -238,9 +228,10 @@ htpasswd file, validates Nginx with `nginx -t`, reloads Nginx, and optionally
 uses Certbot to issue and activate a Let's Encrypt certificate. Nginx is the
 only intended external entrypoint; do not expose port `7635` directly.
 
-This deployment relies on Nginx Basic Auth as the remote access boundary. ACP
-Web UI trusts loopback clients by default, so proxied requests from Nginx to
-`127.0.0.1` are treated as local by the backend.
+This deployment relies on Nginx Basic Auth as the remote access boundary. The
+script keeps ACP Web UI bound to loopback and starts the daemon with
+`--disable-auth`, so Nginx is the only intended browser entrypoint. Do not
+expose the loopback upstream through firewall or tunnel rules.
 
 Prerequisites:
 
@@ -303,7 +294,6 @@ Useful variants:
 .\scripts\build-run-release.ps1 -SkipBuild
 .\scripts\build-run-release.ps1 -TailscaleServe -SkipBuild
 .\scripts\build-run-release.ps1 -TailscaleIp 100.x.y.z
-.\scripts\build-run-release.ps1 -BindTailscale -TrustedClients <trusted-client-cidr>
 .\scripts\build-run-release.ps1 -NoRun
 ```
 
@@ -313,8 +303,7 @@ machine through PowerShell remoting:
 ```powershell
 .\scripts\deploy-windows.ps1 `
   -ComputerName <host> `
-  -BindTailscale `
-  -TrustedClients <trusted-client-cidr>
+  -BindTailscale
 ```
 
 The deployment script copies only `acp-webui.exe`, writes a small remote launcher,
@@ -341,7 +330,7 @@ Useful variants:
 .\scripts\deploy-windows.ps1 -ComputerName <host> -NoRun
 .\scripts\deploy-windows.ps1 -ComputerName <user>@<host> -BindTailscale
 .\scripts\deploy-windows.ps1 -ComputerName <host> -BindTailscale -PairingToken <token>
-.\scripts\deploy-windows.ps1 -ComputerName <host> -TailscaleIp 100.x.y.z -TrustedClients <trusted-client-cidr>
+.\scripts\deploy-windows.ps1 -ComputerName <host> -TailscaleIp 100.x.y.z
 ```
 
 ## Browser E2E

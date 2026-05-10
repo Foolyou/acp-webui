@@ -529,7 +529,7 @@ Product architecture decisions:
 - Keep agent selection session-scoped inside each workspace.
 - Use pairing token authentication in the first version.
 - Use opaque HttpOnly browser session cookies after successful pairing.
-- Trust loopback clients by default and allow explicit trusted IP/CIDR configuration; do not trust forwarded headers in the first version.
+- Require pairing-token authentication for all browser clients by default, including loopback and Tailscale access; do not trust forwarded headers in the first version.
 - Let the user select bind IP/interface and port at startup.
 - Prioritize Linux/WSL first, then Windows and macOS.
 - Use SQLite for local persistence.

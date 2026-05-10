@@ -1,6 +1,6 @@
 ## Purpose
 
-Define local-first browser access control for ACP Web UI using pairing token sessions and explicit trusted client IP/CIDR allowlisting.
+Define local-first browser access control for ACP Web UI using pairing token sessions.
 
 ## Requirements
 
@@ -8,19 +8,19 @@ Define local-first browser access control for ACP Web UI using pairing token ses
 The system SHALL expose public authentication state for the current browser without disclosing pairing token secrets.
 
 #### Scenario: Anonymous browser checks auth state
-- **WHEN** an unpaired browser requests the auth status endpoint from an untrusted client IP
+- **WHEN** an unpaired browser requests the auth status endpoint
 - **THEN** the system returns an anonymous auth state indicating pairing is required
 
 #### Scenario: Paired browser checks auth state
 - **WHEN** a browser with a valid pairing session cookie requests the auth status endpoint
 - **THEN** the system returns a paired session auth state
 
-#### Scenario: Trusted IP checks auth state
-- **WHEN** a browser requests the auth status endpoint from a trusted client IP
-- **THEN** the system returns a trusted IP auth state
+#### Scenario: Auth-disabled browser checks auth state
+- **WHEN** a browser requests the auth status endpoint while authentication is explicitly disabled
+- **THEN** the system returns an auth-disabled state indicating pairing is not required
 
 ### Requirement: User can pair a browser with a token
-The system SHALL allow an untrusted browser to pair by submitting the current daemon pairing token.
+The system SHALL allow an unpaired browser to pair by submitting the current daemon pairing token.
 
 #### Scenario: Valid token is submitted
 - **WHEN** an unpaired browser submits the correct pairing token
@@ -35,57 +35,53 @@ The system SHALL allow an untrusted browser to pair by submitting the current da
 - **THEN** the response does not include the active pairing token
 
 ### Requirement: Sensitive API routes require authenticated access
-The system SHALL require either a valid pairing session or trusted client IP for sensitive API endpoints.
+The system SHALL require a valid pairing session for sensitive API endpoints unless authentication is explicitly disabled.
 
 #### Scenario: Anonymous request to app state
-- **WHEN** an unpaired browser from an untrusted client IP requests `/api/app-state`
+- **WHEN** an unpaired browser requests `/api/app-state`
 - **THEN** the system rejects the request with an unauthorized response
 
 #### Scenario: Paired request to app state
 - **WHEN** a browser with a valid pairing session cookie requests `/api/app-state`
 - **THEN** the system returns the app state
 
-#### Scenario: Trusted IP request to app state
-- **WHEN** a browser from a trusted client IP requests `/api/app-state`
+#### Scenario: Auth-disabled request to app state
+- **WHEN** a browser requests `/api/app-state` while authentication is explicitly disabled
 - **THEN** the system returns the app state without requiring a pairing session cookie
 
 #### Scenario: Anonymous mutation request
-- **WHEN** an unpaired browser from an untrusted client IP submits a workspace, session, prompt, permission, review, or cancel request
+- **WHEN** an unpaired browser submits a workspace, session, prompt, permission, review, or cancel request
 - **THEN** the system rejects the request with an unauthorized response and does not perform the mutation
 
 ### Requirement: WebSocket requires authenticated access
-The system SHALL require either a valid pairing session or trusted client IP before accepting realtime WebSocket access.
+The system SHALL require a valid pairing session before accepting realtime WebSocket access unless authentication is explicitly disabled.
 
 #### Scenario: Anonymous WebSocket connection
-- **WHEN** an unpaired browser from an untrusted client IP connects to `/api/ws`
+- **WHEN** an unpaired browser connects to `/api/ws`
 - **THEN** the system rejects the WebSocket upgrade or closes the connection without streaming session events
 
 #### Scenario: Paired WebSocket connection
 - **WHEN** a browser with a valid pairing session cookie connects to `/api/ws`
 - **THEN** the system accepts the WebSocket and streams realtime events
 
-#### Scenario: Trusted IP WebSocket connection
-- **WHEN** a browser from a trusted client IP connects to `/api/ws`
+#### Scenario: Auth-disabled WebSocket connection
+- **WHEN** a browser connects to `/api/ws` while authentication is explicitly disabled
 - **THEN** the system accepts the WebSocket and streams realtime events without requiring a pairing session cookie
 
-### Requirement: Trusted client allowlist is explicit and narrow by default
-The system SHALL bypass pairing only for loopback clients by default and for explicitly configured trusted IP or CIDR entries.
+### Requirement: Client IPs do not bypass pairing
+The system SHALL require pairing regardless of direct peer IP address unless authentication is explicitly disabled.
 
 #### Scenario: Loopback request
 - **WHEN** a browser connects from `127.0.0.1` or `::1`
-- **THEN** the system treats the request as trusted by IP
+- **THEN** the system requires pairing
 
-#### Scenario: Configured trusted CIDR request
-- **WHEN** a browser connects from an IP address inside a configured trusted CIDR
-- **THEN** the system treats the request as trusted by IP
-
-#### Scenario: Private LAN request without explicit trust
-- **WHEN** a browser connects from a private LAN address that is not explicitly configured as trusted
+#### Scenario: Private LAN request
+- **WHEN** a browser connects from a private LAN address
 - **THEN** the system requires pairing
 
 #### Scenario: Forwarded header is present
 - **WHEN** a request includes `X-Forwarded-For` or `Forwarded` headers
-- **THEN** the system ignores those headers when evaluating trusted client allowlist membership
+- **THEN** the system ignores those headers for authentication decisions
 
 ### Requirement: Frontend supports pairing flow
 The frontend SHALL render a pairing flow when the browser is anonymous and restore the existing application after successful pairing.

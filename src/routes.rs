@@ -1762,7 +1762,7 @@ mod tests {
     }
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
-        test_state_with_auth(Some("test-token".to_string()), true, vec![]).await
+        test_state_with_auth(Some("test-token".to_string()), true).await
     }
 
     async fn test_state_with_capabilities(
@@ -1789,7 +1789,6 @@ mod tests {
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
-            trusted_clients: vec![],
         };
         let auth = AuthService::from_config(&config).unwrap();
         let codex = CodexRuntime::ready_for_tests(
@@ -1817,7 +1816,7 @@ mod tests {
     }
 
     async fn auth_test_state() -> (AppState, tempfile::TempDir) {
-        test_state_with_auth(Some("test-token".to_string()), false, vec![]).await
+        test_state_with_auth(Some("test-token".to_string()), false).await
     }
 
     async fn test_state_with_fake_agents() -> (AppState, tempfile::TempDir) {
@@ -1843,7 +1842,6 @@ mod tests {
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
-            trusted_clients: vec![],
         };
         let auth = AuthService::from_config(&config).unwrap();
         let codex = CodexRuntime::start_for_agent(
@@ -1909,7 +1907,6 @@ mod tests {
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: true,
-            trusted_clients: vec![],
         };
         let auth = AuthService::from_config(&config).unwrap();
         let agents = AgentRuntimeManager::start(&config, storage.clone(), events_tx.clone()).await;
@@ -2110,7 +2107,6 @@ for line in sys.stdin:
     async fn test_state_with_auth(
         pairing_token: Option<String>,
         disable_auth: bool,
-        trusted_clients: Vec<String>,
     ) -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let database_url = format!("sqlite://{}", dir.path().join("test.db").display());
@@ -2133,7 +2129,6 @@ for line in sys.stdin:
             frontend_dist: Some(dir.path().join("dist")),
             pairing_token,
             disable_auth,
-            trusted_clients,
         };
         let auth = AuthService::from_config(&config).unwrap();
         let codex =
@@ -2208,6 +2203,24 @@ for line in sys.stdin:
         })
         .await
         .unwrap()
+    }
+
+    async fn wait_for_queued_prompts_empty(storage: &Storage, session_id: &str) {
+        timeout(Duration::from_secs(3), async {
+            loop {
+                if storage
+                    .list_queued_prompts(session_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2328,7 +2341,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn auth_status_reports_anonymous_paired_and_trusted_access() {
+    async fn auth_status_reports_anonymous_paired_and_auth_disabled_access() {
         let (state, _dir) = auth_test_state().await;
         let app = api_router(state);
 
@@ -2382,7 +2395,11 @@ for line in sys.stdin:
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["access"], "paired_session");
 
+        let (disabled_state, _dir) =
+            test_state_with_auth(Some("test-token".to_string()), true).await;
+        let disabled_app = api_router(disabled_state);
         let response = app
+            .clone()
             .oneshot(request_with_peer(
                 Request::builder().uri("/api/auth/status"),
                 Body::empty(),
@@ -2392,7 +2409,21 @@ for line in sys.stdin:
             .unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["access"], "trusted_ip");
+        assert_eq!(json["access"], "anonymous");
+        assert_eq!(json["pairingRequired"], true);
+
+        let response = disabled_app
+            .oneshot(request_with_peer(
+                Request::builder().uri("/api/auth/status"),
+                Body::empty(),
+                loopback_peer(),
+            ))
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["access"], "auth_disabled");
+        assert_eq!(json["pairingRequired"], false);
     }
 
     #[tokio::test]
@@ -2477,13 +2508,8 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn trusted_clients_bypass_pairing_only_when_explicitly_configured() {
-        let (state, _dir) = test_state_with_auth(
-            Some("test-token".to_string()),
-            false,
-            vec!["100.64.0.0/10".to_string()],
-        )
-        .await;
+    async fn loopback_clients_do_not_bypass_pairing() {
+        let (state, _dir) = auth_test_state().await;
         let app = api_router(state);
 
         let response = app
@@ -2491,17 +2517,17 @@ for line in sys.stdin:
             .oneshot(request_with_peer(
                 Request::builder().uri("/api/app-state"),
                 Body::empty(),
-                "100.64.12.34:48152",
+                loopback_peer(),
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         let response = app
             .oneshot(request_with_peer(
                 Request::builder().uri("/api/app-state"),
                 Body::empty(),
-                untrusted_peer(),
+                "100.64.12.34:48152",
             ))
             .await
             .unwrap();
@@ -2544,7 +2570,7 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 
-        let trusted = app
+        let loopback = app
             .oneshot(request_with_peer(
                 Request::builder().uri("/api/ws"),
                 Body::empty(),
@@ -2552,7 +2578,7 @@ for line in sys.stdin:
             ))
             .await
             .unwrap();
-        assert_ne!(trusted.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(loopback.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -3232,12 +3258,7 @@ for line in sys.stdin:
         )
         .await;
         wait_for_message_containing(&state.storage, &claude_session.id, "Hello from claude").await;
-        assert!(state
-            .storage
-            .list_queued_prompts(&claude_session.id)
-            .await
-            .unwrap()
-            .is_empty());
+        wait_for_queued_prompts_empty(&state.storage, &claude_session.id).await;
     }
 
     #[tokio::test]

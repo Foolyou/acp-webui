@@ -39,7 +39,6 @@ pub struct Config {
     pub frontend_dist: Option<PathBuf>,
     pub pairing_token: Option<String>,
     pub disable_auth: bool,
-    pub trusted_clients: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,13 +207,6 @@ struct RawConfig {
 
     #[arg(long, env = "ACP_WEBUI_DISABLE_AUTH", default_value_t = false)]
     disable_auth: bool,
-
-    #[arg(
-        long = "trusted-client",
-        env = "ACP_WEBUI_TRUSTED_CLIENTS",
-        value_delimiter = ','
-    )]
-    trusted_clients: Vec<String>,
 }
 
 impl Config {
@@ -303,7 +295,6 @@ impl Config {
             frontend_dist: raw.frontend_dist,
             pairing_token: raw.pairing_token,
             disable_auth: raw.disable_auth,
-            trusted_clients: raw.trusted_clients,
         }
     }
 
@@ -680,7 +671,6 @@ mod tests {
             frontend_dist: None,
             pairing_token: None,
             disable_auth: false,
-            trusted_clients: vec![],
         }
     }
 

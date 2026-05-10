@@ -41,7 +41,6 @@ param(
     [string]$ClaudeAcpCommand = "npx",
     [string[]]$ClaudeAcpArgs = @(),
     [switch]$DisableAuth,
-    [string[]]$TrustedClients = @(),
     [string[]]$ExtraArgs = @(),
     [pscredential]$Credential,
     [switch]$UseSSL,
@@ -310,10 +309,6 @@ function New-RunArguments {
 
     if ($DisableAuth) {
         $Arguments += "--disable-auth"
-    }
-
-    foreach ($Client in $TrustedClients) {
-        $Arguments += @("--trusted-client", $Client)
     }
 
     foreach ($Arg in $ExtraArgs) {

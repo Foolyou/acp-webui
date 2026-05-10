@@ -12,4 +12,5 @@ ACP Web UI documentation SHALL describe how to deploy the embedded single-binary
 - **WHEN** a user reads the Nginx deployment documentation
 - **THEN** the documentation SHALL state that ACP Web UI remains bound to loopback
 - **AND** it SHALL state that Nginx Basic Auth is the remote access boundary for this deployment topology
+- **AND** it SHALL state that the deployment disables ACP Web UI pairing-token auth on the loopback-only daemon
 - **AND** it SHALL warn not to expose the ACP Web UI backend port directly

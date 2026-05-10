@@ -41,7 +41,6 @@ param(
     [string[]]$CodexAcpArgs = @(),
     [string]$ClaudeAcpCommand = "npx",
     [string[]]$ClaudeAcpArgs = @(),
-    [string[]]$TrustedClients = @(),
     [string[]]$ExtraArgs = @()
 )
 
@@ -665,10 +664,6 @@ if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
 
 if ($DisableAuth) {
     $RunArgs += "--disable-auth"
-}
-
-foreach ($Client in $TrustedClients) {
-    $RunArgs += @("--trusted-client", $Client)
 }
 
 foreach ($Arg in $ExtraArgs) {

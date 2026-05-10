@@ -223,6 +223,12 @@ pub struct NewSessionOutcome {
     pub config_options: Option<Vec<SessionConfigOption>>,
 }
 
+#[derive(Debug, Clone)]
+struct RestoreContext {
+    local_session_id: String,
+    persist_replayed_history: bool,
+}
+
 #[derive(Debug)]
 pub struct AgentRuntime {
     agent: AgentConfig,
@@ -231,7 +237,7 @@ pub struct AgentRuntime {
     status: Arc<RwLock<ConnectionStatus>>,
     peer: RwLock<Option<Arc<JsonRpcPeer>>>,
     session_map: Arc<RwLock<HashMap<String, String>>>,
-    restore_session_map: Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: Arc<RwLock<HashMap<String, RestoreContext>>>,
     assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
     assistant_message_ids: Arc<Mutex<HashMap<String, String>>>,
     events_tx: broadcast::Sender<RealtimeEvent>,
@@ -507,10 +513,17 @@ impl AgentRuntime {
             ));
         }
 
-        self.restore_session_map
-            .write()
-            .await
-            .insert(acp_session_id.clone(), local_session_id.clone());
+        let existing_messages = self.storage.list_messages(&local_session_id).await?;
+        let persist_replayed_history = !existing_messages
+            .iter()
+            .any(|message| message.role == role::ASSISTANT);
+        self.restore_session_map.write().await.insert(
+            acp_session_id.clone(),
+            RestoreContext {
+                local_session_id: local_session_id.clone(),
+                persist_replayed_history,
+            },
+        );
         let mcp_servers = display_image_mcp_servers();
         let result = peer
             .request(
@@ -523,7 +536,7 @@ impl AgentRuntime {
             )
             .await;
 
-        if result.is_ok() {
+        if result.is_ok() && persist_replayed_history {
             flush_assistant_buffer_for_session(
                 &acp_session_id,
                 &local_session_id,
@@ -531,8 +544,15 @@ impl AgentRuntime {
                 &self.storage,
                 &self.assistant_buffers,
                 &self.assistant_message_ids,
-                true,
+                persist_replayed_history,
                 false,
+            )
+            .await;
+        } else {
+            discard_assistant_buffer_for_session(
+                &acp_session_id,
+                &self.assistant_buffers,
+                &self.assistant_message_ids,
             )
             .await;
         }
@@ -1392,7 +1412,7 @@ impl JsonRpcPeer {
         events_tx: broadcast::Sender<RealtimeEvent>,
         storage: Storage,
         session_map: Arc<RwLock<HashMap<String, String>>>,
-        restore_session_map: Arc<RwLock<HashMap<String, String>>>,
+        restore_session_map: Arc<RwLock<HashMap<String, RestoreContext>>>,
         assistant_buffers: Arc<Mutex<HashMap<String, String>>>,
         assistant_message_ids: Arc<Mutex<HashMap<String, String>>>,
     ) -> anyhow::Result<Arc<Self>> {
@@ -1569,7 +1589,7 @@ async fn handle_incoming_message(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
-    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, RestoreContext>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
     assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
     permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
@@ -1666,7 +1686,7 @@ async fn handle_session_update(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
-    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, RestoreContext>>>,
     assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
     assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
 ) {
@@ -1689,16 +1709,15 @@ async fn handle_session_update(
             let blocks = content_blocks_from_content(update.get("content"));
             if !blocks.is_empty() {
                 let text = text_fallback_from_blocks(&blocks);
-                assistant_buffers
-                    .lock()
-                    .await
-                    .entry(acp_session_id.to_string())
-                    .or_default()
-                    .push_str(&text);
-
                 if let Some(local_session_id) =
                     session_map.read().await.get(acp_session_id).cloned()
                 {
+                    assistant_buffers
+                        .lock()
+                        .await
+                        .entry(acp_session_id.to_string())
+                        .or_default()
+                        .push_str(&text);
                     persist_live_assistant_chunk(
                         storage,
                         assistant_message_ids,
@@ -1713,12 +1732,29 @@ async fn handle_session_update(
                             delta: text,
                         });
                     }
-                } else if restore_session_map
+                } else if let Some(restore_context) = restore_session_map
                     .read()
                     .await
-                    .contains_key(acp_session_id)
+                    .get(acp_session_id)
+                    .cloned()
                 {
-                    tracing::debug!(acp_session_id, "buffered replayed assistant message chunk");
+                    if restore_context.persist_replayed_history {
+                        assistant_buffers
+                            .lock()
+                            .await
+                            .entry(acp_session_id.to_string())
+                            .or_default()
+                            .push_str(&text);
+                        tracing::debug!(
+                            acp_session_id,
+                            "buffered replayed assistant message chunk"
+                        );
+                    } else {
+                        tracing::debug!(
+                            acp_session_id,
+                            "ignored replayed assistant message chunk for session with existing local history"
+                        );
+                    }
                 } else {
                     tracing::debug!(
                         acp_session_id,
@@ -1728,12 +1764,33 @@ async fn handle_session_update(
             }
         }
         "user_message_chunk" => {
-            if let Some(local_session_id) = restore_session_map
+            if let Some(restore_context) = restore_session_map
                 .read()
                 .await
                 .get(acp_session_id)
                 .cloned()
             {
+                if !restore_context.persist_replayed_history {
+                    discard_assistant_buffer_for_session(
+                        acp_session_id,
+                        assistant_buffers,
+                        assistant_message_ids,
+                    )
+                    .await;
+                    return;
+                }
+                let local_session_id = restore_context.local_session_id;
+                flush_assistant_buffer_for_session(
+                    acp_session_id,
+                    &local_session_id,
+                    events_tx,
+                    storage,
+                    assistant_buffers,
+                    assistant_message_ids,
+                    true,
+                    false,
+                )
+                .await;
                 let blocks = content_blocks_from_content(update.get("content"));
                 if !blocks.is_empty() {
                     let text = text_fallback_from_blocks(&blocks);
@@ -1755,13 +1812,44 @@ async fn handle_session_update(
         }
         "tool_call" | "tool_call_update" => {
             let live_session_id = session_map.read().await.get(acp_session_id).cloned();
-            let restore_session_id = restore_session_map
+            let restore_context = restore_session_map
                 .read()
                 .await
                 .get(acp_session_id)
                 .cloned();
-            let Some(local_session_id) = live_session_id.or_else(|| restore_session_id.clone())
-            else {
+            if let Some(restore_context) = restore_context {
+                if !restore_context.persist_replayed_history {
+                    assistant_buffers.lock().await.remove(acp_session_id);
+                    assistant_message_ids.lock().await.remove(acp_session_id);
+                    tracing::debug!(
+                        acp_session_id,
+                        "ignored replayed tool update for session with existing local history"
+                    );
+                    return;
+                }
+                let local_session_id = restore_context.local_session_id;
+                flush_assistant_buffer_for_session(
+                    acp_session_id,
+                    &local_session_id,
+                    events_tx,
+                    storage,
+                    assistant_buffers,
+                    assistant_message_ids,
+                    true,
+                    false,
+                )
+                .await;
+                if tool_call_id(update).is_none() {
+                    tracing::debug!(
+                        ?update,
+                        "replayed tool update did not include stable tool call id"
+                    );
+                    return;
+                }
+                persist_tool_update(update, &local_session_id, events_tx, storage).await;
+                return;
+            }
+            let Some(local_session_id) = live_session_id else {
                 tracing::debug!(acp_session_id, "tool update for unknown ACP session");
                 return;
             };
@@ -1772,65 +1860,11 @@ async fn handle_session_update(
                 storage,
                 assistant_buffers,
                 assistant_message_ids,
-                restore_session_id.is_some(),
-                restore_session_id.is_none(),
+                false,
+                true,
             )
             .await;
-            if restore_session_id.is_some() && tool_call_id(update).is_none() {
-                tracing::debug!(
-                    ?update,
-                    "replayed tool update did not include stable tool call id"
-                );
-            }
-            let tool_input = tool_call_from_update(&local_session_id, update);
-            match storage.upsert_tool_call(tool_input).await {
-                Ok(tool_call) => {
-                    if let Some(item) = tool_call_timeline_item(&tool_call) {
-                        let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert { item });
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(?error, ?update, "failed to persist tool call");
-                }
-            }
-            if let Some(artifact_input) = review_artifact_from_update(&local_session_id, update) {
-                match storage.upsert_review_artifact(artifact_input).await {
-                    Ok(result) => {
-                        if result.created {
-                            let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
-                                artifact: artifact_summary(&result.artifact),
-                            });
-                        }
-                    }
-                    Err(error) => {
-                        tracing::error!(?error, ?update, "failed to persist review artifact");
-                    }
-                }
-            }
-            let display_image_call = looks_like_display_image_call(update);
-            if display_image_call {
-                persist_display_image_from_tool_update(
-                    storage,
-                    events_tx,
-                    &local_session_id,
-                    update,
-                )
-                .await;
-            }
-            if !display_image_call {
-                if let Some(text) = text_from_content(update.get("content"))
-                    .or_else(|| text_from_content(update.get("output")))
-                {
-                    persist_image_artifacts_from_text(
-                        storage,
-                        events_tx,
-                        &local_session_id,
-                        tool_call_id(update).as_deref(),
-                        &text,
-                    )
-                    .await;
-                }
-            }
+            persist_tool_update(update, &local_session_id, events_tx, storage).await;
         }
         "config_option_update" => {
             let Some(local_session_id) = session_map.read().await.get(acp_session_id).cloned()
@@ -1973,6 +2007,15 @@ async fn persist_replayed_message(
     }
 }
 
+async fn discard_assistant_buffer_for_session(
+    acp_session_id: &str,
+    assistant_buffers: &Arc<Mutex<HashMap<String, String>>>,
+    assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
+) {
+    assistant_buffers.lock().await.remove(acp_session_id);
+    assistant_message_ids.lock().await.remove(acp_session_id);
+}
+
 async fn persist_live_assistant_chunk(
     storage: &Storage,
     assistant_message_ids: &Arc<Mutex<HashMap<String, String>>>,
@@ -2109,6 +2152,57 @@ async fn flush_assistant_buffer_for_session(
     }
 }
 
+async fn persist_tool_update(
+    update: &Value,
+    local_session_id: &str,
+    events_tx: &broadcast::Sender<RealtimeEvent>,
+    storage: &Storage,
+) {
+    let tool_input = tool_call_from_update(local_session_id, update);
+    match storage.upsert_tool_call(tool_input).await {
+        Ok(tool_call) => {
+            if let Some(item) = tool_call_timeline_item(&tool_call) {
+                let _ = events_tx.send(RealtimeEvent::TimelineItemUpsert { item });
+            }
+        }
+        Err(error) => {
+            tracing::error!(?error, ?update, "failed to persist tool call");
+        }
+    }
+    if let Some(artifact_input) = review_artifact_from_update(local_session_id, update) {
+        match storage.upsert_review_artifact(artifact_input).await {
+            Ok(result) => {
+                if result.created {
+                    let _ = events_tx.send(RealtimeEvent::ReviewArtifact {
+                        artifact: artifact_summary(&result.artifact),
+                    });
+                }
+            }
+            Err(error) => {
+                tracing::error!(?error, ?update, "failed to persist review artifact");
+            }
+        }
+    }
+    let display_image_call = looks_like_display_image_call(update);
+    if display_image_call {
+        persist_display_image_from_tool_update(storage, events_tx, local_session_id, update).await;
+    }
+    if !display_image_call {
+        if let Some(text) = text_from_content(update.get("content"))
+            .or_else(|| text_from_content(update.get("output")))
+        {
+            persist_image_artifacts_from_text(
+                storage,
+                events_tx,
+                local_session_id,
+                tool_call_id(update).as_deref(),
+                &text,
+            )
+            .await;
+        }
+    }
+}
+
 fn review_artifact_from_update(session_id: &str, update: &Value) -> Option<NewReviewArtifact> {
     if !should_persist_review_artifact(update) {
         return None;
@@ -2238,7 +2332,7 @@ async fn handle_permission_request(
     events_tx: &broadcast::Sender<RealtimeEvent>,
     storage: &Storage,
     session_map: &Arc<RwLock<HashMap<String, String>>>,
-    restore_session_map: &Arc<RwLock<HashMap<String, String>>>,
+    restore_session_map: &Arc<RwLock<HashMap<String, RestoreContext>>>,
     permission_responders: &Arc<Mutex<HashMap<String, Value>>>,
 ) {
     let request_id = message.get("id").cloned().unwrap_or(Value::Null);
@@ -3218,7 +3312,6 @@ mod tests {
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
-            trusted_clients: vec![],
         }
     }
 
@@ -3239,7 +3332,6 @@ mod tests {
             frontend_dist: Some(PathBuf::from("frontend/dist")),
             pairing_token: Some("test-token".to_string()),
             disable_auth: false,
-            trusted_clients: vec![],
         }
     }
 
@@ -3471,6 +3563,30 @@ for line in sys.stdin:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {"code": -32004, "message": "session not found"}
+            })
+            continue
+        if mode == "load-interleaved-history":
+            for role, text in [
+                ("user_message_chunk", "First prompt"),
+                ("agent_message_chunk", "First answer"),
+                ("user_message_chunk", "Second prompt"),
+                ("agent_message_chunk", "Second answer")
+            ]:
+                send({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "fake-session",
+                        "update": {
+                            "sessionUpdate": role,
+                            "content": {"type": "text", "text": text}
+                        }
+                    }
+                })
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"sessionId": "fake-session"}
             })
             continue
         send({
@@ -4494,6 +4610,49 @@ for line in sys.stdin:
 
         assert!(runtime.has_registered_session(Some("fake-session")).await);
         assert_eq!(storage.list_messages(&session.id).await.unwrap().len(), 2);
+        assert_eq!(storage.list_tool_calls(&session.id).await.unwrap().len(), 0);
+        assert_eq!(
+            storage
+                .list_review_artifact_summaries(&session.id)
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_acp_load_empty_session_replays_history_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "fake-session".to_string())
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "load"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        runtime
+            .load_session(
+                "fake-session".to_string(),
+                session.id.clone(),
+                dir.path().to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(runtime.has_registered_session(Some("fake-session")).await);
+        assert_eq!(storage.list_messages(&session.id).await.unwrap().len(), 2);
         assert_eq!(storage.list_tool_calls(&session.id).await.unwrap().len(), 1);
         assert_eq!(
             storage
@@ -4502,6 +4661,52 @@ for line in sys.stdin:
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_acp_load_flushes_assistant_before_next_replayed_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_acp(&dir);
+        let (events_tx, _) = broadcast::channel(32);
+        let storage = test_storage().await;
+        let workspace = storage
+            .create_workspace(dir.path().to_string_lossy(), Some("Test".to_string()))
+            .await
+            .unwrap();
+        let session = storage
+            .create_session(&workspace.id, "fake-session".to_string())
+            .await
+            .unwrap();
+        let runtime = CodexRuntime::start(
+            config_for_fake(script, "load-interleaved-history"),
+            storage.clone(),
+            events_tx.clone(),
+        )
+        .await;
+
+        runtime
+            .load_session(
+                "fake-session".to_string(),
+                session.id.clone(),
+                dir.path().to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+
+        let messages = storage.list_messages(&session.id).await.unwrap();
+        let replayed = messages
+            .iter()
+            .map(|message| (message.role.as_str(), message.content.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            replayed,
+            vec![
+                (role::USER, "First prompt"),
+                (role::ASSISTANT, "First answer"),
+                (role::USER, "Second prompt"),
+                (role::ASSISTANT, "Second answer"),
+            ]
         );
     }
 

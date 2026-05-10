@@ -3,6 +3,7 @@ import {
   defaultPromptTemplateTitle,
   formatActiveTurnElapsed,
   insertPromptTemplateBody,
+  promptComposerImageSupported,
   renderableMessageBlocks
 } from "./SessionPane";
 
@@ -53,5 +54,18 @@ describe("prompt template helpers", () => {
     expect(defaultPromptTemplateTitle("\n  Review this diff\nwith detail")).toBe("Review this diff");
     expect(defaultPromptTemplateTitle("")).toBe("Untitled prompt");
     expect(defaultPromptTemplateTitle("a".repeat(70))).toBe(`${"a".repeat(57)}...`);
+  });
+});
+
+describe("promptComposerImageSupported", () => {
+  test("uses the current session connection capabilities", () => {
+    expect(promptComposerImageSupported(null)).toBe(false);
+    expect(
+      promptComposerImageSupported({
+        state: "ready",
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        sessionCapabilities: { loadSession: true, resumeSession: false, listSessions: true, closeSession: true }
+      })
+    ).toBe(true);
   });
 });

@@ -28,7 +28,6 @@ Options:
   --claude-acp-command COMMAND  Claude ACP command. Default: npx.
   --claude-acp-arg ARG          Repeatable Claude ACP argument.
   --claude-code-executable PATH Set CLAUDE_CODE_EXECUTABLE for backend startup.
-  --trusted-client CIDR         Repeatable trusted client CIDR.
   -h, --help                    Show this help.
 EOF
 }
@@ -57,7 +56,6 @@ claude_acp_command="npx"
 claude_code_executable=""
 codex_acp_args=()
 claude_acp_args=()
-trusted_clients=()
 
 if [[ -f "$HOME/.cargo/env" ]]; then
   # shellcheck disable=SC1091
@@ -224,11 +222,6 @@ parse_args() {
       --claude-code-executable)
         (($# >= 2)) || die "--claude-code-executable requires a value."
         claude_code_executable="$2"
-        shift 2
-        ;;
-      --trusted-client)
-        (($# >= 2)) || die "--trusted-client requires a value."
-        trusted_clients+=("$2")
         shift 2
         ;;
       -h|--help)
@@ -506,10 +499,6 @@ done
 if [[ -n "$pairing_token" ]]; then
   backend_args+=(--pairing-token "$pairing_token")
 fi
-
-for client in "${trusted_clients[@]}"; do
-  backend_args+=(--trusted-client "$client")
-done
 
 frontend_args=(run dev -- --host "$bind_host" --port "$frontend_port" --strictPort)
 
