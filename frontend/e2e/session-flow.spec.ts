@@ -1441,7 +1441,7 @@ test("approves a pending permission request and allows always options", async ({
   await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
   await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Approval request" }));
   await expect(page.getByRole("button", { name: /Allow always/ })).toBeEnabled();
-  await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
+  await expect(page.getByPlaceholder("Queue a follow-up for Codex...")).toBeEnabled();
 
   const workspaceId = sessionWorkspaceId(page);
   await page.evaluate(() => {

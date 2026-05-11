@@ -148,21 +148,15 @@ func (m *AgentRuntimeManager) statuses() []AgentRuntimeStatus {
 		}
 		status := disabledStatus(agent.Title + " is disabled")
 		if agent.Enabled {
-			status = idleStatus(agent.Title)
+			status = m.statusForMode(agent, permissionManual)
 		}
-		m.mu.Lock()
-		for _, runtime := range m.runtimes {
-			if runtime.agent.ID == agent.ID {
-				status = runtime.status()
-				break
-			}
-		}
-		m.mu.Unlock()
 		var modes []AgentPermissionModeStatus
 		for _, mode := range agent.PermissionModes {
 			modeStatus := status
 			if !agent.Enabled {
 				modeStatus = disabledStatus(agent.Title + " is disabled")
+			} else {
+				modeStatus = m.statusForMode(agent, mode.ID)
 			}
 			modes = append(modes, AgentPermissionModeStatus{ID: mode.ID, Label: mode.Label, Description: mode.Description, RiskLevel: mode.RiskLevel, Status: modeStatus})
 		}
@@ -179,13 +173,30 @@ func (m *AgentRuntimeManager) statuses() []AgentRuntimeStatus {
 	return items
 }
 
-func (m *AgentRuntimeManager) codexStatus() ConnectionStatus {
-	for _, status := range m.statuses() {
-		if status.ID == codexAgentID {
-			return status.Status
-		}
+func (m *AgentRuntimeManager) statusForMode(agent AgentConfig, mode string) ConnectionStatus {
+	key, ok := agent.defaultLaunchProfileKeyForPermissionMode(mode)
+	if !ok {
+		return failedStatus(fmt.Sprintf("%s permission mode %q is not available", agent.Title, mode))
 	}
-	return idleStatus("Codex")
+	runtimeKey := agent.ID + "\x00" + key
+	m.mu.Lock()
+	runtime := m.runtimes[runtimeKey]
+	m.mu.Unlock()
+	if runtime == nil {
+		return idleStatus(agent.Title)
+	}
+	return runtime.status()
+}
+
+func (m *AgentRuntimeManager) codexStatus() ConnectionStatus {
+	agent, ok := m.configs[codexAgentID]
+	if !ok {
+		return failedStatus("Codex runtime is not available")
+	}
+	if !agent.Enabled {
+		return disabledStatus("Codex is disabled")
+	}
+	return m.statusForMode(agent, permissionManual)
 }
 
 type AgentRuntime struct {
@@ -200,10 +211,17 @@ type AgentRuntime struct {
 	pending        map[string]chan rpcResponse
 	nextID         atomic.Int64
 	sessionMap     map[string]string
-	permissionMap  map[string]string
+	restoreMap     map[string]RestoreContext
+	permissionMap  map[string]json.RawMessage
 	assistant      map[string]string
+	assistantIDs   map[string]string
 	promptCaps     AgentPromptCapabilities
 	sessionCaps    AgentSessionCapabilities
+}
+
+type RestoreContext struct {
+	LocalSessionID         string
+	PersistReplayedHistory bool
 }
 
 type rpcResponse struct {
@@ -225,8 +243,10 @@ func newAgentRuntime(agent AgentConfig, permissionMode string, storage *Storage,
 		statusValue:    idleStatus(agent.Title),
 		pending:        map[string]chan rpcResponse{},
 		sessionMap:     map[string]string{},
-		permissionMap:  map[string]string{},
+		restoreMap:     map[string]RestoreContext{},
+		permissionMap:  map[string]json.RawMessage{},
 		assistant:      map[string]string{},
+		assistantIDs:   map[string]string{},
 		promptCaps:     AgentPromptCapabilities{},
 		sessionCaps:    AgentSessionCapabilities{},
 	}
@@ -263,7 +283,7 @@ func (r *AgentRuntime) setStatus(status ConnectionStatus) {
 	r.statusValue = status
 	r.mu.Unlock()
 	r.events.Publish(map[string]any{"type": "agent_connection_status", "agentId": r.agent.ID, "permissionMode": r.permissionMode, "status": status})
-	if r.agent.ID == codexAgentID {
+	if r.agent.ID == codexAgentID && r.permissionMode == permissionManual {
 		r.events.Publish(map[string]any{"type": "connection_status", "status": status})
 	}
 }
@@ -446,6 +466,13 @@ func idKey(raw json.RawMessage) string {
 	return string(raw)
 }
 
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
+}
+
 func (r *AgentRuntime) sendResponse(id string, result any) error {
 	r.mu.Lock()
 	stdin := r.stdin
@@ -543,18 +570,42 @@ func (r *AgentRuntime) LoadSession(ctx context.Context, externalSessionID, local
 	if err := r.ensureReady(ctx); err != nil {
 		return nil, err
 	}
+	hasAssistantHistory, err := r.storage.HasAssistantMessages(ctx, localSessionID)
+	if err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
-	r.sessionMap[externalSessionID] = localSessionID
+	r.restoreMap[externalSessionID] = RestoreContext{
+		LocalSessionID:         localSessionID,
+		PersistReplayedHistory: !hasAssistantHistory,
+	}
 	r.mu.Unlock()
 	var result struct {
 		SessionID     string                `json:"sessionId"`
 		ConfigOptions []SessionConfigOption `json:"configOptions"`
 	}
-	err := r.request(ctx, "session/load", map[string]any{"sessionId": externalSessionID, "cwd": cwd, "mcpServers": displayImageMCPServers()}, &result)
+	err = r.request(ctx, "session/load", map[string]any{"sessionId": externalSessionID, "cwd": cwd, "mcpServers": displayImageMCPServers()}, &result)
+	if err == nil && !hasAssistantHistory {
+		r.flushAssistantBuffer(ctx, externalSessionID, localSessionID, true, true, false)
+	} else {
+		r.discardAssistantBuffer(externalSessionID)
+	}
+	r.mu.Lock()
+	delete(r.restoreMap, externalSessionID)
+	if err == nil {
+		r.sessionMap[externalSessionID] = localSessionID
+	}
+	r.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	return result.ConfigOptions, nil
+}
+
+func (r *AgentRuntime) promptCapabilities() AgentPromptCapabilities {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.promptCaps
 }
 
 func (r *AgentRuntime) SetConfigOption(ctx context.Context, acpSessionID, configID, value string) (SessionConfigState, error) {
@@ -580,21 +631,24 @@ func (r *AgentRuntime) ResolvePermission(ctx context.Context, permissionID strin
 		return PermissionRequest{}, err
 	}
 	r.mu.Lock()
-	requestID := r.permissionMap[permissionID]
+	requestID := cloneRawMessage(r.permissionMap[permissionID])
 	delete(r.permissionMap, permissionID)
 	r.mu.Unlock()
-	if requestID != "" {
-		if err := r.sendResponse(requestID, map[string]any{"outcome": map[string]any{"optionId": optionID}}); err != nil {
+	if len(requestID) > 0 {
+		if err := r.sendRawResult(requestID, selectedPermissionResponse(optionID)); err != nil {
 			return permission, err
 		}
 	}
 	pending, _ := r.storage.PendingPermissionsForSession(ctx, permission.SessionID)
 	var next *PermissionRequest
+	nextStatus := statusWaitingApproval
 	if len(pending) > 0 {
 		next = &pending[0]
 	} else {
 		_ = r.storage.UpdateSessionStatus(ctx, permission.SessionID, statusRunning)
+		nextStatus = statusRunning
 	}
+	r.events.Publish(map[string]any{"type": "session_status", "sessionId": permission.SessionID, "status": nextStatus})
 	r.events.Publish(map[string]any{
 		"type":                 "permission_resolved",
 		"sessionId":            permission.SessionID,
@@ -610,11 +664,11 @@ func (r *AgentRuntime) CancelPendingPermissionsForSession(ctx context.Context, s
 	pending, _ := r.storage.PendingPermissionsForSession(ctx, sessionID)
 	for _, permission := range pending {
 		r.mu.Lock()
-		requestID := r.permissionMap[permission.ID]
+		requestID := cloneRawMessage(r.permissionMap[permission.ID])
 		delete(r.permissionMap, permission.ID)
 		r.mu.Unlock()
-		if requestID != "" {
-			_ = r.sendResponse(requestID, map[string]any{"outcome": map[string]any{"optionId": "cancelled"}})
+		if len(requestID) > 0 {
+			_ = r.sendRawResult(requestID, cancelledPermissionResponse())
 		}
 	}
 	return r.storage.CancelPendingPermissionsForSession(ctx, sessionID)
@@ -624,7 +678,7 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 	if err := r.ensureReady(ctx); err != nil {
 		return err
 	}
-	r.beginAssistantBuffer(localSessionID)
+	r.beginAssistantBuffer(acpSessionID)
 	prompt := make([]map[string]any, 0, len(blocks))
 	for _, block := range blocks {
 		switch block.Type {
@@ -636,50 +690,105 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 	}
 	var result map[string]any
 	err := r.request(ctx, "session/prompt", map[string]any{"sessionId": acpSessionID, "prompt": prompt}, &result)
-	r.flushAssistantBuffer(ctx, localSessionID, true)
+	content := r.flushAssistantBuffer(ctx, acpSessionID, localSessionID, true, false, true)
+	if content != "" {
+		r.persistImageArtifactsFromText(ctx, localSessionID, nil, content)
+	}
 	return err
 }
 
-func (r *AgentRuntime) beginAssistantBuffer(localSessionID string) {
+func (r *AgentRuntime) beginAssistantBuffer(bufferID string) {
 	r.mu.Lock()
-	r.assistant[localSessionID] = ""
+	r.assistant[bufferID] = ""
 	r.mu.Unlock()
 }
 
-func (r *AgentRuntime) appendAssistantBuffer(localSessionID, content string) bool {
+func (r *AgentRuntime) appendAssistantBuffer(ctx context.Context, bufferID, localSessionID string, blocks []MessageContentBlock, persistLive bool) (string, bool) {
+	content := textFallbackFromBlocks(blocks)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.assistant[localSessionID]; !ok {
-		return false
+	if _, ok := r.assistant[bufferID]; !ok {
+		r.mu.Unlock()
+		return "", false
 	}
-	r.assistant[localSessionID] += content
-	return true
+	r.assistant[bufferID] += content
+	r.mu.Unlock()
+	if persistLive {
+		r.persistLiveAssistantChunk(ctx, bufferID, localSessionID, blocks)
+	}
+	return content, true
 }
 
-func (r *AgentRuntime) flushAssistantBuffer(ctx context.Context, localSessionID string, close bool) {
-	content := r.drainAssistantBuffer(localSessionID, close)
-	if content != "" {
-		message, createErr := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, content, []MessageContentBlock{textBlock(content)}, statusIdle)
-		if createErr == nil {
-			r.events.Publish(map[string]any{"type": "assistant_message", "sessionId": localSessionID, "content": content})
-			r.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": messageTimelineItem(message)})
-		}
+func (r *AgentRuntime) persistLiveAssistantChunk(ctx context.Context, bufferID, localSessionID string, blocks []MessageContentBlock) {
+	contentDelta := textFallbackFromBlocks(blocks)
+	r.mu.Lock()
+	messageID := r.assistantIDs[bufferID]
+	r.mu.Unlock()
+	if messageID != "" {
+		_, _ = r.storage.AppendMessageContentBlocks(ctx, messageID, contentDelta, blocks, statusRunning)
+		return
 	}
+	message, err := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, contentDelta, blocks, statusRunning)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.assistantIDs[bufferID] = message.ID
+	r.mu.Unlock()
 }
 
-func (r *AgentRuntime) drainAssistantBuffer(localSessionID string, close bool) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	content, ok := r.assistant[localSessionID]
-	if !ok {
+func (r *AgentRuntime) flushAssistantBuffer(ctx context.Context, bufferID, localSessionID string, close bool, dedupe bool, emitAssistant bool) string {
+	content, messageID := r.drainAssistantBuffer(bufferID, close)
+	if content == "" {
 		return ""
 	}
-	if close {
-		delete(r.assistant, localSessionID)
+	var message *Message
+	if messageID != "" {
+		updated, err := r.storage.UpdateMessageStatus(ctx, messageID, statusIdle)
+		if err == nil {
+			message = &updated
+		}
+	} else if dedupe {
+		created, err := r.storage.CreateMessageIfMissing(ctx, localSessionID, roleAssistant, content, []MessageContentBlock{textBlock(content)}, statusIdle)
+		if err == nil {
+			message = created
+		}
 	} else {
-		r.assistant[localSessionID] = ""
+		created, err := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, content, []MessageContentBlock{textBlock(content)}, statusIdle)
+		if err == nil {
+			message = &created
+		}
+	}
+	if message != nil {
+		r.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": messageTimelineItem(*message)})
+	}
+	if emitAssistant {
+		r.events.Publish(map[string]any{"type": "assistant_message", "sessionId": localSessionID, "content": content})
 	}
 	return content
+}
+
+func (r *AgentRuntime) drainAssistantBuffer(bufferID string, close bool) (string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	content, ok := r.assistant[bufferID]
+	if !ok {
+		return "", ""
+	}
+	if close {
+		delete(r.assistant, bufferID)
+	} else {
+		r.assistant[bufferID] = ""
+	}
+	messageID := r.assistantIDs[bufferID]
+	delete(r.assistantIDs, bufferID)
+	return content, messageID
+}
+
+func (r *AgentRuntime) discardAssistantBuffer(bufferID string) {
+	r.mu.Lock()
+	delete(r.assistant, bufferID)
+	delete(r.assistantIDs, bufferID)
+	r.mu.Unlock()
 }
 
 func (r *AgentRuntime) handleIncoming(id json.RawMessage, method string, params json.RawMessage) {
@@ -789,12 +898,20 @@ func (r *AgentRuntime) displayImage(params json.RawMessage, source string) (Revi
 	if localSessionID == "" {
 		return ReviewArtifact{}, resourceNotFound("ACP session is not registered")
 	}
-	r.flushAssistantBuffer(context.Background(), localSessionID, false)
-	session, err := r.storage.GetSession(context.Background(), localSessionID)
+	r.flushAssistantBuffer(context.Background(), sessionID, localSessionID, false, false, true)
+	var toolCallID *string
+	if value := strings.TrimSpace(firstStringValue(payload, "toolCallId", "tool_call_id")); value != "" {
+		toolCallID = &value
+	}
+	return r.displayImageArtifactForLocalSession(context.Background(), localSessionID, toolCallID, pathValue, firstStringValue(payload, "title"), firstStringValue(payload, "caption"), source)
+}
+
+func (r *AgentRuntime) displayImageArtifactForLocalSession(ctx context.Context, localSessionID string, toolCallID *string, pathValue, titleValue, captionText, source string) (ReviewArtifact, acpClientError) {
+	session, err := r.storage.GetSession(ctx, localSessionID)
 	if err != nil {
 		return ReviewArtifact{}, resourceNotFound("Session not found")
 	}
-	workspace, err := r.storage.GetWorkspace(context.Background(), session.WorkspaceID)
+	workspace, err := r.storage.GetWorkspace(ctx, session.WorkspaceID)
 	if err != nil {
 		return ReviewArtifact{}, resourceNotFound("Workspace not found")
 	}
@@ -802,34 +919,150 @@ func (r *AgentRuntime) displayImage(params json.RawMessage, source string) (Revi
 	if snapshotErr.message != "" {
 		return ReviewArtifact{}, snapshotErr
 	}
-	title := strings.TrimSpace(firstStringValue(payload, "title"))
+	title := strings.TrimSpace(titleValue)
 	if title == "" {
 		title = snapshot.name
 	}
-	caption := strings.TrimSpace(firstStringValue(payload, "caption"))
-	var captionValue any
+	caption := strings.TrimSpace(captionText)
+	var captionPayload any
 	summary := "Image: " + snapshot.name
 	if caption != "" {
-		captionValue = caption
+		captionPayload = caption
 		summary = caption
 	}
-	var toolCallID *string
-	if value := strings.TrimSpace(firstStringValue(payload, "toolCallId", "tool_call_id")); value != "" {
-		toolCallID = &value
-	}
-	artifact, createErr := r.storage.CreateReviewArtifact(context.Background(), localSessionID, toolCallID, "image", title, summary, map[string]any{
+	result, createErr := r.storage.UpsertReviewArtifact(ctx, localSessionID, toolCallID, "image", title, summary, map[string]any{
 		"type":       "image",
 		"mimeType":   snapshot.mimeType,
 		"data":       snapshot.data,
 		"name":       snapshot.name,
-		"caption":    captionValue,
+		"caption":    captionPayload,
 		"sourcePath": snapshot.relativePath,
 		"sizeBytes":  snapshot.sizeBytes,
 	}, source)
 	if createErr != nil {
 		return ReviewArtifact{}, invalidParams("Failed to persist image evidence")
 	}
-	return artifact, acpClientError{}
+	return result.Artifact, acpClientError{}
+}
+
+func (r *AgentRuntime) persistDisplayImageFromToolUpdate(ctx context.Context, localSessionID string, update map[string]any) {
+	if !looksLikeDisplayImageCall(update) {
+		return
+	}
+	pathValue := findStringField(update, []string{"path", "imagePath", "file"})
+	if pathValue == "" {
+		return
+	}
+	artifact, err := r.displayImageArtifactForLocalSession(
+		ctx,
+		localSessionID,
+		toolCallID(update),
+		pathValue,
+		findStringField(update, []string{"title", "name"}),
+		findStringField(update, []string{"caption", "description"}),
+		"display_image",
+	)
+	if err.message == "" {
+		r.events.Publish(map[string]any{"type": "review_artifact", "artifact": reviewArtifactSummaryFromArtifact(artifact)})
+	}
+}
+
+func (r *AgentRuntime) persistImageArtifactsFromText(ctx context.Context, localSessionID string, toolCallID *string, text string) {
+	created := 0
+	for _, pathValue := range candidateImagePaths(text) {
+		if created >= 3 {
+			break
+		}
+		artifact, err := r.displayImageArtifactForLocalSession(ctx, localSessionID, toolCallID, pathValue, "", "", "path_enrichment")
+		if err.message != "" {
+			continue
+		}
+		created++
+		r.events.Publish(map[string]any{"type": "review_artifact", "artifact": reviewArtifactSummaryFromArtifact(artifact)})
+	}
+}
+
+func looksLikeDisplayImageCall(value any) bool {
+	var builder strings.Builder
+	collectStringValues(value, 0, &builder)
+	text := strings.ToLower(builder.String())
+	return strings.Contains(text, "display_image") || strings.Contains(text, "display image") || strings.Contains(text, "acp-webui/display_image")
+}
+
+func collectStringValues(value any, depth int, builder *strings.Builder) {
+	if depth > 5 {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		builder.WriteByte(' ')
+		builder.WriteString(typed)
+	case []any:
+		for _, item := range typed {
+			collectStringValues(item, depth+1, builder)
+		}
+	case map[string]any:
+		for key, item := range typed {
+			builder.WriteByte(' ')
+			builder.WriteString(key)
+			collectStringValues(item, depth+1, builder)
+		}
+	}
+}
+
+func findStringField(value any, keys []string) string {
+	return findStringFieldInner(value, keys, 0)
+}
+
+func findStringFieldInner(value any, keys []string, depth int) string {
+	if depth > 5 {
+		return ""
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range keys {
+			if text, ok := typed[key].(string); ok && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text)
+			}
+		}
+		for _, key := range []string{"input", "params", "arguments", "toolCall", "data", "content", "output", "rawOutput", "structuredContent"} {
+			if found := findStringFieldInner(typed[key], keys, depth+1); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if found := findStringFieldInner(item, keys, depth+1); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+func candidateImagePaths(text string) []string {
+	var paths []string
+	for _, raw := range strings.Fields(text) {
+		candidate := strings.Trim(raw, "`'\",;:.)([]<>!")
+		if candidate == "" || strings.Contains(candidate, "://") {
+			continue
+		}
+		lower := strings.ToLower(candidate)
+		if !(strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp") || strings.HasSuffix(lower, ".gif")) {
+			continue
+		}
+		seen := false
+		for _, existing := range paths {
+			if existing == candidate {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
 }
 
 type acpClientError struct {
@@ -1029,31 +1262,76 @@ func (r *AgentRuntime) handleSessionUpdate(params json.RawMessage) {
 	if err := json.Unmarshal(params, &payload); err != nil {
 		return
 	}
-	localSessionID := r.localSessionID(payload.SessionID)
-	if localSessionID == "" {
-		return
-	}
 	updateType, _ := payload.Update["sessionUpdate"].(string)
 	ctx := context.Background()
 	switch updateType {
 	case "agent_message_chunk":
-		content := contentText(payload.Update["content"])
-		if content == "" {
+		blocks := contentBlocksFromAny(payload.Update["content"])
+		if len(blocks) == 0 {
 			return
 		}
-		if r.appendAssistantBuffer(localSessionID, content) {
-			r.events.Publish(map[string]any{"type": "text_delta", "sessionId": localSessionID, "delta": content})
+		if localSessionID := r.localSessionID(payload.SessionID); localSessionID != "" {
+			r.beginAssistantBufferIfMissing(payload.SessionID)
+			if content, ok := r.appendAssistantBuffer(ctx, payload.SessionID, localSessionID, blocks, true); ok && content != "" {
+				r.events.Publish(map[string]any{"type": "text_delta", "sessionId": localSessionID, "delta": content})
+			}
+			return
+		}
+		if restore, ok := r.restoreContext(payload.SessionID); ok {
+			if restore.PersistReplayedHistory {
+				r.beginAssistantBufferIfMissing(payload.SessionID)
+				_, _ = r.appendAssistantBuffer(ctx, payload.SessionID, restore.LocalSessionID, blocks, false)
+			} else {
+				r.discardAssistantBuffer(payload.SessionID)
+			}
 		}
 	case "user_message_chunk":
-		// Replayed user history is already persisted for normal restore paths.
+		restore, ok := r.restoreContext(payload.SessionID)
+		if !ok {
+			return
+		}
+		if !restore.PersistReplayedHistory {
+			r.discardAssistantBuffer(payload.SessionID)
+			return
+		}
+		r.flushAssistantBuffer(ctx, payload.SessionID, restore.LocalSessionID, true, true, false)
+		blocks := contentBlocksFromAny(payload.Update["content"])
+		if len(blocks) == 0 {
+			return
+		}
+		content := textFallbackFromBlocks(blocks)
+		message, err := r.storage.CreateMessageIfMissing(ctx, restore.LocalSessionID, roleUser, content, blocks, statusIdle)
+		if err == nil && message != nil {
+			r.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": messageTimelineItem(*message)})
+		}
 	case "config_option_update":
+		localSessionID := r.localSessionID(payload.SessionID)
+		if localSessionID == "" {
+			return
+		}
 		options := configOptionsFromAny(payload.Update["configOptions"])
 		state, err := r.storage.UpdateSessionConfigOptions(ctx, localSessionID, options)
 		if err == nil {
 			r.events.Publish(map[string]any{"type": "session_config_updated", "sessionId": localSessionID, "configOptions": state.ConfigOptions, "currentModel": state.CurrentModel})
 		}
-	case "tool_call":
-		r.flushAssistantBuffer(ctx, localSessionID, false)
+	case "tool_call", "tool_call_update":
+		if restore, ok := r.restoreContext(payload.SessionID); ok {
+			if !restore.PersistReplayedHistory {
+				r.discardAssistantBuffer(payload.SessionID)
+				return
+			}
+			r.flushAssistantBuffer(ctx, payload.SessionID, restore.LocalSessionID, true, true, false)
+			if toolCallID(payload.Update) == nil {
+				return
+			}
+			r.persistToolCall(ctx, restore.LocalSessionID, payload.Update)
+			return
+		}
+		localSessionID := r.localSessionID(payload.SessionID)
+		if localSessionID == "" {
+			return
+		}
+		r.flushAssistantBuffer(ctx, payload.SessionID, localSessionID, false, false, true)
 		r.persistToolCall(ctx, localSessionID, payload.Update)
 	}
 }
@@ -1064,13 +1342,23 @@ func (r *AgentRuntime) localSessionID(acpSessionID string) string {
 	return r.sessionMap[acpSessionID]
 }
 
-func contentText(value any) string {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return ""
+func (r *AgentRuntime) restoreContext(acpSessionID string) (RestoreContext, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	restore, ok := r.restoreMap[acpSessionID]
+	return restore, ok
+}
+
+func (r *AgentRuntime) beginAssistantBufferIfMissing(bufferID string) {
+	r.mu.Lock()
+	if _, ok := r.assistant[bufferID]; !ok {
+		r.assistant[bufferID] = ""
 	}
-	text, _ := object["text"].(string)
-	return text
+	r.mu.Unlock()
+}
+
+func contentText(value any) string {
+	return textFromAny(value)
 }
 
 func configOptionsFromAny(value any) []SessionConfigOption {
@@ -1083,64 +1371,254 @@ func configOptionsFromAny(value any) []SessionConfigOption {
 	return options
 }
 
+func toolCallID(value map[string]any) *string {
+	for _, key := range []string{"toolCallId", "id"} {
+		if text, ok := value[key].(string); ok && text != "" {
+			return &text
+		}
+	}
+	return nil
+}
+
+func toolCallTitle(value map[string]any) string {
+	if text := toolCallTitleField(value); text != "" {
+		return text
+	}
+	return "Tool call"
+}
+
+func permissionToolCallTitle(value map[string]any) string {
+	if text := toolCallTitleField(value); text != "" {
+		return text
+	}
+	return "Permission requested"
+}
+
+func toolCallTitleField(value map[string]any) string {
+	for _, key := range []string{"title", "name"} {
+		if text, ok := value[key].(string); ok && text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func toolCallKind(value map[string]any) string {
+	for _, key := range []string{"kind", "type"} {
+		if text, ok := value[key].(string); ok && text != "" {
+			return text
+		}
+	}
+	return "unknown"
+}
+
+func normalizedToolStatus(update map[string]any) string {
+	status, _ := update["status"].(string)
+	switch strings.ToLower(status) {
+	case "completed", "complete", "succeeded", "success":
+		return "completed"
+	case "failed", "error":
+		return "failed"
+	default:
+		return statusRunning
+	}
+}
+
+func valueMapField(update map[string]any, key string) any {
+	if value, ok := update[key]; ok {
+		return value
+	}
+	return nil
+}
+
 func (r *AgentRuntime) persistToolCall(ctx context.Context, sessionID string, update map[string]any) {
-	acpID, _ := update["toolCallId"].(string)
-	title, _ := update["title"].(string)
-	kind, _ := update["kind"].(string)
-	statusValue, _ := update["status"].(string)
-	if title == "" {
-		title = "Tool call"
-	}
-	if kind == "" {
-		kind = "tool"
-	}
-	if statusValue == "" {
-		statusValue = "completed"
-	}
+	acpIDPtr := toolCallID(update)
+	title := toolCallTitle(update)
+	kind := toolCallKind(update)
+	statusValue := normalizedToolStatus(update)
 	summary := toolSummary(update)
-	var acpIDPtr *string
-	if acpID != "" {
-		acpIDPtr = &acpID
-	}
-	call, err := r.storage.UpsertToolCall(ctx, sessionID, acpIDPtr, kind, title, summary, statusValue, update, nil)
+	call, err := r.storage.UpsertToolCall(ctx, sessionID, acpIDPtr, kind, title, summary, statusValue, update, valueMapField(update, "output"))
 	if err != nil {
 		return
 	}
 	r.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": toolCallTimelineItem(call)})
-	if statusValue == "completed" {
-		artifactKind := "tool_call"
-		payload := map[string]any{"toolCallId": acpID, "status": statusValue, "update": update}
-		if markdown, ok := update["markdown"].(string); ok && markdown != "" {
-			artifactKind = "markdown"
-			payload["markdown"] = markdown
-			summary = summarizeText(markdown, summary)
+	if artifactKind, ok := reviewArtifactKindFromUpdate(update); ok {
+		result, err := r.storage.UpsertReviewArtifact(ctx, sessionID, acpIDPtr, artifactKind, title, summary, update, "acp")
+		if err == nil && result.Created {
+			r.events.Publish(map[string]any{"type": "review_artifact", "artifact": reviewArtifactSummaryFromArtifact(result.Artifact)})
 		}
-		artifact, err := r.storage.CreateReviewArtifact(ctx, sessionID, acpIDPtr, artifactKind, title, summary, payload, "tool_call")
-		if err == nil {
-			summary := ReviewArtifactSummary{ID: artifact.ID, SessionID: artifact.SessionID, ToolCallID: artifact.ToolCallID, Kind: artifact.Kind, Title: artifact.Title, Summary: artifact.Summary, Preview: nil, Source: artifact.Source, CreatedAt: artifact.CreatedAt}
-			r.events.Publish(map[string]any{"type": "review_artifact", "artifact": summary})
+	}
+	displayImageCall := looksLikeDisplayImageCall(update)
+	if displayImageCall {
+		r.persistDisplayImageFromToolUpdate(ctx, sessionID, update)
+	}
+	if !displayImageCall {
+		if text := textFromAny(update["content"]); text != "" {
+			r.persistImageArtifactsFromText(ctx, sessionID, acpIDPtr, text)
+		} else if text := textFromAny(update["output"]); text != "" {
+			r.persistImageArtifactsFromText(ctx, sessionID, acpIDPtr, text)
 		}
 	}
 }
 
 func toolSummary(update map[string]any) string {
-	if markdown, ok := update["markdown"].(string); ok && markdown != "" {
-		return summarizeText(markdown, "Markdown evidence")
+	updateType, _ := update["sessionUpdate"].(string)
+	if updateType == "" {
+		updateType = "tool_call"
 	}
-	if content, ok := update["content"].([]any); ok {
+	status, _ := update["status"].(string)
+	if status == "" {
+		status = "updated"
+	}
+	kind := toolCallKind(update)
+	if kind == "unknown" {
+		kind = updateType
+	}
+	content := textFromAny(update["content"])
+	if content == "" {
+		content = textFromAny(update["output"])
+	}
+	if strings.TrimSpace(content) != "" {
+		return fmt.Sprintf("%s %s: %s", kind, status, summarizeText(content, ""))
+	}
+	return fmt.Sprintf("%s %s", kind, status)
+}
+
+func reviewArtifactKindFromUpdate(update map[string]any) (string, bool) {
+	kind := reviewKindForUpdate(update)
+	if kind == "diff" || kind == "markdown" {
+		return kind, true
+	}
+	if hasNonemptyReviewContent(update["content"]) || hasNonemptyReviewContent(update["output"]) {
+		return kind, true
+	}
+	return "", false
+}
+
+func reviewKindForUpdate(update map[string]any) string {
+	explicit := strings.ToLower(firstStringValue(update, "kind", "type"))
+	switch {
+	case strings.Contains(explicit, "diff"):
+		return "diff"
+	case strings.Contains(explicit, "image"), strings.Contains(explicit, "display_image"):
+		return "image"
+	case strings.Contains(explicit, "markdown"):
+		return "markdown"
+	case strings.Contains(explicit, "terminal"), strings.Contains(explicit, "command"), strings.Contains(explicit, "execute"):
+		return "terminal"
+	}
+	if updateType, _ := update["sessionUpdate"].(string); strings.Contains(updateType, "tool_call") {
+		return "tool_call"
+	}
+	return "generic"
+}
+
+func hasNonemptyReviewContent(value any) bool {
+	if text := textFromAny(value); text != "" {
+		return true
+	}
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	default:
+		return true
+	}
+}
+
+func textFromAny(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return ""
+		}
+		return typed
+	case []any:
 		var parts []string
-		for _, item := range content {
-			if text := contentText(item); text != "" {
+		for _, item := range typed {
+			if text := textFromAny(item); text != "" {
 				parts = append(parts, text)
 			}
 		}
-		return summarizeText(strings.Join(parts, "\n"), "Tool call completed")
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		if typed["type"] == "text" {
+			if text, ok := typed["text"].(string); ok && strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+		for _, key := range []string{"text", "content", "output", "diff", "markdown"} {
+			if text := textFromAny(typed[key]); text != "" {
+				return text
+			}
+		}
 	}
-	return "Tool call completed"
+	return ""
+}
+
+func contentBlocksFromAny(value any) []MessageContentBlock {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []MessageContentBlock{textBlock(typed)}
+	case []any:
+		var blocks []MessageContentBlock
+		for _, item := range typed {
+			blocks = append(blocks, contentBlocksFromAny(item)...)
+		}
+		return blocks
+	case map[string]any:
+		switch typed["type"] {
+		case "text":
+			if text, ok := typed["text"].(string); ok && strings.TrimSpace(text) != "" {
+				return []MessageContentBlock{textBlock(text)}
+			}
+			return nil
+		case "image":
+			data, dataOK := typed["data"].(string)
+			mimeType, mimeOK := typed["mimeType"].(string)
+			if !dataOK || !mimeOK || data == "" || mimeType == "" {
+				return nil
+			}
+			block := MessageContentBlock{Type: "image", MimeType: mimeType, Data: data}
+			if uri, ok := typed["uri"].(string); ok {
+				block.URI = &uri
+			}
+			if name, ok := typed["name"].(string); ok {
+				block.Name = &name
+			}
+			return []MessageContentBlock{block}
+		default:
+			if text := textFromAny(typed); text != "" {
+				return []MessageContentBlock{textBlock(text)}
+			}
+		}
+	}
+	return nil
+}
+
+func selectedPermissionResponse(optionID string) map[string]any {
+	return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}}
+}
+
+func cancelledPermissionResponse() map[string]any {
+	return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
 }
 
 func (r *AgentRuntime) handlePermissionRequest(id json.RawMessage, params json.RawMessage) {
 	requestID := idKey(id)
+	rawRequestID := cloneRawMessage(id)
 	var payload struct {
 		SessionID string             `json:"sessionId"`
 		ToolCall  map[string]any     `json:"toolCall"`
@@ -1149,42 +1627,35 @@ func (r *AgentRuntime) handlePermissionRequest(id json.RawMessage, params json.R
 	if err := json.Unmarshal(params, &payload); err != nil {
 		return
 	}
-	localSessionID := r.localSessionID(payload.SessionID)
-	if localSessionID == "" {
-		_ = r.sendResponse(requestID, map[string]any{"outcome": map[string]any{"optionId": "cancelled"}})
+	if _, ok := r.restoreContext(payload.SessionID); ok {
+		_ = r.sendRawResult(rawRequestID, cancelledPermissionResponse())
 		return
 	}
-	r.flushAssistantBuffer(context.Background(), localSessionID, false)
-	title, _ := payload.ToolCall["title"].(string)
-	kind, _ := payload.ToolCall["kind"].(string)
-	toolCallID, _ := payload.ToolCall["toolCallId"].(string)
-	if title == "" {
-		title = "Permission request"
+	localSessionID := r.localSessionID(payload.SessionID)
+	if localSessionID == "" {
+		_ = r.sendRawResult(rawRequestID, cancelledPermissionResponse())
+		return
 	}
-	if kind == "" {
-		kind = "tool"
-	}
-	var toolCallIDPtr *string
-	if toolCallID != "" {
-		toolCallIDPtr = &toolCallID
-	}
+	r.flushAssistantBuffer(context.Background(), payload.SessionID, localSessionID, false, false, true)
+	toolCallIDPtr := toolCallID(payload.ToolCall)
 	permission, err := r.storage.CreatePermissionRequest(context.Background(), NewPermissionRequest{
 		SessionID:    localSessionID,
 		ACPSessionID: payload.SessionID,
 		ACPRequestID: requestID,
 		ToolCallID:   toolCallIDPtr,
-		Title:        title,
-		Kind:         kind,
+		Title:        permissionToolCallTitle(payload.ToolCall),
+		Kind:         toolCallKind(payload.ToolCall),
 		ToolCall:     payload.ToolCall,
 		Options:      payload.Options,
 	})
 	if err != nil {
-		_ = r.sendResponse(requestID, map[string]any{"outcome": map[string]any{"optionId": "cancelled"}})
+		_ = r.sendRawResult(rawRequestID, cancelledPermissionResponse())
 		return
 	}
 	r.mu.Lock()
-	r.permissionMap[permission.ID] = requestID
+	r.permissionMap[permission.ID] = rawRequestID
 	r.mu.Unlock()
+	r.events.Publish(map[string]any{"type": "session_status", "sessionId": localSessionID, "status": statusWaitingApproval})
 	pending, _ := r.storage.PendingPermissionsForSession(context.Background(), localSessionID)
 	active := permission
 	if len(pending) > 0 {
@@ -1213,6 +1684,10 @@ func messageTimelineItem(message Message) TimelineItem {
 }
 
 func toolCallTimelineItem(call ToolCall) TimelineItem {
+	var output any
+	if call.OutputJSON != nil {
+		output = parseJSONValue(*call.OutputJSON)
+	}
 	return TimelineItem{
 		"kind":              "tool_call",
 		"id":                call.ID,
@@ -1224,7 +1699,7 @@ func toolCallTimelineItem(call ToolCall) TimelineItem {
 		"title":             call.Title,
 		"summary":           call.Summary,
 		"input":             parseJSONValue(call.InputJSON),
-		"output":            nil,
+		"output":            output,
 		"reviewArtifactIds": []string{},
 	}
 }

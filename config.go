@@ -244,6 +244,14 @@ func (a AgentConfig) supportsPermissionMode(mode string) bool {
 	return false
 }
 
+func (a AgentConfig) defaultLaunchProfileKeyForPermissionMode(mode string) (string, bool) {
+	profile, err := a.resolveLaunchProfile(mode, nil)
+	if err != nil {
+		return "", false
+	}
+	return profile.Key, true
+}
+
 func (a AgentConfig) resolveLaunchProfile(requestedPermissionMode string, values map[string]string) (ResolvedAgentLaunchProfile, error) {
 	if values == nil {
 		values = map[string]string{}

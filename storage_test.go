@@ -2,8 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"io/fs"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+
+	"acp-webui/migrations"
 )
 
 func testStorage(t *testing.T) *Storage {
@@ -34,6 +40,144 @@ func TestStorageCreatesWorkspaceIdempotently(t *testing.T) {
 	}
 	if first.ID != second.ID {
 		t.Fatalf("workspace was not idempotent: %s != %s", first.ID, second.ID)
+	}
+}
+
+func TestStorageImportsSQLxMigrationState(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	storage, err := openStorage("sqlite://" + dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+
+	applyEmbeddedMigrationsForOldSQLxDB(t, storage.db)
+	if err := storage.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 12 {
+		t.Fatalf("schema migration count = %d, want 12", count)
+	}
+}
+
+func TestStorageStartupExpiresPendingPermissionsAndFailsSessions(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "acp-session"
+	profile := ResolvedAgentLaunchProfile{ID: permissionManual, Key: "permission=manual", PermissionMode: permissionManual}
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: acpSessionID,
+		ACPRequestID: "1",
+		Title:        "Run command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{"toolCallId": "tool-1"},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	expired, err := storage.expirePendingPermissionRequestsOnStartup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	updated, _ := storage.GetSession(ctx, session.ID)
+	if updated.Status != statusFailed {
+		t.Fatalf("session status = %s, want failed", updated.Status)
+	}
+	messages, _ := storage.ListMessages(ctx, session.ID)
+	if len(messages) != 1 || messages[0].Role != roleSystem || messages[0].Content != approvalExpiredMessage {
+		t.Fatalf("system messages = %#v", messages)
+	}
+	detail, err := storage.SessionDetail(ctx, session.ID, liveContinuity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.FailureMessage == nil || *detail.FailureMessage != approvalExpiredMessage {
+		t.Fatalf("failure message = %#v", detail.FailureMessage)
+	}
+	foundExpiredPermission := false
+	for _, item := range detail.Timeline {
+		if item["kind"] == "permission" && item["status"] == permissionExpired {
+			foundExpiredPermission = true
+		}
+	}
+	if !foundExpiredPermission {
+		t.Fatalf("timeline missing expired permission: %#v", detail.Timeline)
+	}
+}
+
+func TestStorageRepairsOnlyRestoredRunningSessionsWithoutPendingApproval(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ResolvedAgentLaunchProfile{ID: permissionManual, Key: "permission=manual", PermissionMode: permissionManual}
+	createSession := func(acp string) Session {
+		t.Helper()
+		session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acp, permissionManual, profile, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return session
+	}
+	restored := createSession("restored")
+	live := createSession("live")
+	waiting := createSession("waiting")
+	_ = storage.MarkSessionRestoreSucceeded(ctx, restored.ID)
+	_, _ = storage.StartActiveTurn(ctx, restored.ID)
+	_, _ = storage.StartActiveTurn(ctx, live.ID)
+	_ = storage.MarkSessionRestoreSucceeded(ctx, waiting.ID)
+	_, _ = storage.StartActiveTurn(ctx, waiting.ID)
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    waiting.ID,
+		ACPSessionID: "waiting",
+		ACPRequestID: "2",
+		Title:        "Approve",
+		Kind:         "execute",
+		ToolCall:     map[string]any{},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := storage.repairRestoredRunningSessionsOnStartup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	restoredAfter, _ := storage.GetSession(ctx, restored.ID)
+	liveAfter, _ := storage.GetSession(ctx, live.ID)
+	waitingAfter, _ := storage.GetSession(ctx, waiting.ID)
+	if restoredAfter.Status != statusIdle {
+		t.Fatalf("restored status = %s, want idle", restoredAfter.Status)
+	}
+	if liveAfter.Status != statusRunning {
+		t.Fatalf("live status = %s, want running", liveAfter.Status)
+	}
+	if waitingAfter.Status != statusWaitingApproval {
+		t.Fatalf("waiting status = %s, want waiting_approval", waitingAfter.Status)
 	}
 }
 
@@ -85,5 +229,50 @@ func TestStorageBuildsSessionDetailTimeline(t *testing.T) {
 	}
 	if len(detail.Timeline) < 2 {
 		t.Fatalf("timeline = %#v", detail.Timeline)
+	}
+}
+
+func applyEmbeddedMigrationsForOldSQLxDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var versions []int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		sqlBytes, err := migrations.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(sqlBytes)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		prefix, _, _ := strings.Cut(name, "_")
+		version := 0
+		for _, ch := range prefix {
+			version = version*10 + int(ch-'0')
+		}
+		versions = append(versions, version)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE _sqlx_migrations (
+			version BIGINT PRIMARY KEY,
+			description TEXT NOT NULL,
+			installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			success BOOLEAN NOT NULL,
+			checksum BLOB NOT NULL,
+			execution_time BIGINT NOT NULL
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range versions {
+		if _, err := db.Exec(`INSERT INTO _sqlx_migrations(version, description, success, checksum, execution_time) VALUES (?, ?, 1, x'', 0)`, version, "migration"); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

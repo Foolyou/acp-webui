@@ -25,6 +25,18 @@ type Server struct {
 	mux     *http.ServeMux
 }
 
+const (
+	maxPromptImageBytes      = 5 * 1024 * 1024
+	maxPromptImageTotalBytes = 10 * 1024 * 1024
+)
+
+var supportedPromptImageMimeTypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/webp": {},
+	"image/gif":  {},
+}
+
 func newServer(config Config, storage *Storage, agents *AgentRuntimeManager, auth *AuthService, events *EventHub) *Server {
 	server := &Server{config: config, storage: storage, agents: agents, auth: auth, events: events, mux: http.NewServeMux()}
 	server.routes()
@@ -360,7 +372,11 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	blocks := promptBlocksFromRequest(payload.Prompt, payload.ContentBlocks)
+	blocks, err := promptBlocksFromRequest(payload.Prompt, payload.ContentBlocks)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if len(blocks) == 0 {
 		writeError(w, badRequest("Prompt or image attachment is required"))
 		return
@@ -377,6 +393,15 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if session.ACPSessionID == nil {
 		writeError(w, conflict("Session is missing an ACP session id"))
+		return
+	}
+	runtime, err := s.agents.runtimeForSession(session, true)
+	if err != nil {
+		writeError(w, unavailable(err.Error()))
+		return
+	}
+	if hasImageBlocks(blocks) && !runtime.promptCapabilities().Image {
+		writeError(w, conflict("This agent does not support image prompt attachments."))
 		return
 	}
 	prompt := textFallbackFromBlocks(blocks)
@@ -411,11 +436,6 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusRunning})
 	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": statusRunning, "activeTurn": active})
-	runtime, err := s.agents.runtimeForSession(session, true)
-	if err != nil {
-		writeError(w, unavailable(err.Error()))
-		return
-	}
 	go s.runPromptTurn(context.Background(), runtime, sessionID, *session.ACPSessionID, blocks)
 	queuedPrompts, _ := s.storage.ListQueuedPrompts(r.Context(), sessionID)
 	writeJSON(w, http.StatusOK, map[string]any{"message": message, "queuedPrompt": nil, "queuedPrompts": nonNilSlice(queuedPrompts), "activeTurn": active})
@@ -427,6 +447,12 @@ func (s *Server) runPromptTurn(ctx context.Context, runtime *AgentRuntime, sessi
 	if err != nil {
 		nextStatus = statusFailed
 		s.events.Publish(map[string]any{"type": "error", "message": err.Error()})
+	}
+	if err == nil {
+		if pending, _ := s.storage.PendingPermissionForSession(ctx, sessionID); pending != nil {
+			s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusWaitingApproval})
+			return
+		}
 	}
 	_ = s.storage.FinishActiveTurn(ctx, sessionID, nextStatus)
 	s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": nextStatus})
@@ -446,11 +472,18 @@ func (s *Server) drainQueuedPrompts(ctx context.Context, runtime *AgentRuntime, 
 		}
 		_ = s.storage.MarkQueuedPromptSubmitted(ctx, next.ID)
 		active, _ := s.storage.StartActiveTurn(ctx, sessionID)
+		s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusRunning})
 		s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": statusRunning, "activeTurn": active})
 		err := runtime.Prompt(ctx, sessionID, acpSessionID, next.ContentBlocks)
 		nextStatus := statusIdle
 		if err != nil {
 			nextStatus = statusFailed
+		}
+		if err == nil {
+			if pending, _ := s.storage.PendingPermissionForSession(ctx, sessionID); pending != nil {
+				s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusWaitingApproval})
+				return
+			}
 		}
 		_ = s.storage.FinishActiveTurn(ctx, sessionID, nextStatus)
 		s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": nextStatus})
@@ -461,14 +494,47 @@ func (s *Server) drainQueuedPrompts(ctx context.Context, runtime *AgentRuntime, 
 	}
 }
 
-func promptBlocksFromRequest(prompt string, contentBlocks []MessageContentBlock) []MessageContentBlock {
+func promptBlocksFromRequest(prompt string, contentBlocks []MessageContentBlock) ([]MessageContentBlock, error) {
 	var blocks []MessageContentBlock
 	text := strings.TrimSpace(prompt)
 	if text != "" {
 		blocks = append(blocks, textBlock(text))
 	}
 	blocks = append(blocks, contentBlocks...)
-	return blocks
+	if err := validatePromptBlocks(blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+func validatePromptBlocks(blocks []MessageContentBlock) error {
+	totalImageBytes := 0
+	for _, block := range blocks {
+		if block.Type != "image" {
+			continue
+		}
+		if _, ok := supportedPromptImageMimeTypes[block.MimeType]; !ok {
+			return badRequest(fmt.Sprintf("Unsupported image type `%s`.", block.MimeType))
+		}
+		estimatedBytes := (len(block.Data) * 3) / 4
+		if estimatedBytes > maxPromptImageBytes {
+			return badRequest(fmt.Sprintf("Image attachments must be %d MB or smaller.", maxPromptImageBytes/1024/1024))
+		}
+		totalImageBytes += estimatedBytes
+	}
+	if totalImageBytes > maxPromptImageTotalBytes {
+		return badRequest(fmt.Sprintf("Image attachments must be %d MB or smaller in total.", maxPromptImageTotalBytes/1024/1024))
+	}
+	return nil
+}
+
+func hasImageBlocks(blocks []MessageContentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {

@@ -360,7 +360,7 @@ export function SessionPane({
         agentName={agentName}
         agentId={currentSession.session.agentId}
         agentConnection={agentConnection}
-        disabled={!canSend || waitingApproval}
+        disabled={!canSend}
         imagePromptSupported={promptComposerImageSupported(agentConnection)}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
@@ -723,6 +723,8 @@ function reviewArtifactActionLabel(artifact: ReviewArtifactSummary) {
       return "Diff";
     case "markdown":
       return "Markdown";
+    case "terminal":
+      return "Terminal";
     case "tool_call":
       return "Terminal";
     default:
@@ -1015,7 +1017,7 @@ function PromptComposer({
           : null;
 
   return (
-    <div className={`composer-wrap ${waitingApproval ? "blocked" : ""}`}>
+    <div className="composer-wrap">
       {status || restoreButtonLabel || queuedPromptCount > 0 || canStop ? (
         <div className="composer-topline">
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
@@ -1065,13 +1067,11 @@ function PromptComposer({
               ? restoreRequired
                 ? "Restore session to continue"
                 : "Start a new session to continue"
-              : waitingApproval
-                ? "Resolve approval before sending another prompt"
-                : running
+              : running
                   ? `Queue a follow-up for ${agentName}...`
                 : `Ask ${agentName}...`
           }
-          rows={waitingApproval ? 1 : 2}
+          rows={2}
           value={prompt}
         />
         {skillSuggestions.length ? (

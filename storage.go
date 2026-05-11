@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -21,6 +22,8 @@ type Storage struct {
 	db *sql.DB
 	mu sync.Mutex
 }
+
+const approvalExpiredMessage = "Approval expired because the backend restarted. Start a new turn to continue."
 
 type NewPermissionRequest struct {
 	SessionID    string
@@ -67,6 +70,9 @@ func (s *Storage) Migrate(ctx context.Context) error {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	if err := s.importSQLxMigrationState(ctx, entries); err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -101,28 +107,139 @@ func (s *Storage) Migrate(ctx context.Context) error {
 	return nil
 }
 
+func (s *Storage) importSQLxMigrationState(ctx context.Context, entries []fs.DirEntry) error {
+	var tableName string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'`).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	byVersion := map[int64]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		prefix, _, ok := strings.Cut(name, "_")
+		if !ok {
+			continue
+		}
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			continue
+		}
+		byVersion[version] = name
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT version FROM _sqlx_migrations WHERE success = 1`)
+	if err != nil {
+		return err
+	}
+	var versions []int64
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, version := range versions {
+		name := byVersion[version]
+		if name == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)`, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Storage) expirePendingPermissionRequestsOnStartup(ctx context.Context) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE permission_requests
-		SET status = ?, failure_message = ?, resolved_at = COALESCE(resolved_at, ?)
-		WHERE status = ?`,
-		permissionExpired,
-		"Backend restarted before this permission request was resolved.",
-		nowString(),
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id
+		FROM permission_requests
+		WHERE status = ?
+		ORDER BY created_at ASC, id ASC`,
 		permissionPending,
 	)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	defer rows.Close()
+
+	type pendingRow struct {
+		id        string
+		sessionID string
+	}
+	var pending []pendingRow
+	for rows.Next() {
+		var row pendingRow
+		if err := rows.Scan(&row.id, &row.sessionID); err != nil {
+			return 0, err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	failedSessions := map[string]struct{}{}
+	for _, row := range pending {
+		if _, err := s.db.ExecContext(ctx, `
+		UPDATE permission_requests
+		SET status = ?, failure_message = ?, resolved_at = COALESCE(resolved_at, ?)
+		WHERE id = ? AND status = ?`,
+			permissionExpired,
+			approvalExpiredMessage,
+			nowString(),
+			row.id,
+			permissionPending,
+		); err != nil {
+			return 0, err
+		}
+		if _, seen := failedSessions[row.sessionID]; seen {
+			continue
+		}
+		failedSessions[row.sessionID] = struct{}{}
+		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`, statusFailed, nowString(), row.sessionID); err != nil {
+			return 0, err
+		}
+		if _, err := s.AddSystemMessage(ctx, row.sessionID, approvalExpiredMessage); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(pending)), nil
 }
 
 func (s *Storage) repairRestoredRunningSessionsOnStartup(ctx context.Context) (int64, error) {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions
-		SET status = ?, active_turn_started_at = NULL, active_turn_status = NULL, active_turn_stop_requested_at = NULL, updated_at = ?
-		WHERE status IN (?, ?, ?)`,
-		statusIdle, nowString(), statusRunning, statusStopping, statusWaitingApproval,
+		SET status = ?,
+		    active_turn_started_at = NULL,
+		    active_turn_status = NULL,
+		    active_turn_stop_requested_at = NULL,
+		    updated_at = ?
+		WHERE continuation_state = ?
+		  AND status = ?
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM permission_requests
+		      WHERE permission_requests.session_id = sessions.id
+		        AND permission_requests.status = ?
+		  )`,
+		statusIdle, nowString(), continuityRestored, statusRunning, permissionPending,
 	)
 	if err != nil {
 		return 0, err
@@ -131,23 +248,39 @@ func (s *Storage) repairRestoredRunningSessionsOnStartup(ctx context.Context) (i
 }
 
 func (s *Storage) CreateWorkspace(ctx context.Context, path string, name *string) (Workspace, error) {
-	if existing, err := s.findWorkspaceByPath(ctx, path); err == nil && existing != nil {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return Workspace{}, err
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("workspace path is not accessible: %s: %w", path, err)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !info.IsDir() {
+		return Workspace{}, fmt.Errorf("workspace path must be a directory")
+	}
+	storedPath := nativePathString(canonical)
+	if existing, err := s.findWorkspaceByPath(ctx, storedPath); err == nil && existing != nil {
 		return *existing, nil
 	}
 	id := uuid.NewString()
 	created := nowString()
-	workspaceNameValue := workspaceName(path)
+	workspaceNameValue := workspaceName(storedPath)
 	if name != nil && strings.TrimSpace(*name) != "" {
 		workspaceNameValue = strings.TrimSpace(*name)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO workspaces(id, name, path, created_at) VALUES (?, ?, ?, ?)`, id, workspaceNameValue, path, created)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO workspaces(id, name, path, created_at) VALUES (?, ?, ?, ?)`, id, workspaceNameValue, storedPath, created)
 	if err != nil {
-		if existing, findErr := s.findWorkspaceByPath(ctx, path); findErr == nil && existing != nil {
+		if existing, findErr := s.findWorkspaceByPath(ctx, storedPath); findErr == nil && existing != nil {
 			return *existing, nil
 		}
 		return Workspace{}, err
 	}
-	return Workspace{ID: id, Name: workspaceNameValue, Path: path, CreatedAt: created}, nil
+	return Workspace{ID: id, Name: workspaceNameValue, Path: storedPath, CreatedAt: created}, nil
 }
 
 func (s *Storage) findWorkspaceByPath(ctx context.Context, path string) (*Workspace, error) {
@@ -325,6 +458,64 @@ func (s *Storage) CreateMessage(ctx context.Context, sessionID, role, content st
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, created, sessionID)
 	return Message{ID: id, SessionID: sessionID, Role: role, Content: content, ContentBlocks: blocks, Status: status, CreatedAt: created}, nil
+}
+
+func (s *Storage) AddSystemMessage(ctx context.Context, sessionID, content string) (Message, error) {
+	return s.CreateMessage(ctx, sessionID, roleSystem, content, []MessageContentBlock{textBlock(content)}, statusIdle)
+}
+
+func (s *Storage) GetMessage(ctx context.Context, id string) (Message, error) {
+	return scanMessage(s.db.QueryRowContext(ctx, `SELECT id, session_id, role, content, content_blocks_json, status, created_at FROM messages WHERE id = ?`, id))
+}
+
+func (s *Storage) UpdateMessageStatus(ctx context.Context, id string, status string) (Message, error) {
+	_, err := s.db.ExecContext(ctx, `UPDATE messages SET status = ? WHERE id = ?`, status, id)
+	if err != nil {
+		return Message{}, err
+	}
+	return s.GetMessage(ctx, id)
+}
+
+func (s *Storage) AppendMessageContentBlocks(ctx context.Context, id string, contentDelta string, blocks []MessageContentBlock, status string) (Message, error) {
+	message, err := s.GetMessage(ctx, id)
+	if err != nil {
+		return Message{}, err
+	}
+	message.ContentBlocks = append(message.ContentBlocks, blocks...)
+	blocksJSON := mustJSON(message.ContentBlocks)
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE messages
+		SET content = content || ?, content_blocks_json = ?, status = ?
+		WHERE id = ?`,
+		contentDelta, blocksJSON, status, id,
+	)
+	if err != nil {
+		return Message{}, err
+	}
+	return s.GetMessage(ctx, id)
+}
+
+func (s *Storage) CreateMessageIfMissing(ctx context.Context, sessionID, role, content string, blocks []MessageContentBlock, status string) (*Message, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = ? AND content = ?`, sessionID, role, content).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count > 0 {
+		return nil, nil
+	}
+	message, err := s.CreateMessage(ctx, sessionID, role, content, blocks, status)
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
+func (s *Storage) HasAssistantMessages(ctx context.Context, sessionID string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = ?`, sessionID, roleAssistant).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *Storage) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
@@ -526,6 +717,26 @@ func (s *Storage) PendingPermissionsForSession(ctx context.Context, sessionID st
 	return permissions, rows.Err()
 }
 
+func (s *Storage) PermissionRequestsForSession(ctx context.Context, sessionID string) ([]PermissionRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, acp_session_id, acp_request_id, tool_call_id, title, kind, status,
+		       selected_option_id, tool_call_json, options_json, failure_message, created_at, resolved_at
+		FROM permission_requests WHERE session_id = ? ORDER BY created_at ASC, id ASC`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var permissions []PermissionRequest
+	for rows.Next() {
+		permission, err := scanPermissionRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		permissions = append(permissions, permission)
+	}
+	return permissions, rows.Err()
+}
+
 func (s *Storage) PendingPermissionForSession(ctx context.Context, sessionID string) (*PermissionRequest, error) {
 	items, err := s.PendingPermissionsForSession(ctx, sessionID)
 	if err != nil || len(items) == 0 {
@@ -579,6 +790,26 @@ func scanPermissionRequest(scanner interface{ Scan(dest ...any) error }) (Permis
 		permission.Options = []PermissionOption{}
 	}
 	return permission, nil
+}
+
+func (s *Storage) LatestPermissionFailureForSession(ctx context.Context, sessionID string) (*string, error) {
+	var failure sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT failure_message
+		FROM permission_requests
+		WHERE session_id = ? AND failure_message IS NOT NULL
+		ORDER BY resolved_at DESC
+		LIMIT 1`, sessionID).Scan(&failure)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !failure.Valid {
+		return nil, nil
+	}
+	return &failure.String, nil
 }
 
 func (s *Storage) UpsertToolCall(ctx context.Context, sessionID string, acpToolCallID *string, kind, title, summary, status string, input any, output any) (ToolCall, error) {
@@ -675,6 +906,53 @@ func (s *Storage) CreateReviewArtifact(ctx context.Context, sessionID string, to
 	return s.GetReviewArtifactForSession(ctx, sessionID, id)
 }
 
+type UpsertReviewArtifactResult struct {
+	Artifact ReviewArtifact
+	Created  bool
+}
+
+func (s *Storage) UpsertReviewArtifact(ctx context.Context, sessionID string, toolCallID *string, kind, title, summary string, payload any, source string) (UpsertReviewArtifactResult, error) {
+	if toolCallID != nil {
+		existing, err := s.findReviewArtifactForToolCall(ctx, sessionID, *toolCallID, kind, source)
+		if err != nil {
+			return UpsertReviewArtifactResult{}, err
+		}
+		if existing != nil {
+			_, err := s.db.ExecContext(ctx, `
+				UPDATE review_artifacts
+				SET title = ?, summary = ?, payload_json = ?
+				WHERE id = ?`,
+				title, summary, mustJSON(payload), existing.ID,
+			)
+			if err != nil {
+				return UpsertReviewArtifactResult{}, err
+			}
+			artifact, err := s.GetReviewArtifactForSession(ctx, sessionID, existing.ID)
+			return UpsertReviewArtifactResult{Artifact: artifact, Created: false}, err
+		}
+	}
+	artifact, err := s.CreateReviewArtifact(ctx, sessionID, toolCallID, kind, title, summary, payload, source)
+	return UpsertReviewArtifactResult{Artifact: artifact, Created: true}, err
+}
+
+func (s *Storage) findReviewArtifactForToolCall(ctx context.Context, sessionID, toolCallID, kind, source string) (*ReviewArtifactSummary, error) {
+	summary, _, err := scanReviewArtifact(s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, tool_call_id, kind, title, summary, payload_json, source, created_at
+		FROM review_artifacts
+		WHERE session_id = ? AND tool_call_id = ? AND kind = ? AND source = ?
+		ORDER BY created_at DESC
+		LIMIT 1`,
+		sessionID, toolCallID, kind, source,
+	))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
 func (s *Storage) ListReviewArtifactSummaries(ctx context.Context, sessionID string) ([]ReviewArtifactSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, tool_call_id, kind, title, summary, payload_json, source, created_at FROM review_artifacts WHERE session_id = ? ORDER BY created_at ASC`, sessionID)
 	if err != nil {
@@ -689,7 +967,10 @@ func (s *Storage) ListReviewArtifactSummaries(ctx context.Context, sessionID str
 		}
 		artifacts = append(artifacts, artifact)
 	}
-	return artifacts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dedupeReviewArtifactSummaries(artifacts), nil
 }
 
 func (s *Storage) GetReviewArtifactForSession(ctx context.Context, sessionID, artifactID string) (ReviewArtifact, error) {
@@ -721,9 +1002,50 @@ func previewFromPayload(kind string, payload any) any {
 		return nil
 	}
 	if object, ok := payload.(map[string]any); ok {
-		return object
+		return map[string]any{
+			"mimeType":   object["mimeType"],
+			"data":       object["data"],
+			"name":       object["name"],
+			"caption":    object["caption"],
+			"sourcePath": object["sourcePath"],
+		}
 	}
 	return nil
+}
+
+func dedupeReviewArtifactSummaries(items []ReviewArtifactSummary) []ReviewArtifactSummary {
+	seen := map[string]struct{}{}
+	dedupedReversed := make([]ReviewArtifactSummary, 0, len(items))
+	for i := len(items) - 1; i >= 0; i-- {
+		key := reviewArtifactSummaryDedupeKey(items[i])
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		dedupedReversed = append(dedupedReversed, items[i])
+	}
+	deduped := make([]ReviewArtifactSummary, 0, len(dedupedReversed))
+	for i := len(dedupedReversed) - 1; i >= 0; i-- {
+		deduped = append(deduped, dedupedReversed[i])
+	}
+	return deduped
+}
+
+func reviewArtifactSummaryDedupeKey(item ReviewArtifactSummary) string {
+	if item.Kind == "image" {
+		if preview, ok := item.Preview.(map[string]any); ok {
+			if raw, ok := preview["sourcePath"].(string); ok && raw != "" {
+				if item.ToolCallID != nil {
+					return fmt.Sprintf("tool:%s|%s|%s|%s", *item.ToolCallID, item.Kind, item.Source, raw)
+				}
+				return fmt.Sprintf("image:%s|%s", item.Source, raw)
+			}
+		}
+	}
+	if item.ToolCallID != nil {
+		return fmt.Sprintf("tool:%s|%s|%s", *item.ToolCallID, item.Kind, item.Source)
+	}
+	return "artifact:" + item.ID
 }
 
 func (s *Storage) UpdateSessionConfigOptions(ctx context.Context, sessionID string, options []SessionConfigOption) (SessionConfigState, error) {
@@ -812,16 +1134,20 @@ func (s *Storage) SessionDetail(ctx context.Context, sessionID string, continuit
 	active, _ := s.ActiveTurnForSession(ctx, sessionID)
 	artifacts, _ := s.ListReviewArtifactSummaries(ctx, sessionID)
 	pending, _ := s.PendingPermissionsForSession(ctx, sessionID)
+	permissionHistory, _ := s.PermissionRequestsForSession(ctx, sessionID)
 	var pendingPtr *PermissionRequest
 	if len(pending) > 0 {
 		pendingPtr = &pending[0]
+		session.Status = statusWaitingApproval
 	}
 	var failure *string
-	if continuity.FailureMessage != nil {
+	if latestFailure, _ := s.LatestPermissionFailureForSession(ctx, sessionID); latestFailure != nil {
+		failure = latestFailure
+	} else if continuity.FailureMessage != nil {
 		failure = continuity.FailureMessage
 	}
 	launchSummary := s.launchControlSummary(ctx, sessionID)
-	timeline, _ := s.timeline(ctx, sessionID)
+	timeline, _ := s.timeline(ctx, sessionID, permissionHistory)
 	reason := continuity.Reason
 	if continuity.Continuable {
 		reason = nil
@@ -862,11 +1188,10 @@ func (s *Storage) launchControlSummary(ctx context.Context, sessionID string) []
 	return summary
 }
 
-func (s *Storage) timeline(ctx context.Context, sessionID string) ([]TimelineItem, error) {
+func (s *Storage) timeline(ctx context.Context, sessionID string, permissionHistory []PermissionRequest) ([]TimelineItem, error) {
 	messages, _ := s.ListMessages(ctx, sessionID)
 	toolCalls, _ := s.ListToolCalls(ctx, sessionID)
 	artifacts, _ := s.ListReviewArtifactSummaries(ctx, sessionID)
-	permissions, _ := s.PendingPermissionsForSession(ctx, sessionID)
 	var timeline []TimelineItem
 	for _, message := range messages {
 		timeline = append(timeline, TimelineItem{
@@ -926,7 +1251,7 @@ func (s *Storage) timeline(ctx context.Context, sessionID string) ([]TimelineIte
 			"reviewArtifactIds": reviewIDs,
 		})
 	}
-	for _, permission := range permissions {
+	for _, permission := range permissionHistory {
 		timeline = append(timeline, TimelineItem{
 			"kind":           "permission",
 			"id":             permission.ID,
@@ -1000,6 +1325,7 @@ func (s *Storage) ListSessionItems(ctx context.Context, workspaceID *string) ([]
 		var pendingList *SessionListPermission
 		if len(pending) > 0 {
 			pendingList = &SessionListPermission{ID: pending[0].ID, Title: pending[0].Title, Kind: pending[0].Kind, CreatedAt: pending[0].CreatedAt}
+			session.Status = statusWaitingApproval
 		}
 		active, _ := s.ActiveTurnForSession(ctx, session.ID)
 		reviewCount := s.count(ctx, `SELECT COUNT(*) FROM review_artifacts WHERE session_id = ?`, session.ID)
