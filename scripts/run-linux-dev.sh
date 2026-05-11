@@ -57,10 +57,6 @@ claude_code_executable=""
 codex_acp_args=()
 claude_acp_args=()
 
-if [[ -f "$HOME/.cargo/env" ]]; then
-  # shellcheck disable=SC1091
-  . "$HOME/.cargo/env"
-fi
 if [[ -f "$HOME/.local/bin/env" ]]; then
   # shellcheck disable=SC1091
   . "$HOME/.local/bin/env"
@@ -448,7 +444,7 @@ if [[ -n "$claude_code_executable" && ! -f "$claude_code_executable" ]]; then
   die "--claude-code-executable does not point to an accessible file."
 fi
 
-require_command cargo
+require_command go
 require_command npm
 require_command curl
 require_command ss
@@ -477,7 +473,8 @@ if ((install_frontend_deps)) || [[ ! -d "$frontend_dir/node_modules" ]]; then
 fi
 
 backend_args=(
-  run --
+  run .
+  --
   --bind-host "$bind_host"
   --bind-port "$backend_port"
   --codex-acp-command "$codex_acp_command"
@@ -503,7 +500,7 @@ fi
 frontend_args=(run dev -- --host "$bind_host" --port "$frontend_port" --strictPort)
 
 echo "Backend command:"
-echo "  $(format_command cargo "${backend_args[@]}")"
+echo "  $(format_command go "${backend_args[@]}")"
 echo "Frontend command:"
 echo "  ACP_WEBUI_BACKEND_URL=$(printf '%q' "$backend_url") $(format_command npm "${frontend_args[@]}")"
 
@@ -514,7 +511,7 @@ elif [[ -z "${CLAUDE_CODE_EXECUTABLE-}" ]] && command -v claude >/dev/null 2>&1;
   export CLAUDE_CODE_EXECUTABLE="$(command -v claude)"
 fi
 
-backend_pid="$(start_background "$repo_root" "$backend_out" "$backend_err" cargo "${backend_args[@]}")"
+backend_pid="$(start_background "$repo_root" "$backend_out" "$backend_err" go "${backend_args[@]}")"
 if [[ -n "$previous_claude_code_executable" ]]; then
   export CLAUDE_CODE_EXECUTABLE="$previous_claude_code_executable"
 else

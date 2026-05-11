@@ -385,7 +385,7 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $BindHost = Get-TailscaleIPv4 $TailscaleIp
 $BackendUrl = "http://$BindHost`:$BackendPort"
 $FrontendUrl = "http://$BindHost`:$FrontendPort"
-$CargoCommand = Resolve-StartProcessCommand "cargo"
+$GoCommand = Resolve-StartProcessCommand "go"
 $NpmCommand = Resolve-StartProcessCommand "npm"
 $ResolvedClaudeCodeExecutable = Resolve-ClaudeCodeExecutable $ClaudeCodeExecutable
 
@@ -413,7 +413,7 @@ if ($InstallFrontendDeps -or -not (Test-Path (Join-Path $FrontendDir "node_modul
 }
 
 $BackendArgs = @(
-    "run", "--",
+    "run", ".", "--",
     "--bind-host", $BindHost,
     "--bind-port", "$BackendPort",
     "--codex-acp-command", $CodexAcpCommand
@@ -439,7 +439,7 @@ if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
 $FrontendArgs = @("run", "dev", "--", "--host", $BindHost, "--port", "$FrontendPort", "--strictPort")
 
 Write-Host "Backend command:"
-Write-Host ("  " + (Format-CommandForDisplay $CargoCommand $BackendArgs))
+Write-Host ("  " + (Format-CommandForDisplay $GoCommand $BackendArgs))
 Write-Host "Frontend command:"
 Write-Host ("  ACP_WEBUI_BACKEND_URL=$BackendUrl " + (Format-CommandForDisplay $NpmCommand $FrontendArgs))
 
@@ -450,7 +450,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResolvedClaudeCodeExecutable)) {
 }
 try {
     $BackendProcess = Start-Process `
-        -FilePath $CargoCommand `
+        -FilePath $GoCommand `
         -ArgumentList $BackendArgs `
         -WorkingDirectory $RepoRoot `
         -RedirectStandardOutput $BackendOut `

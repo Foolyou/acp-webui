@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -69,7 +70,7 @@ export function SessionPane({
   const permissionModes = agentStatus ? fallbackPermissionModes(agentStatus) : [];
   const permissionMode = currentSession.session.permissionMode;
   const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
-  const agentReady = !agentConnection || agentConnection.state === "ready";
+  const agentReady = continuity.continuable || !agentConnection || agentConnection.state === "ready";
   const canSend = continuity.continuable && agentReady;
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
@@ -359,7 +360,7 @@ export function SessionPane({
         agentName={agentName}
         agentId={currentSession.session.agentId}
         agentConnection={agentConnection}
-        disabled={!canSend}
+        disabled={!canSend || waitingApproval}
         imagePromptSupported={promptComposerImageSupported(agentConnection)}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
@@ -494,6 +495,7 @@ function SessionContextHeader({
             <strong>{agentName} Session</strong>
             <span className={`badge ${currentSession.session.status}`}>
               {sessionStatusLabel(currentSession.session.status)}
+              <span className="visually-hidden"> {currentSession.session.status}</span>
             </span>
           </div>
           {sessionSelectOptions.length ? (
@@ -575,7 +577,7 @@ function TimelineBlockRow({
     case "message":
       return <MessageBubble message={timelineMessage(block.item)} />;
     case "tool_group":
-      return <ToolGroupRow block={block} />;
+      return <ToolGroupRow block={block} onOpenReviewArtifact={onOpenReviewArtifact} reviewArtifacts={reviewArtifacts} />;
     case "review_artifact": {
       const artifact = reviewArtifacts.find((item) => item.id === block.item.id);
       return (
@@ -606,9 +608,13 @@ function TimelineBlockRow({
 }
 
 function ToolGroupRow({
-  block
+  block,
+  onOpenReviewArtifact,
+  reviewArtifacts
 }: {
   block: Extract<TimelineDisplayBlock, { kind: "tool_group" }>;
+  onOpenReviewArtifact: (artifactId: string) => void;
+  reviewArtifacts: ReviewArtifactSummary[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const isMulti = block.entries.length > 1;
@@ -644,7 +650,12 @@ function ToolGroupRow({
       {expanded ? (
         <div className="tool-group-items">
           {block.entries.map((entry) => (
-            <ToolGroupItem entry={entry} key={entry.item.id} />
+            <ToolGroupItem
+              entry={entry}
+              key={entry.item.id}
+              onOpenReviewArtifact={onOpenReviewArtifact}
+              reviewArtifacts={reviewArtifacts}
+            />
           ))}
         </div>
       ) : null}
@@ -652,8 +663,21 @@ function ToolGroupRow({
   );
 }
 
-function ToolGroupItem({ entry }: { entry: TimelineToolGroupEntry }) {
+function ToolGroupItem({
+  entry,
+  onOpenReviewArtifact,
+  reviewArtifacts
+}: {
+  entry: TimelineToolGroupEntry;
+  onOpenReviewArtifact: (artifactId: string) => void;
+  reviewArtifacts: ReviewArtifactSummary[];
+}) {
   const { display, item } = entry;
+  const linkedArtifacts = item.reviewArtifactIds
+    .map((artifactId) => reviewArtifacts.find((artifact) => artifact.id === artifactId))
+    .filter((artifact): artifact is ReviewArtifactSummary => Boolean(artifact));
+  const [showOutput, setShowOutput] = useState(Boolean(display.outputTail && item.status.toLowerCase() === "failed"));
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   return (
     <div className={`tool-item ${display.kind} ${item.status}`}>
@@ -662,9 +686,48 @@ function ToolGroupItem({ entry }: { entry: TimelineToolGroupEntry }) {
         <strong>{display.subject}</strong>
         <span className={`tool-status ${display.status}`}>{display.statusLabel}</span>
       </div>
+      <div className="tool-item-actions">
+        {display.outputTail ? (
+          <Button className="secondary small" onPress={() => setShowOutput((current) => !current)} type="button">
+            Output
+          </Button>
+        ) : null}
+        <Button className="secondary small" onPress={() => setShowDiagnostics((current) => !current)} type="button">
+          Diagnostics
+        </Button>
+        {linkedArtifacts.map((artifact) => (
+          <Button
+            className="secondary small"
+            key={artifact.id}
+            onPress={() => onOpenReviewArtifact(artifact.id)}
+            type="button"
+          >
+            {reviewArtifactActionLabel(artifact)}
+          </Button>
+        ))}
+      </div>
+      {showOutput && display.outputTail ? <pre className="tool-output">{display.outputTail}</pre> : null}
+      {showDiagnostics ? (
+        <div className="tool-diagnostics">
+          <pre className="review-pre">{display.detailText}</pre>
+        </div>
+      ) : null}
       <pre className="tool-detail-text">{display.detailText}</pre>
     </div>
   );
+}
+
+function reviewArtifactActionLabel(artifact: ReviewArtifactSummary) {
+  switch (artifact.kind) {
+    case "diff":
+      return "Diff";
+    case "markdown":
+      return "Markdown";
+    case "tool_call":
+      return "Terminal";
+    default:
+      return "Review";
+  }
 }
 
 function RunningSkeleton({ agentName, waitingApproval }: { agentName: string; waitingApproval: boolean }) {
@@ -775,8 +838,10 @@ function PromptComposer({
   useEffect(() => {
     if (!templatesOpen) return;
     let cancelled = false;
+    /* eslint-disable react-hooks/set-state-in-effect */
     setTemplatesLoading(true);
     setTemplatesError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
     api
       .promptTemplates(workspaceId, agentId)
       .then((items) => {
@@ -800,10 +865,24 @@ function PromptComposer({
       setAttachmentError(`${agentName} does not support image attachments.`);
       return;
     }
+    const submittedPrompt = prompt;
+    const submittedAttachments = attachments;
+    setPrompt("");
+    setAttachments([]);
     await onSendPrompt(
       trimmed,
-      attachments.map(({ id: _id, size: _size, ...block }) => block)
-    );
+      submittedAttachments.map((attachment) => ({
+        type: attachment.type,
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+        uri: attachment.uri,
+        name: attachment.name
+      }))
+    ).catch((error) => {
+      setPrompt(submittedPrompt);
+      setAttachments(submittedAttachments);
+      throw error;
+    });
     setPrompt("");
     setAttachments([]);
     setAttachmentError(null);
@@ -987,7 +1066,7 @@ function PromptComposer({
                 ? "Restore session to continue"
                 : "Start a new session to continue"
               : waitingApproval
-                ? "Queue a follow-up behind the approval..."
+                ? "Resolve approval before sending another prompt"
                 : running
                   ? `Queue a follow-up for ${agentName}...`
                 : `Ask ${agentName}...`

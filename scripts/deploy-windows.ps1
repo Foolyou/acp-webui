@@ -358,7 +358,7 @@ if (-not $SkipBuild) {
     Write-Host "Building embedded release binary..."
     Push-Location $RepoRoot
     try {
-        cargo build --release --features embedded-frontend
+        go build -tags embedded_frontend -o $DefaultLocalBinary .
     } finally {
         Pop-Location
     }

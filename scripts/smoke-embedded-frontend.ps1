@@ -34,7 +34,7 @@ try {
 
         Push-Location $RepoRoot
         try {
-            cargo build --release --features embedded-frontend
+            go build -tags embedded_frontend -o (Join-Path $RepoRoot "target\release\acp-webui.exe") .
         } finally {
             Pop-Location
         }

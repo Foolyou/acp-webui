@@ -2,7 +2,7 @@
 
 Mobile-first local web UI for Agent Client Protocol agents.
 
-This slice connects a Rust local daemon to ACP agents over stdio. Users can create Codex or Claude sessions inside the same local workspace, send text prompts, approve permission requests, restore eligible persisted sessions, and review session evidence.
+This slice connects a Go local daemon to ACP agents over stdio. Users can create Codex or Claude sessions inside the same local workspace, send text prompts, approve permission requests, restore eligible persisted sessions, and review session evidence.
 
 ## Current Scope
 
@@ -34,7 +34,7 @@ Codex sessions can be created in `manual`, `full_auto`, or `yolo` permission mod
 
 ## Requirements
 
-- Rust toolchain
+- Go toolchain
 - Node.js and npm when building the frontend or building from source
 - `uv` for the Python-backed fake ACP E2E fixture and cross-device Python setup
 - `codex-acp` available on PATH, or a custom Codex command supplied to the backend
@@ -111,7 +111,7 @@ npm run dev
 Run the backend:
 
 ```bash
-cargo run -- \
+go run . -- \
   --bind-host 127.0.0.1 \
   --bind-port 7635 \
   --codex-acp-command codex-acp
@@ -124,7 +124,7 @@ The backend protects `/api/*` and `/api/ws` with pairing-token access control. E
 To use a stable pairing token:
 
 ```bash
-cargo run -- \
+go run . -- \
   --pairing-token your-local-token
 ```
 
@@ -133,7 +133,7 @@ cargo run -- \
 To use the npm package instead of a binary on PATH:
 
 ```bash
-cargo run -- \
+go run . -- \
   --codex-acp-command npx \
   --codex-acp-arg @zed-industries/codex-acp
 ```
@@ -172,13 +172,13 @@ Useful variants:
 
 ## Single-Binary Release Build
 
-Build the frontend first, then build the Rust binary with embedded frontend assets:
+Build the frontend first, then build the Go binary with embedded frontend assets:
 
 ```bash
 cd frontend
 npm run build
 cd ..
-cargo build --release --features embedded-frontend
+go build -tags embedded_frontend -o target/release/acp-webui .
 ```
 
 The resulting binary at `target/release/acp-webui` or `target/release/acp-webui.exe` serves the frontend without a runtime `frontend/dist` directory.
@@ -361,7 +361,7 @@ sudo npx playwright install --with-deps chromium
 Build the backend binary and frontend bundle before running E2E:
 
 ```bash
-cargo build
+go build -o target/debug/acp-webui .
 cd frontend
 npm run build
 npm run e2e

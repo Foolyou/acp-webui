@@ -78,10 +78,6 @@ claude_acp_args=()
 opencode_acp_args=()
 extra_args=()
 
-if [[ -f "$HOME/.cargo/env" ]]; then
-  # shellcheck disable=SC1091
-  . "$HOME/.cargo/env"
-fi
 if [[ -f "$HOME/.local/bin/env" ]]; then
   # shellcheck disable=SC1091
   . "$HOME/.local/bin/env"
@@ -321,7 +317,7 @@ require_command "$scp_command"
 if ((skip_build)); then
   binary="${local_binary:-$default_local_binary}"
 else
-  require_command cargo
+  require_command go
   require_command npm
 
   if ((install_frontend_deps)) || [[ ! -d "$frontend_dir/node_modules" ]]; then
@@ -333,7 +329,7 @@ else
   (cd "$frontend_dir" && npm run build)
 
   echo "Building embedded release binary..."
-  (cd "$repo_root" && cargo build --release --features embedded-frontend)
+  (cd "$repo_root" && go build -tags embedded_frontend -o "$default_local_binary" .)
 
   binary="${local_binary:-$default_local_binary}"
 fi

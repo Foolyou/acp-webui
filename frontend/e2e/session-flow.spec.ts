@@ -11,7 +11,10 @@ const dataDir = path.join(repoRoot, ".data", "e2e");
 const databasePath = path.join(dataDir, "playwright.db");
 const backendUrl = "http://127.0.0.1:7638";
 const fakeAcpScript = path.join(repoRoot, "frontend", "e2e", "fixtures", "fake-acp.py");
-const backendBinary = process.env.ACP_WEBUI_E2E_BINARY ?? path.join(repoRoot, "target", "debug", "acp-webui");
+const defaultBackendBinary = process.platform === "win32"
+  ? path.join(repoRoot, "target", "debug", "acp-webui.exe")
+  : path.join(repoRoot, "target", "debug", "acp-webui");
+const backendBinary = process.env.ACP_WEBUI_E2E_BINARY ?? defaultBackendBinary;
 
 let backend: ChildProcessWithoutNullStreams | undefined;
 
@@ -36,6 +39,7 @@ async function startBackend() {
       "7638",
       "--database-url",
       `sqlite://${databasePath}`,
+      "--disable-auth",
       "--codex-acp-command",
       "uv",
       "--codex-acp-arg",
@@ -1869,12 +1873,9 @@ async function waitForBackend() {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${backendUrl}/api/app-state`);
+      const response = await fetch(`${backendUrl}/api/auth/status`);
       if (response.ok) {
-        const state = (await response.json()) as { codex: { state: string } };
-        if (state.codex.state === "idle" || state.codex.state === "ready") {
-          return;
-        }
+        return;
       }
     } catch {
       // Retry until the backend is listening.

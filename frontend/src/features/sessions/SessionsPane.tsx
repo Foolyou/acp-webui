@@ -255,6 +255,7 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       <span className="item-title">{item.workspace.name}</span>
       <span>
         {item.session.agentName} · {sessionStatusLabel(item.session.status)} · {formatRelativeTime(item.lastActivityAt)}
+        <span className="visually-hidden"> {item.session.status}</span>
       </span>
       {item.currentModel ? (
         <span className="model-summary">Model: {item.currentModel.name ?? item.currentModel.value}</span>

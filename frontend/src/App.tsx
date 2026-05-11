@@ -141,6 +141,26 @@ function mergeTimelineItem(timeline: SessionDetail["timeline"], item: SessionDet
   return next.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
 }
 
+async function waitForPromptSessionDetail(sessionId: string, queued: boolean) {
+  const deadline = Date.now() + (queued ? 0 : 5_000);
+  let lastDetail: SessionDetail | null = null;
+
+  while (Date.now() < deadline || lastDetail === null) {
+    lastDetail = await api.session(sessionId);
+    if (
+      queued ||
+      lastDetail.pendingPermission ||
+      lastDetail.session.status !== "running" ||
+      lastDetail.activeTurn === null
+    ) {
+      return lastDetail;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
+
+  return lastDetail;
+}
+
 export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
@@ -502,6 +522,25 @@ export function App() {
               : current
           );
           throw error;
+        }
+        const reconciledDetail = await waitForPromptSessionDetail(sessionId, Boolean(response.queuedPrompt)).catch(
+          () => null
+        );
+        if (reconciledDetail) {
+          setState((current) =>
+            current.currentSession?.session.id === sessionId
+              ? {
+                  ...current,
+                  currentSession: reconciledDetail,
+                  sessions: [
+                    sessionDetailToListItem(reconciledDetail),
+                    ...current.sessions.filter((item) => item.session.id !== reconciledDetail.session.id)
+                  ],
+                  liveAssistant: liveAssistantAfterSessionReconcile(current.liveAssistant, reconciledDetail)
+                }
+              : current
+          );
+          return;
         }
         setState((current) =>
           current.currentSession?.session.id === sessionId
