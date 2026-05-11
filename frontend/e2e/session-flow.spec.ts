@@ -245,6 +245,39 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
 });
 
+test("interleaves assistant messages and tool activity by event time", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+  await startSession(page);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Exercise interleaved timeline.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByText("First assistant segment.")).toBeVisible();
+  await expect(page.getByText("Second assistant segment.")).toBeVisible();
+  await expect(page.locator(".tool-group-row", { hasText: "npm run timeline" })).toBeVisible();
+
+  const blocks = page.locator(".timeline > article.message, .timeline > .tool-group-row");
+  await expect(blocks).toHaveCount(4);
+  await expect(blocks.nth(0)).toContainText("Exercise interleaved timeline.");
+  await expect(blocks.nth(1)).toContainText("First assistant segment.");
+  await expect(blocks.nth(2)).toContainText("npm run timeline");
+  await expect(blocks.nth(3)).toContainText("Second assistant segment.");
+
+  const ids = sessionRouteIds(page);
+  const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
+  const detail = (await detailResponse.json()) as SessionDetail;
+  const coreTimeline = detail.timeline.filter((item) => item.kind !== "review_artifact");
+  expect(coreTimeline.map((item) => item.kind)).toEqual(["message", "message", "tool_call", "message"]);
+  expect(
+    coreTimeline
+      .filter((item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message")
+      .map((item) => item.content)
+  ).toEqual(["Exercise interleaved timeline.", "First assistant segment.", "Second assistant segment."]);
+});
+
 test("re-enables prompt composer after a completed turn", async ({ page }) => {
   await page.goto("/");
 

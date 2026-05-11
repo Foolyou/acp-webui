@@ -190,6 +190,69 @@ for line in sys.stdin:
             for part in message.get("params", {}).get("prompt", [])
             if isinstance(part, dict)
         )
+        if "interleaved timeline" in prompt_text.lower():
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": "First assistant segment.",
+                            },
+                        },
+                    },
+                }
+            )
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "tool-interleaved",
+                            "title": "Timeline command",
+                            "kind": "execute",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "npm run timeline",
+                                }
+                            ],
+                        },
+                    },
+                }
+            )
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": prompt_session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": "Second assistant segment.",
+                            },
+                        },
+                    },
+                }
+            )
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"stopReason": "end_turn"},
+                }
+            )
+            continue
         if "scroll stream" in prompt_text.lower():
             if "manual bottom" in prompt_text.lower():
                 label = "Manual bottom stream"

@@ -624,9 +624,7 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 	if err := r.ensureReady(ctx); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	r.assistant[localSessionID] = ""
-	r.mu.Unlock()
+	r.beginAssistantBuffer(localSessionID)
 	prompt := make([]map[string]any, 0, len(blocks))
 	for _, block := range blocks {
 		switch block.Type {
@@ -638,7 +636,28 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 	}
 	var result map[string]any
 	err := r.request(ctx, "session/prompt", map[string]any{"sessionId": acpSessionID, "prompt": prompt}, &result)
-	content := r.takeAssistantBuffer(localSessionID)
+	r.flushAssistantBuffer(ctx, localSessionID, true)
+	return err
+}
+
+func (r *AgentRuntime) beginAssistantBuffer(localSessionID string) {
+	r.mu.Lock()
+	r.assistant[localSessionID] = ""
+	r.mu.Unlock()
+}
+
+func (r *AgentRuntime) appendAssistantBuffer(localSessionID, content string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.assistant[localSessionID]; !ok {
+		return false
+	}
+	r.assistant[localSessionID] += content
+	return true
+}
+
+func (r *AgentRuntime) flushAssistantBuffer(ctx context.Context, localSessionID string, close bool) {
+	content := r.drainAssistantBuffer(localSessionID, close)
 	if content != "" {
 		message, createErr := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, content, []MessageContentBlock{textBlock(content)}, statusIdle)
 		if createErr == nil {
@@ -646,14 +665,20 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 			r.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": messageTimelineItem(message)})
 		}
 	}
-	return err
 }
 
-func (r *AgentRuntime) takeAssistantBuffer(localSessionID string) string {
+func (r *AgentRuntime) drainAssistantBuffer(localSessionID string, close bool) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	content := r.assistant[localSessionID]
-	delete(r.assistant, localSessionID)
+	content, ok := r.assistant[localSessionID]
+	if !ok {
+		return ""
+	}
+	if close {
+		delete(r.assistant, localSessionID)
+	} else {
+		r.assistant[localSessionID] = ""
+	}
 	return content
 }
 
@@ -764,6 +789,7 @@ func (r *AgentRuntime) displayImage(params json.RawMessage, source string) (Revi
 	if localSessionID == "" {
 		return ReviewArtifact{}, resourceNotFound("ACP session is not registered")
 	}
+	r.flushAssistantBuffer(context.Background(), localSessionID, false)
 	session, err := r.storage.GetSession(context.Background(), localSessionID)
 	if err != nil {
 		return ReviewArtifact{}, resourceNotFound("Session not found")
@@ -1015,10 +1041,9 @@ func (r *AgentRuntime) handleSessionUpdate(params json.RawMessage) {
 		if content == "" {
 			return
 		}
-		r.mu.Lock()
-		r.assistant[localSessionID] += content
-		r.mu.Unlock()
-		r.events.Publish(map[string]any{"type": "text_delta", "sessionId": localSessionID, "delta": content})
+		if r.appendAssistantBuffer(localSessionID, content) {
+			r.events.Publish(map[string]any{"type": "text_delta", "sessionId": localSessionID, "delta": content})
+		}
 	case "user_message_chunk":
 		// Replayed user history is already persisted for normal restore paths.
 	case "config_option_update":
@@ -1028,6 +1053,7 @@ func (r *AgentRuntime) handleSessionUpdate(params json.RawMessage) {
 			r.events.Publish(map[string]any{"type": "session_config_updated", "sessionId": localSessionID, "configOptions": state.ConfigOptions, "currentModel": state.CurrentModel})
 		}
 	case "tool_call":
+		r.flushAssistantBuffer(ctx, localSessionID, false)
 		r.persistToolCall(ctx, localSessionID, payload.Update)
 	}
 }
@@ -1128,6 +1154,7 @@ func (r *AgentRuntime) handlePermissionRequest(id json.RawMessage, params json.R
 		_ = r.sendResponse(requestID, map[string]any{"outcome": map[string]any{"optionId": "cancelled"}})
 		return
 	}
+	r.flushAssistantBuffer(context.Background(), localSessionID, false)
 	title, _ := payload.ToolCall["title"].(string)
 	kind, _ := payload.ToolCall["kind"].(string)
 	toolCallID, _ := payload.ToolCall["toolCallId"].(string)
