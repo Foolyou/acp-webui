@@ -5,7 +5,7 @@ import {
   insertPromptTemplateBody,
   promptComposerImageSupported,
   renderableMessageBlocks
-} from "./SessionPane";
+} from "./sessionPaneHelpers";
 
 describe("formatActiveTurnElapsed", () => {
   test("formats active work time in seconds and minutes", () => {

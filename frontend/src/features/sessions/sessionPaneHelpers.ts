@@ -1,0 +1,46 @@
+import type { AgentRuntimeStatus, ChatMessage, MessageContentBlock } from "../../types";
+
+export function formatActiveTurnElapsed(startedAt: string, now: number = Date.now()) {
+  const elapsedMs = Math.max(0, now - Date.parse(startedAt));
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+export function insertPromptTemplateBody(current: string, body: string) {
+  const templateBody = body.trim();
+  if (!templateBody) return current;
+  if (!current.trim()) return templateBody;
+  return `${current.trimEnd()}\n\n${templateBody}`;
+}
+
+export function defaultPromptTemplateTitle(body: string) {
+  const firstLine = body
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return "Untitled prompt";
+  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
+}
+
+export function promptComposerImageSupported(agentConnection: AgentRuntimeStatus["status"] | null) {
+  return agentConnection?.promptCapabilities?.image === true;
+}
+
+export function renderableMessageBlocks(message: Pick<ChatMessage, "content" | "contentBlocks">) {
+  const blocks = message.contentBlocks?.length
+    ? message.contentBlocks
+    : message.content
+      ? [{ type: "text" as const, text: message.content }]
+      : [];
+  return blocks.reduce<MessageContentBlock[]>((merged, block) => {
+    const previous = merged[merged.length - 1];
+    if (block.type === "text" && previous?.type === "text") {
+      merged[merged.length - 1] = { type: "text", text: `${previous.text}${block.text}` };
+      return merged;
+    }
+    merged.push(block);
+    return merged;
+  }, []);
+}

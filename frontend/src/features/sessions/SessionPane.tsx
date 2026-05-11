@@ -7,6 +7,13 @@ import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../.
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { buildTimelineBlocks, type TimelineDisplayBlock, type TimelineToolGroupEntry } from "../../app/timelineBlocks";
 import { MarkdownContent } from "../../components/MarkdownContent";
+import {
+  defaultPromptTemplateTitle,
+  formatActiveTurnElapsed,
+  insertPromptTemplateBody,
+  promptComposerImageSupported,
+  renderableMessageBlocks
+} from "./sessionPaneHelpers";
 import type {
   AgentRuntimeStatus,
   ChatMessage,
@@ -26,6 +33,12 @@ import {
   permissionModeDescription,
   permissionModeLabel
 } from "../../utils/permissionMode";
+import {
+  createSpeechRecognitionAdapter,
+  insertVoiceTranscript,
+  speechRecognitionSupported,
+  type SpeechRecognitionAdapter
+} from "../../utils/speechRecognition";
 import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 const SCROLL_BOTTOM_PROXIMITY_PX = 24;
@@ -394,14 +407,6 @@ function useActiveTurnElapsed(activeTurn: SessionDetail["activeTurn"]) {
   return formatActiveTurnElapsed(activeTurn.startedAt, now);
 }
 
-export function formatActiveTurnElapsed(startedAt: string, now: number = Date.now()) {
-  const elapsedMs = Math.max(0, now - Date.parse(startedAt));
-  const totalSeconds = Math.floor(elapsedMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
-}
-
 function QueuedPromptList({ queuedPrompts }: { queuedPrompts: NonNullable<SessionDetail["queuedPrompts"]> }) {
   return (
     <div className="queued-prompts" aria-label="Queued prompts">
@@ -677,26 +682,6 @@ function RunningSkeleton({ agentName, waitingApproval }: { agentName: string; wa
   );
 }
 
-export function insertPromptTemplateBody(current: string, body: string) {
-  const templateBody = body.trim();
-  if (!templateBody) return current;
-  if (!current.trim()) return templateBody;
-  return `${current.trimEnd()}\n\n${templateBody}`;
-}
-
-export function defaultPromptTemplateTitle(body: string) {
-  const firstLine = body
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) return "Untitled prompt";
-  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
-}
-
-export function promptComposerImageSupported(agentConnection: AgentRuntimeStatus["status"] | null) {
-  return agentConnection?.promptCapabilities?.image === true;
-}
-
 function PromptComposer({
   agentName,
   agentId,
@@ -745,6 +730,9 @@ function PromptComposer({
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [voiceSupported] = useState(() => speechRecognitionSupported());
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
@@ -756,6 +744,7 @@ function PromptComposer({
   const [editingTemplateTitle, setEditingTemplateTitle] = useState("");
   const [editingTemplateBody, setEditingTemplateBody] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const voiceAdapterRef = useRef<SpeechRecognitionAdapter | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -773,10 +762,56 @@ function PromptComposer({
   }, []);
 
   useEffect(() => {
+    let active = true;
+    const adapter = createSpeechRecognitionAdapter({
+      onEvent(event) {
+        if (!active) return;
+        switch (event.type) {
+          case "listening":
+            setVoiceListening(true);
+            setVoiceError(null);
+            break;
+          case "transcript":
+            setPrompt((current) => insertVoiceTranscript(current, event.transcript));
+            setVoiceError(null);
+            break;
+          case "end":
+            setVoiceListening(false);
+            if (event.reason === "unexpected") {
+              setVoiceError("Voice input stopped unexpectedly. Try again.");
+            }
+            break;
+          case "error":
+            setVoiceListening(false);
+            setVoiceError(event.message);
+            break;
+        }
+      }
+    });
+    voiceAdapterRef.current = adapter;
+
+    return () => {
+      active = false;
+      adapter.destroy();
+      if (voiceAdapterRef.current === adapter) {
+        voiceAdapterRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!voiceListening || (!disabled && !busy)) return;
+    voiceAdapterRef.current?.stop();
+  }, [busy, disabled, voiceListening]);
+
+  useEffect(() => {
     if (!templatesOpen) return;
     let cancelled = false;
-    setTemplatesLoading(true);
-    setTemplatesError(null);
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setTemplatesLoading(true);
+      setTemplatesError(null);
+    });
     api
       .promptTemplates(workspaceId, agentId)
       .then((items) => {
@@ -802,8 +837,12 @@ function PromptComposer({
     }
     await onSendPrompt(
       trimmed,
-      attachments.map(({ id: _id, size: _size, ...block }) => block)
+      attachments.map(({ data, mimeType, name, type, uri }) => ({ data, mimeType, name, type, uri }))
     );
+    if (voiceListening) {
+      voiceAdapterRef.current?.stop();
+      setVoiceListening(false);
+    }
     setPrompt("");
     setAttachments([]);
     setAttachmentError(null);
@@ -819,6 +858,27 @@ function PromptComposer({
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void submitPrompt();
+    }
+  }
+
+  function updatePromptDraft(value: string) {
+    setPrompt(value);
+    if (voiceError) {
+      setVoiceError(null);
+    }
+  }
+
+  function toggleVoiceInput() {
+    if (!voiceSupported || disabled || busy) return;
+    if (voiceListening) {
+      voiceAdapterRef.current?.stop();
+      return;
+    }
+    setVoiceError(null);
+    setVoiceListening(true);
+    const started = voiceAdapterRef.current?.start() ?? false;
+    if (!started) {
+      setVoiceListening(false);
     }
   }
 
@@ -977,7 +1037,7 @@ function PromptComposer({
         />
         <textarea
           disabled={disabled}
-          onChange={(event) => setPrompt(event.target.value)}
+          onChange={(event) => updatePromptDraft(event.target.value)}
           onCompositionEnd={() => setComposing(false)}
           onCompositionStart={() => setComposing(true)}
           onKeyDown={onKeyDown}
@@ -1151,8 +1211,21 @@ function PromptComposer({
           </div>
         ) : null}
         {attachmentError ? <div className="composer-error">{attachmentError}</div> : null}
+        {voiceError ? <div className="composer-error">{voiceError}</div> : null}
         <div className="composer-actions">
           <span className="shortcut-hint">Ctrl Enter</span>
+          {voiceSupported ? (
+            <Button
+              aria-label={voiceListening ? "Stop voice input" : "Start voice input"}
+              aria-pressed={voiceListening}
+              className={`secondary voice-control ${voiceListening ? "listening" : ""}`}
+              isDisabled={disabled || busy}
+              onPress={toggleVoiceInput}
+              type="button"
+            >
+              {voiceListening ? "On" : "Mic"}
+            </Button>
+          ) : null}
           <Button
             className="secondary"
             onPress={() => setTemplatesOpen((open) => !open)}
@@ -1236,23 +1309,6 @@ function MessageContent({ message }: { message: ChatMessage }) {
       )}
     </div>
   );
-}
-
-export function renderableMessageBlocks(message: Pick<ChatMessage, "content" | "contentBlocks">) {
-  const blocks = message.contentBlocks?.length
-    ? message.contentBlocks
-    : message.content
-      ? [{ type: "text" as const, text: message.content }]
-      : [];
-  return blocks.reduce<MessageContentBlock[]>((merged, block) => {
-    const previous = merged[merged.length - 1];
-    if (block.type === "text" && previous?.type === "text") {
-      merged[merged.length - 1] = { type: "text", text: previous.text + block.text };
-    } else {
-      merged.push(block);
-    }
-    return merged;
-  }, []);
 }
 
 function ReviewArtifactCard({

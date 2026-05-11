@@ -1866,6 +1866,45 @@ pre {
   min-width: 0;
 }
 
+.voice-control {
+  position: relative;
+  min-width: 3.35rem;
+  padding-right: 0.58rem;
+  padding-left: 0.58rem;
+  white-space: nowrap;
+}
+
+.voice-control.listening {
+  border-color: rgba(45, 95, 85, 0.45);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.voice-control.listening::before {
+  content: "";
+  display: inline-block;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-right: 0.28rem;
+  border-radius: 999px;
+  background: currentColor;
+  vertical-align: 0.08rem;
+  animation: voice-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .skill-autocomplete {
   grid-column: 1 / -1;
   display: grid;

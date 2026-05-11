@@ -2,8 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
-import type { SessionDetail, TimelineItem } from "../src/types";
+import { expect, test, type Page } from "@playwright/test";
+import type { MessageContentBlock, PromptTemplate, QueuedPrompt, SessionDetail, SkillSummary, TimelineItem } from "../src/types";
 
 const frontendDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(frontendDir, "../..");
@@ -783,6 +783,140 @@ test("shows mobile skill suggestions for symbol keyboard triggers", async ({ pag
   }
 });
 
+test("dictates prompt draft text without auto-submitting", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+  await mockSpeechRecognition(page);
+
+  const fixture = await mockComposerSession(page, {
+    skills: [{ name: "imagegen", description: "Generate images" }],
+    templates: [
+      {
+        id: "voice-template",
+        workspaceId: "voice-workspace",
+        agentId: "codex",
+        title: "Review template",
+        body: "Template prompt",
+        tags: [],
+        position: 0,
+        useCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  });
+
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+  const composer = page.locator(".composer textarea");
+  await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
+  await expectVoiceControlLayout(page, "mobile");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expectVoiceControlLayout(page, "desktop");
+
+  await composer.fill("Review");
+  await page.locator('.composer input[type="file"]').setInputFiles({
+    name: "voice-pixel.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lxL+0wAAAABJRU5ErkJggg==",
+      "base64"
+    )
+  });
+  await expect(page.locator(".composer-attachment", { hasText: "voice-pixel.png" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Start voice input" }).click();
+  await expect(page.getByRole("button", { name: "Stop voice input" })).toBeVisible();
+  await emitSpeechTranscript(page, "the diff");
+  await expect(composer).toHaveValue("Review the diff");
+  expect(fixture.promptRequests).toHaveLength(0);
+
+  await page.getByRole("button", { name: "Stop voice input" }).click();
+  await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
+  await composer.focus();
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => fixture.promptRequests.length).toBe(1);
+  expect(fixture.promptRequests[0].prompt).toBe("Review the diff");
+  expect(fixture.promptRequests[0].contentBlocks).toHaveLength(1);
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+  await expect(composer).toHaveValue("");
+
+  await composer.fill("Line one\nLine two");
+  await expect(composer).toHaveValue("Line one\nLine two");
+  await composer.dispatchEvent("compositionstart");
+  await page.keyboard.press("Control+Enter");
+  expect(fixture.promptRequests).toHaveLength(1);
+  await composer.dispatchEvent("compositionend");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => fixture.promptRequests.length).toBe(2);
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+  await expect(composer).toHaveValue("");
+
+  await composer.fill("$");
+  await expect(page.locator(".skill-autocomplete")).toBeVisible();
+  await page.locator(".skill-autocomplete-item", { hasText: "$imagegen" }).click();
+  await expect(composer).toHaveValue("$imagegen ");
+
+  await page.getByRole("button", { name: "Prompts" }).click();
+  await page.locator(".prompt-template-item", { hasText: "Review template" }).getByRole("button", { name: "Use" }).click();
+  await expect(composer).toHaveValue("$imagegen\n\nTemplate prompt");
+});
+
+test("keeps text composer usable when voice input is unsupported", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+  await mockUnsupportedSpeechRecognition(page);
+
+  const fixture = await mockComposerSession(page);
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+
+  await expect(page.getByRole("button", { name: /voice input/i })).toHaveCount(0);
+  const composer = page.getByPlaceholder("Ask Codex...");
+  await composer.fill("typed fallback prompt");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => fixture.promptRequests.length).toBe(1);
+  expect(fixture.promptRequests[0].prompt).toBe("typed fallback prompt");
+});
+
+test("shows recoverable voice errors while preserving drafts and queued prompts", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+  await mockSpeechRecognition(page);
+
+  const queuedPrompt: QueuedPrompt = {
+    id: "queued-voice-prompt",
+    sessionId: "voice-session",
+    messageId: "queued-voice-message",
+    prompt: "queued already",
+    status: "queued",
+    position: 1,
+    createdAt: new Date().toISOString()
+  };
+  const fixture = await mockComposerSession(page, {
+    activeTurn: { startedAt: new Date().toISOString(), status: "running" },
+    queuedPrompts: [queuedPrompt],
+    sessionStatus: "running"
+  });
+
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+  const composer = page.getByPlaceholder("Queue a follow-up for Codex...");
+  await composer.fill("keep this draft");
+  await page.getByRole("button", { name: "Start voice input" }).click();
+  await emitSpeechError(page, "not-allowed");
+
+  await expect(page.getByText("Microphone access was denied. Check browser permissions and try again.")).toBeVisible();
+  await expect(composer).toHaveValue("keep this draft");
+  await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Start voice input" }).click();
+  await emitSpeechEnd(page);
+  await expect(page.getByText("Voice input stopped unexpectedly. Try again.")).toBeVisible();
+  await composer.fill("queued voice draft");
+  await page.getByRole("button", { name: "Start voice input" }).click();
+  await emitSpeechTranscript(page, "with transcript");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => fixture.promptRequests.length).toBe(1);
+  expect(fixture.promptRequests[0].prompt).toBe("queued voice draft with transcript");
+});
+
 test("recovers missed mobile session messages on visibility return without refresh", async ({ page }) => {
   await mockConnectedWebSocket(page);
 
@@ -1497,7 +1631,153 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Inspect review evidence/ })).toHaveCount(0);
 });
 
-async function mockConnectedWebSocket(page: import("@playwright/test").Page) {
+type ComposerFixtureOptions = {
+  activeTurn?: SessionDetail["activeTurn"];
+  queuedPrompts?: QueuedPrompt[];
+  sessionStatus?: string;
+  skills?: SkillSummary[];
+  templates?: PromptTemplate[];
+};
+
+async function mockComposerSession(page: Page, options: ComposerFixtureOptions = {}) {
+  const now = new Date().toISOString();
+  const workspace = {
+    id: "voice-workspace",
+    name: "Voice workspace",
+    path: repoRoot,
+    createdAt: now
+  };
+  const session = {
+    id: "voice-session",
+    workspaceId: workspace.id,
+    agentId: "codex",
+    agentName: "Codex",
+    permissionMode: "manual" as const,
+    acpSessionId: "voice-acp-session",
+    externalSessionId: "voice-acp-session",
+    status: options.sessionStatus ?? "idle",
+    createdAt: now,
+    updatedAt: now
+  };
+  const readyStatus = {
+    state: "ready",
+    message: null,
+    promptCapabilities: { image: true, audio: false, embeddedContext: true },
+    sessionCapabilities: { loadSession: true, resumeSession: false, listSessions: true, closeSession: true }
+  };
+  const detail: SessionDetail = {
+    session,
+    workspace,
+    configOptions: [],
+    currentModel: null,
+    messages: [],
+    queuedPrompts: options.queuedPrompts ?? [],
+    activeTurn: options.activeTurn ?? null,
+    reviewArtifacts: [],
+    timeline: [],
+    pendingPermission: null,
+    pendingPermissions: [],
+    pendingApprovalCount: 0,
+    queuedApprovalCount: 0,
+    failureMessage: null,
+    continuity: {
+      state: "live",
+      continuable: true,
+      restorable: false,
+      restoring: false,
+      reason: null,
+      failureMessage: null,
+      restoreStartedAt: null,
+      restoreCompletedAt: null
+    },
+    continuable: true,
+    viewOnlyReason: null
+  };
+  const templates = options.templates ?? [];
+  const promptRequests: Array<{ prompt: string; contentBlocks?: MessageContentBlock[] }> = [];
+
+  await page.route("**/api/auth/status", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+    });
+  });
+  await page.route("**/api/app-state", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        codex: readyStatus,
+        agents: [
+          {
+            id: "codex",
+            title: "Codex",
+            enabled: true,
+            status: readyStatus,
+            permissionModes: [
+              {
+                id: "manual",
+                label: "Manual",
+                description: "Ask before approval-managed actions",
+                riskLevel: "low",
+                status: readyStatus
+              }
+            ]
+          }
+        ],
+        inbox: []
+      })
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([workspace]) });
+  });
+  await page.route(`**/api/workspaces/${workspace.id}/sessions`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify([]) });
+  });
+  await page.route("**/api/skills", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(options.skills ?? []) });
+  });
+  await page.route(`**/api/workspaces/${workspace.id}/agents/${session.agentId}/prompt-templates`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(templates) });
+  });
+  await page.route("**/api/prompt-templates/*/use", async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(templates[0] ?? null) });
+  });
+  await page.route(`**/api/sessions/${session.id}/prompt`, async (route) => {
+    const body = route.request().postDataJSON() as { prompt: string; contentBlocks?: MessageContentBlock[] };
+    promptRequests.push(body);
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        message: {
+          id: `voice-message-${promptRequests.length}`,
+          sessionId: session.id,
+          role: "user",
+          content: body.prompt,
+          contentBlocks: body.contentBlocks,
+          status: "completed",
+          createdAt: new Date().toISOString()
+        },
+        queuedPrompt: null,
+        queuedPrompts: [],
+        activeTurn: null
+      })
+    });
+  });
+  await page.route(`**/api/sessions/${session.id}`, async (route) => {
+    await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
+  });
+
+  return { detail, promptRequests, session, workspace };
+}
+
+async function mockConnectedWebSocket(page: Page) {
   await page.addInitScript(() => {
     class MockSocket extends EventTarget {
       readyState = 1;
@@ -1519,6 +1799,113 @@ async function mockConnectedWebSocket(page: import("@playwright/test").Page) {
     }
 
     window.WebSocket = MockSocket as unknown as typeof WebSocket;
+  });
+}
+
+async function mockSpeechRecognition(page: Page) {
+  await page.addInitScript(() => {
+    type MockResultEvent = {
+      resultIndex: number;
+      results: Array<{ 0: { transcript: string }; isFinal: boolean; length: number }>;
+    };
+    type MockErrorEvent = {
+      error: string;
+      message?: string;
+    };
+    type MockRecognition = {
+      onstart: ((event: Event) => void) | null;
+      onresult: ((event: MockResultEvent) => void) | null;
+      onend: ((event: Event) => void) | null;
+      onerror: ((event: MockErrorEvent) => void) | null;
+    };
+    type VoiceWindow = Window &
+      typeof globalThis & {
+        __mockSpeechRecognitions?: MockRecognition[];
+        __emitSpeechEnd?: () => void;
+        __emitSpeechError?: (error: string) => void;
+        __emitSpeechTranscript?: (transcript: string) => void;
+      };
+    const voiceWindow = window as VoiceWindow;
+
+    function latestRecognition() {
+      const recognition = voiceWindow.__mockSpeechRecognitions?.at(-1);
+      if (!recognition) {
+        throw new Error("No speech recognition instance was started");
+      }
+      return recognition;
+    }
+
+    class MockSpeechRecognition {
+      continuous = false;
+      interimResults = false;
+      maxAlternatives = 1;
+      onstart: ((event: Event) => void) | null = null;
+      onresult: ((event: MockResultEvent) => void) | null = null;
+      onend: ((event: Event) => void) | null = null;
+      onerror: ((event: MockErrorEvent) => void) | null = null;
+
+      constructor() {
+        voiceWindow.__mockSpeechRecognitions = voiceWindow.__mockSpeechRecognitions ?? [];
+        voiceWindow.__mockSpeechRecognitions.push(this);
+      }
+
+      start() {
+        this.onstart?.(new Event("start"));
+      }
+
+      stop() {
+        this.onend?.(new Event("end"));
+      }
+
+      abort() {
+        this.onend?.(new Event("end"));
+      }
+    }
+
+    voiceWindow.__emitSpeechTranscript = (transcript: string) => {
+      latestRecognition().onresult?.({
+        resultIndex: 0,
+        results: [{ 0: { transcript }, isFinal: true, length: 1 }]
+      });
+    };
+    voiceWindow.__emitSpeechError = (error: string) => {
+      latestRecognition().onerror?.({ error });
+      latestRecognition().onend?.(new Event("end"));
+    };
+    voiceWindow.__emitSpeechEnd = () => {
+      latestRecognition().onend?.(new Event("end"));
+    };
+
+    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: MockSpeechRecognition });
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: MockSpeechRecognition });
+  });
+}
+
+async function mockUnsupportedSpeechRecognition(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: undefined });
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: undefined });
+  });
+}
+
+async function emitSpeechTranscript(page: Page, transcript: string) {
+  await page.evaluate((value) => {
+    const voiceWindow = window as typeof window & { __emitSpeechTranscript?: (transcript: string) => void };
+    voiceWindow.__emitSpeechTranscript?.(value);
+  }, transcript);
+}
+
+async function emitSpeechError(page: Page, error: string) {
+  await page.evaluate((value) => {
+    const voiceWindow = window as typeof window & { __emitSpeechError?: (error: string) => void };
+    voiceWindow.__emitSpeechError?.(value);
+  }, error);
+}
+
+async function emitSpeechEnd(page: Page) {
+  await page.evaluate(() => {
+    const voiceWindow = window as typeof window & { __emitSpeechEnd?: () => void };
+    voiceWindow.__emitSpeechEnd?.();
   });
 }
 
@@ -1754,6 +2141,46 @@ async function expectRedesignedSessionLayout(page: import("@playwright/test").Pa
     expect(metrics.topbar).not.toBeNull();
     expect(metrics.topbar!.bottom).toBeLessThanOrEqual(metrics.toolbar!.top + 1);
   }
+}
+
+async function expectVoiceControlLayout(page: Page, viewport: "desktop" | "mobile") {
+  await expectPageFitsViewport(page);
+  const metrics = await page.evaluate(() => {
+    const composer = document.querySelector<HTMLElement>(".composer-wrap");
+    const actions = document.querySelector<HTMLElement>(".composer-actions");
+    const textarea = document.querySelector<HTMLElement>(".composer textarea");
+    const voice = document.querySelector<HTMLElement>(".voice-control");
+    const bounds = (element: HTMLElement | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width
+      };
+    };
+
+    return {
+      actions: bounds(actions),
+      composer: bounds(composer),
+      textarea: bounds(textarea),
+      voice: bounds(voice),
+      overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth
+    };
+  });
+
+  expect(metrics.composer).not.toBeNull();
+  expect(metrics.actions).not.toBeNull();
+  expect(metrics.textarea).not.toBeNull();
+  expect(metrics.voice).not.toBeNull();
+  expect(metrics.overflow).toBeLessThanOrEqual(1);
+  expect(metrics.composer!.height).toBeLessThanOrEqual(viewport === "desktop" ? 140 : 180);
+  expect(metrics.actions!.top).toBeGreaterThanOrEqual(metrics.textarea!.bottom - 1);
+  expect(metrics.voice!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.voice!.right).toBeLessThanOrEqual((await page.viewportSize())!.width + 1);
 }
 
 async function expectOverlayPrimaryControlsReachable(dialog: import("@playwright/test").Locator) {
