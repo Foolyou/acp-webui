@@ -37,6 +37,45 @@ func TestCodexACPArgsForPermissionModes(t *testing.T) {
 	}
 }
 
+func TestCodexACPArgsForLaunchProfileUsesLowReasoningForFastMode(t *testing.T) {
+	args, err := codexACPArgsForLaunchProfile([]string{"base"}, map[string]string{
+		"response_mode": "fast",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"base", "-c", "model_reasoning_effort=\"low\""}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("fast mode args = %#v, want %#v", args, want)
+	}
+}
+
+func TestCodexACPArgsForLaunchProfileMapsLegacyMinimalReasoningToLow(t *testing.T) {
+	args, err := codexACPArgsForLaunchProfile(nil, map[string]string{
+		"reasoning_effort": "minimal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-c", "model_reasoning_effort=\"low\""}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("legacy minimal args = %#v, want %#v", args, want)
+	}
+}
+
+func TestCodexLaunchControlsHideMinimalReasoning(t *testing.T) {
+	for _, control := range codexLaunchControls() {
+		if control.ID != "reasoning_effort" {
+			continue
+		}
+		if controlValueExists(control, "minimal") {
+			t.Fatal("minimal reasoning should not be exposed as a launch control")
+		}
+		return
+	}
+	t.Fatal("reasoning_effort launch control not found")
+}
+
 func TestResolveLaunchProfileValidatesControls(t *testing.T) {
 	agent := codexAgentConfig("codex-acp", nil, true)
 	profile, err := agent.resolveLaunchProfile(permissionYolo, map[string]string{

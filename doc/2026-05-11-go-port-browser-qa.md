@@ -19,6 +19,7 @@ Date: 2026-05-11
 | ID | Status | Area | Finding | Fix | Verification |
 | --- | --- | --- | --- | --- | --- |
 | QA-001 | Fixed | Real ACP session start | Real `codex-acp` rejected Go-port `session/new` with `Invalid params` because the Go request omitted the ACP `mcpServers` field and did not advertise the same client capabilities as the Rust runtime. | Added ACP initialize capability metadata, session `mcpServers` for new/load flows, and client handlers for `fs/read_text_file` and `display_image`. | `ACP_WEBUI_REAL_CODEX_E2E=1 npm run e2e:real-codex` passed with a real Codex session, real reply, refresh restore, and session-list navigation. |
+| QA-002 | Fixed | Real ACP turn submission | A newly created fast-mode Codex session could fail on first prompt with `internal error` because real `codex-acp` rejected `reasoning.effort=minimal` when `image_gen` and `web_search` tools were available. | Mapped fast mode and legacy `minimal` launch profiles to `model_reasoning_effort="low"` and removed `Minimal` from new-session launch controls. | Added Go coverage for fast-mode and legacy-minimal argument generation, then updated and re-ran real `codex-acp` e2e against `Response mode = Fast`. |
 
 ## Final Verification
 

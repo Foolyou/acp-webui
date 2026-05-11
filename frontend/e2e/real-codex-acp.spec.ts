@@ -79,6 +79,8 @@ test.describe("real codex-acp browser flow", () => {
     await expect(agentChoice(page, "Codex")).toBeVisible({ timeout: 60_000 });
     await agentChoice(page, "Codex").click();
     await permissionModeSelect(page).selectOption({ label: "Manual" });
+    await expect(page.locator(".agent-create-detail").getByLabel("Reasoning").locator("option", { hasText: "Minimal" })).toHaveCount(0);
+    await page.locator(".agent-create-detail").getByLabel("Response mode").selectOption("fast");
     await page.getByRole("button", { name: "Create session" }).click();
 
     const prompt = page.getByPlaceholder("Ask Codex...");

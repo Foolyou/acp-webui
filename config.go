@@ -324,11 +324,14 @@ func codexACPArgsForLaunchProfile(baseArgs []string, values map[string]string) (
 		return nil, err
 	}
 	reasoning := values["reasoning_effort"]
+	if reasoning == "minimal" {
+		reasoning = "low"
+	}
+	if values["response_mode"] == "fast" && reasoning != "low" {
+		reasoning = "low"
+	}
 	if reasoning != "" && reasoning != "default" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=\"%s\"", reasoning))
-	}
-	if values["response_mode"] == "fast" && reasoning != "minimal" && reasoning != "low" {
-		args = append(args, "-c", "model_reasoning_effort=\"minimal\"")
 	}
 	return args, nil
 }
@@ -346,7 +349,6 @@ func codexLaunchControls() []AgentControl {
 			DefaultValue: "default",
 			Options: []AgentControlValue{
 				controlValue("default", "Provider default", "", ""),
-				controlValue("minimal", "Minimal", "", ""),
 				controlValue("low", "Low", "", ""),
 				controlValue("medium", "Medium", "", ""),
 				controlValue("high", "High", "", ""),
@@ -362,7 +364,7 @@ func codexLaunchControls() []AgentControl {
 			DefaultValue: "standard",
 			Options: []AgentControlValue{
 				controlValue("standard", "Standard", "", ""),
-				controlValue("fast", "Fast", "Uses minimal reasoning unless explicitly overridden", ""),
+				controlValue("fast", "Fast", "Uses low reasoning for lower latency", ""),
 			},
 		},
 	}
