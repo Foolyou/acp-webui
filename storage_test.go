@@ -184,6 +184,227 @@ func TestStorageImportsNativeSessionProjection(t *testing.T) {
 	}
 }
 
+func TestStorageReimportPreservesLocalActivity(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testLaunchProfile()
+	initialNativeUpdated := "2026-05-14T12:00:00Z"
+	imported, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-activity",
+		Title:             stringPtr("Original"),
+		NativeUpdatedAt:   &initialNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalUpdatedAt := imported.UpdatedAt
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d", len(items))
+	}
+	originalLastActivityAt := items[0].LastActivityAt
+
+	laterNativeUpdated := "2026-05-15T12:00:00Z"
+	updatedTitle := "Updated native title"
+	reimported, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-activity",
+		Title:             &updatedTitle,
+		NativeUpdatedAt:   &laterNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimported.UpdatedAt != originalUpdatedAt {
+		t.Fatalf("updated_at changed on reimport: %s != %s", reimported.UpdatedAt, originalUpdatedAt)
+	}
+	if reimported.NativeUpdatedAt == nil || *reimported.NativeUpdatedAt != laterNativeUpdated {
+		t.Fatalf("native_updated_at = %#v, want %s", reimported.NativeUpdatedAt, laterNativeUpdated)
+	}
+	if reimported.Title == nil || *reimported.Title != updatedTitle {
+		t.Fatalf("title = %#v, want %s", reimported.Title, updatedTitle)
+	}
+	items, err = storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].LastActivityAt != originalLastActivityAt {
+		t.Fatalf("last activity changed on reimport: %#v, want %s", items, originalLastActivityAt)
+	}
+}
+
+func TestStorageImportsSameExternalIDForDifferentAgents(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "shared-external",
+		PermissionMode:    permissionManual,
+		LaunchProfile:     testLaunchProfile(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           claudeAgentID,
+		AgentName:         "Claude",
+		ExternalSessionID: "shared-external",
+		PermissionMode:    permissionManual,
+		LaunchProfile:     testLaunchProfile(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("same external id across agents reused row %s", first.ID)
+	}
+}
+
+func TestStorageNativeImportDuplicateRetryIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedID := "seed-native"
+	_, err = storage.db.ExecContext(ctx, `
+		INSERT INTO sessions(
+			id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at,
+			external_session_id, continuation_state, agent_id, permission_mode,
+			launch_profile_id, launch_profile_key, launch_control_summary_json,
+			title, native_title, native_updated_at, import_source, imported_at
+		)
+		VALUES (?, ?, 'Codex', NULL, 'idle', '2026-05-13T12:00:00Z', '2026-05-13T12:00:00Z',
+			'duplicate-retry', 'view_only', 'codex', 'manual', 'manual', 'permission=manual',
+			'[]', 'Original', 'Original', '2026-05-13T12:00:00Z', 'acp_session_list', '2026-05-13T12:00:00Z')`,
+		seedID, workspace.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updatedTitle := "After duplicate retry"
+	reimported, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "duplicate-retry",
+		Title:             &updatedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     testLaunchProfile(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimported.ID != seedID {
+		t.Fatalf("duplicate retry returned row %s, want %s", reimported.ID, seedID)
+	}
+	if reimported.Title == nil || *reimported.Title != updatedTitle {
+		t.Fatalf("title = %#v, want %s", reimported.Title, updatedTitle)
+	}
+}
+
+func TestStorageConcurrentNativeImportsAreIdempotent(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type importResult struct {
+		session Session
+		err     error
+	}
+	const attempts = 8
+	ready := make(chan struct{}, attempts)
+	start := make(chan struct{})
+	results := make(chan importResult, attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			session, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+				WorkspaceID:       workspace.ID,
+				AgentID:           codexAgentID,
+				AgentName:         "Codex",
+				ExternalSessionID: "parallel-import",
+				Title:             stringPtr("Parallel import"),
+				PermissionMode:    permissionManual,
+				LaunchProfile:     testLaunchProfile(),
+			})
+			results <- importResult{session: session, err: err}
+		}()
+	}
+	for i := 0; i < attempts; i++ {
+		<-ready
+	}
+	close(start)
+
+	var importedID string
+	for i := 0; i < attempts; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if importedID == "" {
+			importedID = result.session.ID
+			continue
+		}
+		if result.session.ID != importedID {
+			t.Fatalf("parallel import returned %s, want %s", result.session.ID, importedID)
+		}
+	}
+	var count int
+	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND external_session_id = ?`, codexAgentID, "parallel-import").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("parallel import row count = %d, want 1", count)
+	}
+}
+
+func testLaunchProfile() ResolvedAgentLaunchProfile {
+	return ResolvedAgentLaunchProfile{
+		ID:             permissionManual,
+		Key:            "permission=manual",
+		PermissionMode: permissionManual,
+		Summary: []AgentControlSelection{{
+			ID:         "permission",
+			Label:      "Permission",
+			Value:      permissionManual,
+			ValueLabel: "Manual",
+			Category:   "permission",
+			Scope:      "launch",
+			RiskLevel:  stringPtr("low"),
+		}},
+	}
+}
+
 func TestStorageStartupExpiresPendingPermissionsAndFailsSessions(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

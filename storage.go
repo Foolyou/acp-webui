@@ -384,36 +384,6 @@ func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionIm
 		importSource = importSourceACPSessionList
 	}
 	now := nowString()
-
-	var existingID string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id
-		FROM sessions
-		WHERE agent_id = ? AND external_session_id = ?
-		LIMIT 1`,
-		input.AgentID, input.ExternalSessionID,
-	).Scan(&existingID)
-	if err == nil {
-		_, err = s.db.ExecContext(ctx, `
-			UPDATE sessions
-			SET title = COALESCE(?, title),
-			    native_title = COALESCE(?, native_title),
-			    native_updated_at = COALESCE(?, native_updated_at),
-			    import_source = ?,
-			    imported_at = ?,
-			    updated_at = ?
-			WHERE id = ?`,
-			input.Title, nativeTitle, input.NativeUpdatedAt, importSource, now, now, existingID,
-		)
-		if err != nil {
-			return Session{}, err
-		}
-		return s.GetSession(ctx, existingID)
-	}
-	if err != sql.ErrNoRows {
-		return Session{}, err
-	}
-
 	permissionMode := strings.TrimSpace(input.PermissionMode)
 	if permissionMode == "" {
 		permissionMode = input.LaunchProfile.PermissionMode
@@ -431,7 +401,7 @@ func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionIm
 	}
 
 	id := uuid.NewString()
-	_, err = s.db.ExecContext(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO sessions(
 			id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at,
 			external_session_id, continuation_state, agent_id, config_options_json,
@@ -439,12 +409,21 @@ func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionIm
 			launch_profile_id, launch_profile_key, launch_control_summary_json,
 			title, native_title, native_updated_at, import_source, imported_at
 		)
-		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id, external_session_id)
+			WHERE external_session_id IS NOT NULL AND external_session_id <> ''
+		DO UPDATE SET
+			title = COALESCE(excluded.title, sessions.title),
+			native_title = COALESCE(excluded.native_title, sessions.native_title),
+			native_updated_at = COALESCE(excluded.native_updated_at, sessions.native_updated_at),
+			import_source = excluded.import_source,
+			imported_at = excluded.imported_at
+		RETURNING id`,
 		id, input.WorkspaceID, input.AgentName, statusIdle, now, now,
 		input.ExternalSessionID, continuityViewOnly, input.AgentID, permissionMode,
 		launchProfileID, launchProfileKey, mustJSON(input.LaunchProfile.Summary),
 		input.Title, nativeTitle, input.NativeUpdatedAt, importSource, now,
-	)
+	).Scan(&id)
 	if err != nil {
 		return Session{}, err
 	}
