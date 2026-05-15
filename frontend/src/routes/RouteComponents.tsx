@@ -95,7 +95,7 @@ export function WorkspaceAgentSessionsRoute() {
 
   useEffect(() => {
     setCurrentWorkspaceAgent(workspaceId, agentId);
-    void loadSessionList(workspaceId);
+    void loadSessionList(workspaceId, agentId);
   }, [agentId, loadSessionList, setCurrentWorkspaceAgent, workspaceId]);
 
   return (
@@ -191,24 +191,47 @@ export function SessionDetailRoute() {
 
 export function WorkspaceAgentSessionDetailRoute() {
   const { agentId, sessionId, workspaceId } = workspaceAgentSessionDetailRoute.useParams();
+  const navigate = useNavigate();
   const { actions, state } = useAppContext();
   const { loadSession, setCurrentWorkspaceAgent } = actions;
 
   useEffect(() => {
-    setCurrentWorkspaceAgent(workspaceId, agentId);
     if (state.currentSession?.session.id !== sessionId) {
       void loadSession(sessionId);
+      return;
     }
+    const actualWorkspaceId = state.currentSession.workspace.id;
+    const actualAgentId = state.currentSession.session.agentId;
+    if (actualWorkspaceId !== workspaceId || actualAgentId !== agentId) {
+      setCurrentWorkspaceAgent(actualWorkspaceId, actualAgentId);
+      void navigate({
+        to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+        params: {
+          workspaceId: actualWorkspaceId,
+          agentId: actualAgentId,
+          sessionId
+        },
+        replace: true
+      });
+      return;
+    }
+    setCurrentWorkspaceAgent(workspaceId, agentId);
   }, [
     agentId,
     loadSession,
+    navigate,
     sessionId,
     setCurrentWorkspaceAgent,
+    state.currentSession?.session.agentId,
     state.currentSession?.session.id,
+    state.currentSession?.workspace.id,
     workspaceId
   ]);
 
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
+    return <LoadingPanel text="Loading session" />;
+  }
+  if (state.currentSession.workspace.id !== workspaceId || state.currentSession.session.agentId !== agentId) {
     return <LoadingPanel text="Loading session" />;
   }
   const agentStatus =

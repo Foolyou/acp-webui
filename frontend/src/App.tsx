@@ -391,10 +391,15 @@ export function App() {
   );
 
   const loadSessionList = useCallback(
-    async (workspaceId?: string | null) => {
+    async (workspaceId?: string | null, agentId?: string | null) => {
       setState((current) => ({ ...current, sessionsLoading: true, error: null }));
       try {
-        const sessions = workspaceId ? await api.workspaceSessions(workspaceId) : await api.sessions();
+        const sessions =
+          workspaceId && agentId
+            ? await api.workspaceAgentSessions(workspaceId, agentId)
+            : workspaceId
+              ? await api.workspaceSessions(workspaceId)
+              : await api.sessions();
         setState((current) => ({ ...current, sessions, sessionsLoading: false }));
       } catch (error) {
         if (isUnauthorized(error)) {

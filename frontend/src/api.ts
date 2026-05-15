@@ -83,6 +83,10 @@ export const api = {
   skills: () => request<SkillSummary[]>("/api/skills"),
   sessions: () => request<SessionListItem[]>("/api/sessions"),
   workspaceSessions: (workspaceId: string) => request<SessionListItem[]>(`/api/workspaces/${workspaceId}/sessions`),
+  workspaceAgentSessions: (workspaceId: string, agentId: string) =>
+    request<SessionListItem[]>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/sessions`
+    ),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),
   promptTemplates: (workspaceId: string, agentId: string) =>
     request<PromptTemplate[]>(
