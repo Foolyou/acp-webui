@@ -179,6 +179,51 @@ func (m *AgentRuntimeManager) runtimeForSession(session Session, start bool) (*A
 	return m.runtimeForLaunchProfile(session.AgentID, profile, start)
 }
 
+func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, workspace Workspace, agentID string, profile ResolvedAgentLaunchProfile) ([]SessionListItem, error) {
+	resolvedAgentID, err := m.resolveAgentID(agentID)
+	if err != nil {
+		return nil, err
+	}
+	agent := m.configs[resolvedAgentID]
+	if strings.TrimSpace(profile.Key) == "" {
+		permissionMode := profile.PermissionMode
+		if strings.TrimSpace(permissionMode) == "" {
+			permissionMode = permissionManual
+		}
+		profile, err = m.resolveLaunchProfile(resolvedAgentID, permissionMode, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	runtime, runtimeErr := m.runtimeForLaunchProfile(resolvedAgentID, profile, true)
+	workspaceCWD := nativePathString(workspace.Path)
+	if runtimeErr == nil && runtime.supportsSessionList() {
+		if sessions, err := runtime.ListSessions(ctx, workspaceCWD); err == nil {
+			for _, item := range sessions {
+				if !nativeSessionMatchesWorkspace(item, workspaceCWD) {
+					continue
+				}
+				if _, err := m.storage.ImportNativeSession(ctx, NativeSessionImport{
+					WorkspaceID:       workspace.ID,
+					AgentID:           resolvedAgentID,
+					AgentName:         agent.Title,
+					ExternalSessionID: item.SessionID,
+					Title:             item.Title,
+					NativeTitle:       item.Title,
+					NativeUpdatedAt:   item.UpdatedAt,
+					PermissionMode:    profile.PermissionMode,
+					LaunchProfile:     profile,
+					ImportSource:      importSourceACPSessionList,
+				}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return m.storage.ListSessionItemsForAgent(ctx, workspace.ID, resolvedAgentID)
+}
+
 func (m *AgentRuntimeManager) statuses() []AgentRuntimeStatus {
 	items := make([]AgentRuntimeStatus, 0, len(m.configs))
 	for _, agentID := range []string{codexAgentID, claudeAgentID, opencodeAgentID} {
@@ -318,6 +363,12 @@ func (r *AgentRuntime) status() ConnectionStatus {
 	return r.statusValue
 }
 
+func (r *AgentRuntime) supportsSessionList() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessionCaps.ListSessions
+}
+
 func (r *AgentRuntime) setStatus(status ConnectionStatus) {
 	r.mu.Lock()
 	r.statusValue = status
@@ -417,6 +468,10 @@ func acpCapabilityAdvertised(value any) bool {
 	default:
 		return true
 	}
+}
+
+func nativeSessionMatchesWorkspace(item ACPSessionListItem, workspaceCWD string) bool {
+	return strings.TrimSpace(item.SessionID) != "" && strings.TrimSpace(item.CWD) != "" && item.CWD == workspaceCWD
 }
 
 func (r *AgentRuntime) request(ctx context.Context, method string, params any, target any) error {

@@ -412,6 +412,200 @@ func TestAgentRuntimeListSessionsStopsAfterMaxPages(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsImportsNativeList(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	nativeCWD := nativePathString(workspace.Path)
+	title := "Native session"
+	updatedAt := "2026-05-15T01:02:03Z"
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-1",
+			CWD:       nativeCWD,
+			Title:     &title,
+			UpdatedAt: &updatedAt,
+		}},
+	})
+
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 1 {
+		t.Fatalf("items = %#v, want 1 item", result.items)
+	}
+	session := result.items[0].Session
+	if session.AgentID != codexAgentID || session.WorkspaceID != workspace.ID {
+		t.Fatalf("session scope = %#v", session)
+	}
+	if session.ExternalSessionID == nil || *session.ExternalSessionID != "external-1" {
+		t.Fatalf("external session id = %#v", session.ExternalSessionID)
+	}
+	if session.Title == nil || *session.Title != title {
+		t.Fatalf("title = %#v, want %q", session.Title, title)
+	}
+	if session.NativeTitle == nil || *session.NativeTitle != title {
+		t.Fatalf("native title = %#v, want %q", session.NativeTitle, title)
+	}
+	if session.NativeUpdatedAt == nil || *session.NativeUpdatedAt != updatedAt {
+		t.Fatalf("native updated at = %#v, want %q", session.NativeUpdatedAt, updatedAt)
+	}
+	if session.ImportSource != importSourceACPSessionList {
+		t.Fatalf("import source = %q", session.ImportSource)
+	}
+	if session.PermissionMode != permissionManual || session.LaunchProfileKey != profile.Key {
+		t.Fatalf("launch metadata = %#v, profile = %#v", session, profile)
+	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsSkipsUnsupportedNativeList(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	persistedTitle := "Persisted native session"
+	if _, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "persisted-1",
+		Title:             &persistedTitle,
+		NativeTitle:       &persistedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, false)
+	writer := &countingWriteCloser{}
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+
+	items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want persisted item", items)
+	}
+	if items[0].Session.ExternalSessionID == nil || *items[0].Session.ExternalSessionID != "persisted-1" {
+		t.Fatalf("items = %#v", items)
+	}
+	if writer.writes != 0 {
+		t.Fatalf("ACP writes = %d, want 0", writer.writes)
+	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsIgnoresOtherCWD(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	otherCWD := nativePathString(t.TempDir())
+	respondToSessionListRequest(t, decoder, runtime, nativePathString(workspace.Path), nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-other",
+			CWD:       otherCWD,
+		}},
+	})
+
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 0 {
+		t.Fatalf("items = %#v, want no imported sessions", result.items)
+	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsReturnsPersistedRowsOnStartupFailure(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "missing-acp-runtime-for-sync-test")
+	persistedTitle := "Persisted after failure"
+	if _, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "persisted-after-failure",
+		Title:             &persistedTitle,
+		NativeTitle:       &persistedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want persisted item", items)
+	}
+	status := manager.statusForMode(manager.configs[codexAgentID], permissionManual)
+	if status.State != "failed" {
+		t.Fatalf("runtime status = %#v, want failed", status)
+	}
+}
+
 func TestACPSessionListWireModels(t *testing.T) {
 	paramsCursor := "cursor-1"
 	paramsData, err := json.Marshal(ACPSessionListParams{CWD: "/workspace", Cursor: &paramsCursor})
@@ -463,6 +657,11 @@ type sessionListCallResult struct {
 	err      error
 }
 
+type managerSyncResult struct {
+	items []SessionListItem
+	err   error
+}
+
 type sessionListRequestDecodeResult struct {
 	request sessionListRequest
 	err     error
@@ -485,6 +684,17 @@ func receiveSessionListResult(t *testing.T, ch <-chan sessionListCallResult) ses
 		t.Fatalf("timed out waiting for ListSessions result")
 	}
 	return sessionListCallResult{}
+}
+
+func receiveManagerSyncResult(t *testing.T, ch <-chan managerSyncResult) managerSyncResult {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(sessionListTestTimeout):
+		t.Fatalf("timed out waiting for SyncWorkspaceAgentSessions result")
+	}
+	return managerSyncResult{}
 }
 
 func decodeSessionListRequest(t *testing.T, decoder *json.Decoder) sessionListRequest {
@@ -548,6 +758,26 @@ func (w *countingWriteCloser) Write(p []byte) (int, error) {
 
 func (w *countingWriteCloser) Close() error {
 	return nil
+}
+
+func testSessionSyncManager(t *testing.T, storage *Storage, command string) (*AgentRuntimeManager, ResolvedAgentLaunchProfile) {
+	t.Helper()
+	agent := codexAgentConfig(command, nil, true)
+	profile, err := agent.resolveLaunchProfile(permissionManual, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &AgentRuntimeManager{
+		configs:  map[string]AgentConfig{codexAgentID: agent},
+		storage:  storage,
+		events:   newEventHub(),
+		runtimes: map[string]*AgentRuntime{},
+	}
+	return manager, profile
+}
+
+func installManagerRuntime(manager *AgentRuntimeManager, agentID string, profile ResolvedAgentLaunchProfile, runtime *AgentRuntime) {
+	manager.runtimes[agentID+"\x00"+profile.Key] = runtime
 }
 
 func testRuntimeSession(t *testing.T) (*Storage, Session) {
