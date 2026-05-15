@@ -5,6 +5,7 @@ import type { SessionDetail } from "../types";
 
 const mocks = vi.hoisted(() => ({
   appContext: null as AppRouterContext | null,
+  loadingPanel: vi.fn(),
   navigate: vi.fn(),
   params: {
     workspaceAgentSessions: { workspaceId: "workspace-route", agentId: "agent-route" },
@@ -13,7 +14,8 @@ const mocks = vi.hoisted(() => ({
       agentId: "agent-route",
       sessionId: "session-route"
     }
-  }
+  },
+  sessionPane: vi.fn()
 }));
 
 function createStorage(): Storage {
@@ -60,7 +62,7 @@ vi.mock("../features/sessions/SessionsPane", () => ({
 }));
 
 vi.mock("../features/sessions/SessionPane", () => ({
-  SessionPane: () => null
+  SessionPane: mocks.sessionPane
 }));
 
 vi.mock("../features/sessions/CreatingSessionPane", () => ({
@@ -84,7 +86,7 @@ vi.mock("../features/workspaces/WorkspaceList", () => ({
 }));
 
 vi.mock("../components/common", () => ({
-  LoadingPanel: () => null,
+  LoadingPanel: mocks.loadingPanel,
   PageHeader: () => null
 }));
 
@@ -204,7 +206,9 @@ describe("workspace-agent route components", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", createStorage());
     localStorage.clear();
+    mocks.loadingPanel.mockReset();
     mocks.navigate.mockReset();
+    mocks.sessionPane.mockReset();
     mocks.params.workspaceAgentSessions = { workspaceId: "workspace-route", agentId: "agent-route" };
     mocks.params.workspaceAgentSessionDetail = {
       workspaceId: "workspace-route",
@@ -268,7 +272,7 @@ describe("workspace-agent route components", () => {
     });
     const { SessionDetailRoute } = await import("./RouteComponents");
 
-    SessionDetailRoute();
+    const result = SessionDetailRoute();
 
     expect(context.actions.setCurrentWorkspaceAgent).toHaveBeenCalledWith("workspace-actual", "agent-actual");
     expect(mocks.navigate).toHaveBeenCalledWith({
@@ -280,6 +284,11 @@ describe("workspace-agent route components", () => {
       },
       replace: true
     });
+    expect(result).toMatchObject({
+      type: mocks.loadingPanel,
+      props: { text: "Loading session" }
+    });
+    expect(mocks.sessionPane).not.toHaveBeenCalled();
   });
 
   test("loads canonical session list with workspace and agent route params", async () => {

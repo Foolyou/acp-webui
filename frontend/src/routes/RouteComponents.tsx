@@ -220,23 +220,7 @@ export function SessionDetailRoute() {
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
     return <LoadingPanel text="Loading session" />;
   }
-  const agentStatus =
-    state.agents.find((agent) => agent.id === state.currentSession?.session.agentId) ?? null;
-
-  return (
-    <SessionPane
-      agentStatus={agentStatus}
-      busy={state.busy}
-      currentSession={state.currentSession}
-      liveAssistant={state.liveAssistant}
-      onOpenDiffFallback={actions.openDiffFallback}
-      onOpenReviewArtifact={actions.openReviewArtifact}
-      onRestoreSession={actions.restoreSession}
-      onSendPrompt={actions.sendPrompt}
-      onSetSessionConfigOption={actions.setSessionConfigOption}
-      onStopSession={actions.cancelApproval}
-    />
-  );
+  return <LoadingPanel text="Loading session" />;
 }
 
 export function WorkspaceAgentSessionDetailRoute() {
