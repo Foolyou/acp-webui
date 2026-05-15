@@ -10,7 +10,12 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
-import { shouldRefreshScopedSessionList } from "./app/scopedSessionListRefresh";
+import {
+  beginScopedSessionListRefresh,
+  canApplyScopedSessionListRefresh,
+  createScopedSessionListRefreshState,
+  syncScopedSessionListRefreshScope
+} from "./app/scopedSessionListRefresh";
 import {
   createRestoredSessionDetailRouteTarget,
   createSessionCreatingRouteTarget,
@@ -179,20 +184,20 @@ export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const currentSessionIdRef = useRef<string | null>(null);
-  const currentScopeRef = useRef({
+  const scopedRefreshRef = useRef(createScopedSessionListRefreshState({
     currentWorkspaceId: initialState.currentWorkspaceId,
     currentAgentId: initialState.currentAgentId
-  });
+  }));
 
   useEffect(() => {
     currentSessionIdRef.current = state.currentSession?.session.id ?? null;
   }, [state.currentSession?.session.id]);
 
   useEffect(() => {
-    currentScopeRef.current = {
+    scopedRefreshRef.current = syncScopedSessionListRefreshScope(scopedRefreshRef.current, {
       currentWorkspaceId: state.currentWorkspaceId,
       currentAgentId: state.currentAgentId
-    };
+    });
   }, [state.currentWorkspaceId, state.currentAgentId]);
 
   const markUnauthorized = useCallback(async () => {
@@ -293,13 +298,16 @@ export function App() {
     }
 
     async function refreshScopedSessionList(message: Extract<RealtimeEvent, { type: "session_list_changed" }>) {
-      if (!shouldRefreshScopedSessionList(message, currentScopeRef.current)) {
+      const started = beginScopedSessionListRefresh(scopedRefreshRef.current, message);
+      scopedRefreshRef.current = started.state;
+      if (!started.token) {
         return;
       }
+      const refreshToken = started.token;
       try {
         const sessions = await api.workspaceAgentSessions(message.workspaceId, message.agentId);
         setState((current) =>
-          shouldRefreshScopedSessionList(message, {
+          canApplyScopedSessionListRefresh(refreshToken, scopedRefreshRef.current, {
             currentWorkspaceId: current.currentWorkspaceId,
             currentAgentId: current.currentAgentId
           })
@@ -312,7 +320,7 @@ export function App() {
           return;
         }
         setState((current) =>
-          shouldRefreshScopedSessionList(message, {
+          canApplyScopedSessionListRefresh(refreshToken, scopedRefreshRef.current, {
             currentWorkspaceId: current.currentWorkspaceId,
             currentAgentId: current.currentAgentId
           })

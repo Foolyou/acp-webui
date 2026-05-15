@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import type { RealtimeEvent } from "../types";
-import { shouldRefreshScopedSessionList } from "./scopedSessionListRefresh";
+import {
+  beginScopedSessionListRefresh,
+  canApplyScopedSessionListRefresh,
+  createScopedSessionListRefreshState,
+  shouldRefreshScopedSessionList,
+  syncScopedSessionListRefreshScope
+} from "./scopedSessionListRefresh";
 
 const event: RealtimeEvent = {
   type: "session_list_changed",
@@ -47,5 +53,45 @@ describe("shouldRefreshScopedSessionList", () => {
         }
       )
     ).toBe(false);
+  });
+});
+
+describe("scoped session list refresh generation", () => {
+  test("allows only the latest matching refresh request to apply", () => {
+    let state = createScopedSessionListRefreshState({
+      currentWorkspaceId: "workspace-1",
+      currentAgentId: "agent-1"
+    });
+
+    const first = beginScopedSessionListRefresh(state, event);
+    state = first.state;
+    const second = beginScopedSessionListRefresh(state, event);
+    state = second.state;
+
+    expect(first.token).not.toBeNull();
+    expect(second.token).not.toBeNull();
+    expect(canApplyScopedSessionListRefresh(first.token!, state, state.scope)).toBe(false);
+    expect(canApplyScopedSessionListRefresh(second.token!, state, state.scope)).toBe(true);
+  });
+
+  test("rejects a matching refresh after leaving and returning to the same scope", () => {
+    let state = createScopedSessionListRefreshState({
+      currentWorkspaceId: "workspace-1",
+      currentAgentId: "agent-1"
+    });
+    const pending = beginScopedSessionListRefresh(state, event);
+    state = pending.state;
+
+    state = syncScopedSessionListRefreshScope(state, {
+      currentWorkspaceId: "workspace-1",
+      currentAgentId: "agent-2"
+    });
+    state = syncScopedSessionListRefreshScope(state, {
+      currentWorkspaceId: "workspace-1",
+      currentAgentId: "agent-1"
+    });
+
+    expect(pending.token).not.toBeNull();
+    expect(canApplyScopedSessionListRefresh(pending.token!, state, state.scope)).toBe(false);
   });
 });
