@@ -16,7 +16,7 @@
 
 - [x] 3.1 Add `GET /api/workspaces/{workspaceId}/agents/{agentId}/sessions` with runtime sync and workspace-agent filtering.
 - [x] 3.2 Update session creation and response helpers so new sessions and imported sessions preserve selected workspace-agent route context.
-- [ ] 3.3 Preserve or delegate legacy workspace-scoped session list behavior for old clients during migration.
+- [x] 3.3 Preserve or delegate legacy workspace-scoped session list behavior for old clients during migration.
 - [ ] 3.4 Emit a scoped list-refresh event when import or session projection changes affect a workspace-agent list.
 
 ## 4. Frontend Routing And State

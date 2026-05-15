@@ -121,6 +121,96 @@ func TestHandleWorkspaceAgentSessionsSyncsAndFiltersByWorkspaceAgent(t *testing.
 	}
 }
 
+func TestHandleWorkspaceSessionsPreservesLegacyWorkspaceScope(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherWorkspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := testSessionSyncManager(t, storage, "unused-acp")
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+	profile := testLaunchProfile()
+
+	codexACP := "legacy-codex"
+	codexSession, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &codexACP, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeACP := "legacy-claude"
+	claudeSession, err := storage.CreateSession(ctx, workspace.ID, claudeAgentID, "Claude", &claudeACP, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherACP := "other-workspace"
+	if _, err := storage.CreateSession(ctx, otherWorkspace.ID, codexAgentID, "Codex", &otherACP, permissionManual, profile, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+workspace.ID+"/sessions", nil)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var items []SessionListItem
+	if err := json.Unmarshal(recorder.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(items), []string{codexSession.ID, claudeSession.ID}; !sameStringSet(got, want) {
+		t.Fatalf("legacy workspace items = %v, want %v", got, want)
+	}
+	for _, item := range items {
+		if item.Workspace.ID != workspace.ID || item.Session.WorkspaceID != workspace.ID {
+			t.Fatalf("item workspace scope = %#v", item)
+		}
+	}
+}
+
+func TestHandleSessionsPreservesGlobalScope(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	firstWorkspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWorkspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := testSessionSyncManager(t, storage, "unused-acp")
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+	profile := testLaunchProfile()
+
+	firstACP := "global-first"
+	firstSession, err := storage.CreateSession(ctx, firstWorkspace.ID, codexAgentID, "Codex", &firstACP, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondACP := "global-second"
+	secondSession, err := storage.CreateSession(ctx, secondWorkspace.ID, claudeAgentID, "Claude", &secondACP, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var items []SessionListItem
+	if err := json.Unmarshal(recorder.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(items), []string{firstSession.ID, secondSession.ID}; !sameStringSet(got, want) {
+		t.Fatalf("global items = %v, want %v", got, want)
+	}
+}
+
 func TestHandleCreateSessionResponseIncludesWorkspaceAgentRouteContext(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)
