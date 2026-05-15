@@ -194,6 +194,11 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		profile, err = canonicalLaunchProfile(agent, profile.Key)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	runtime, runtimeErr := m.runtimeForLaunchProfile(resolvedAgentID, profile, true)
@@ -219,9 +224,25 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 					return nil, err
 				}
 			}
+		} else {
+			runtime.setStatus(failedStatus(err.Error()))
 		}
 	}
 	return m.storage.ListSessionItemsForAgent(ctx, workspace.ID, resolvedAgentID)
+}
+
+func canonicalLaunchProfile(agent AgentConfig, key string) (ResolvedAgentLaunchProfile, error) {
+	for _, candidate := range agent.LaunchProfiles {
+		if candidate.Key == key {
+			return ResolvedAgentLaunchProfile{
+				ID:             candidate.ID,
+				Key:            candidate.Key,
+				PermissionMode: candidate.PermissionMode,
+				Summary:        candidate.Summary,
+			}, nil
+		}
+	}
+	return ResolvedAgentLaunchProfile{}, fmt.Errorf("%s launch profile %q is not available", agent.Title, key)
 }
 
 func (m *AgentRuntimeManager) statuses() []AgentRuntimeStatus {

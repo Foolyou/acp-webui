@@ -482,6 +482,65 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsImportsNativeList(t *testi
 	}
 }
 
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsCanonicalizesPartialProfile(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := testSessionSyncManager(t, storage, "unused-acp")
+	canonicalProfile, err := manager.configs[codexAgentID].resolveLaunchProfile(permissionFullAuto, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, canonicalProfile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		partialProfile := ResolvedAgentLaunchProfile{Key: canonicalProfile.Key}
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, partialProfile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	nativeCWD := nativePathString(workspace.Path)
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-full-auto",
+			CWD:       nativeCWD,
+		}},
+	})
+
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 1 {
+		t.Fatalf("items = %#v, want 1 item", result.items)
+	}
+	session := result.items[0].Session
+	if session.PermissionMode != canonicalProfile.PermissionMode {
+		t.Fatalf("permission mode = %q, want %q", session.PermissionMode, canonicalProfile.PermissionMode)
+	}
+	if session.LaunchProfileID != canonicalProfile.ID || session.LaunchProfileKey != canonicalProfile.Key {
+		t.Fatalf("launch profile = id %q key %q, want id %q key %q", session.LaunchProfileID, session.LaunchProfileKey, canonicalProfile.ID, canonicalProfile.Key)
+	}
+	if len(result.items[0].LaunchControlSummary) != len(canonicalProfile.Summary) {
+		t.Fatalf("launch summary = %#v, want configured summary %#v", result.items[0].LaunchControlSummary, canonicalProfile.Summary)
+	}
+}
+
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsSkipsUnsupportedNativeList(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
@@ -523,6 +582,65 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsSkipsUnsupportedNativeList
 	}
 	if writer.writes != 0 {
 		t.Fatalf("ACP writes = %d, want 0", writer.writes)
+	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsMarksRuntimeFailedOnListError(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	persistedTitle := "Persisted after list failure"
+	if _, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "persisted-after-list-failure",
+		Title:             &persistedTitle,
+		NativeTitle:       &persistedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	respondToSessionListRequestError(t, decoder, runtime, nativePathString(workspace.Path), nil, "native list failed")
+
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 1 {
+		t.Fatalf("items = %#v, want persisted item", result.items)
+	}
+	status := manager.statusForMode(manager.configs[codexAgentID], permissionManual)
+	if status.State != "failed" {
+		t.Fatalf("runtime status = %#v, want failed", status)
+	}
+	if status.Message == nil || !strings.Contains(*status.Message, "native list failed") {
+		t.Fatalf("runtime status message = %#v, want list failure", status.Message)
 	}
 }
 
@@ -745,6 +863,32 @@ func respondToSessionListRequest(t *testing.T, decoder *json.Decoder, runtime *A
 		t.Fatalf("pending request %s not found", key)
 	}
 	ch <- rpcResponse{Result: data}
+}
+
+func respondToSessionListRequestError(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, wantCursor *string, message string) {
+	t.Helper()
+	request := decodeSessionListRequest(t, decoder)
+	if request.Method != "session/list" {
+		t.Fatalf("method = %q, want session/list", request.Method)
+	}
+	if request.Params.CWD != wantCWD {
+		t.Fatalf("cwd = %q, want %q", request.Params.CWD, wantCWD)
+	}
+	if (request.Params.Cursor == nil) != (wantCursor == nil) {
+		t.Fatalf("cursor = %#v, want %#v", request.Params.Cursor, wantCursor)
+	}
+	if wantCursor != nil && *request.Params.Cursor != *wantCursor {
+		t.Fatalf("cursor = %q, want %q", *request.Params.Cursor, *wantCursor)
+	}
+	key := fmt.Sprintf("%d", request.ID)
+	runtime.mu.Lock()
+	ch := runtime.pending[key]
+	delete(runtime.pending, key)
+	runtime.mu.Unlock()
+	if ch == nil {
+		t.Fatalf("pending request %s not found", key)
+	}
+	ch <- rpcResponse{Error: &rpcError{Message: message}}
 }
 
 type countingWriteCloser struct {
