@@ -207,6 +207,10 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalUpdatedAt := imported.UpdatedAt
+	originalImportedAt := "2026-05-14T12:00:00Z"
+	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET imported_at = ?, import_source = ? WHERE id = ?`, originalImportedAt, "initial_import", imported.ID); err != nil {
+		t.Fatal(err)
+	}
 	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
 	if err != nil {
 		t.Fatal(err)
@@ -218,15 +222,18 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 
 	laterNativeUpdated := "2026-05-15T12:00:00Z"
 	updatedTitle := "Updated native title"
+	updatedNativeTitle := "Updated native display title"
 	reimported, err := storage.ImportNativeSession(ctx, NativeSessionImport{
 		WorkspaceID:       workspace.ID,
 		AgentID:           codexAgentID,
 		AgentName:         "Codex",
 		ExternalSessionID: "external-activity",
 		Title:             &updatedTitle,
+		NativeTitle:       &updatedNativeTitle,
 		NativeUpdatedAt:   &laterNativeUpdated,
 		PermissionMode:    permissionManual,
 		LaunchProfile:     profile,
+		ImportSource:      "native_refresh",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,12 +247,74 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 	if reimported.Title == nil || *reimported.Title != updatedTitle {
 		t.Fatalf("title = %#v, want %s", reimported.Title, updatedTitle)
 	}
+	if reimported.NativeTitle == nil || *reimported.NativeTitle != updatedNativeTitle {
+		t.Fatalf("native title = %#v, want %s", reimported.NativeTitle, updatedNativeTitle)
+	}
+	if reimported.ImportSource != "native_refresh" {
+		t.Fatalf("import source = %s, want native_refresh", reimported.ImportSource)
+	}
+	if reimported.ImportedAt == nil || *reimported.ImportedAt == originalImportedAt {
+		t.Fatalf("imported_at was not refreshed: before %s after %#v", originalImportedAt, reimported.ImportedAt)
+	}
 	items, err = storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].LastActivityAt != originalLastActivityAt {
 		t.Fatalf("last activity changed on reimport: %#v, want %s", items, originalLastActivityAt)
+	}
+}
+
+func TestStorageListSessionItemsForAgentFiltersWorkspaceAndAgent(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	firstWorkspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWorkspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstCodexACP := "first-codex"
+	firstCodex, err := storage.CreateSession(ctx, firstWorkspace.ID, codexAgentID, "Codex", &firstCodexACP, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClaudeACP := "first-claude"
+	firstClaude, err := storage.CreateSession(ctx, firstWorkspace.ID, claudeAgentID, "Claude", &firstClaudeACP, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCodexACP := "second-codex"
+	secondCodex, err := storage.CreateSession(ctx, secondWorkspace.ID, codexAgentID, "Codex", &secondCodexACP, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scopedItems, err := storage.ListSessionItemsForAgent(ctx, firstWorkspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopedItems) != 1 || scopedItems[0].Session.ID != firstCodex.ID {
+		t.Fatalf("scoped items = %v, want only %s", sessionListItemIDs(scopedItems), firstCodex.ID)
+	}
+
+	workspaceItems, err := storage.ListSessionItems(ctx, &firstWorkspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(workspaceItems), []string{firstCodex.ID, firstClaude.ID}; !sameStringSet(got, want) {
+		t.Fatalf("legacy workspace items = %v, want %v", got, want)
+	}
+
+	globalItems, err := storage.ListSessionItems(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(globalItems), []string{firstCodex.ID, firstClaude.ID, secondCodex.ID}; !sameStringSet(got, want) {
+		t.Fatalf("legacy global items = %v, want %v", got, want)
 	}
 }
 
@@ -596,6 +665,30 @@ func TestStorageConcurrentNativeImportsAreIdempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("parallel import row count = %d, want 1", count)
 	}
+}
+
+func sessionListItemIDs(items []SessionListItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.Session.ID)
+	}
+	return ids
+}
+
+func sameStringSet(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	got = append([]string(nil), got...)
+	want = append([]string(nil), want...)
+	sort.Strings(got)
+	sort.Strings(want)
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func testLaunchProfile() ResolvedAgentLaunchProfile {
