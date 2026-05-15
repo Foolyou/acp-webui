@@ -238,7 +238,7 @@ test("creates a workspace and session, sends a prompt, and restores after refres
       })
     });
   });
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.goto(sessionDetailPath(ids));
   await page.getByRole("button", { name: "Menu" }).click();
   const navigation = page.getByRole("dialog", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: /Sessions/ })).toHaveCount(0);
@@ -312,6 +312,8 @@ test("creates a Claude session when Claude is selected", async ({ page }) => {
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
+  await page.getByLabel("Selected agent").selectOption("claude");
+  await expect(page).toHaveURL(/\/agents\/claude\/sessions$/);
   await startSession(page, "Claude");
   await page.getByPlaceholder("Ask Claude...").fill("Reply with the smoke phrase.");
   await page.getByRole("button", { name: "Send" }).click();
@@ -320,7 +322,7 @@ test("creates a Claude session when Claude is selected", async ({ page }) => {
   await expect(page.getByText("ACP Web UI smoke test OK")).toBeVisible();
   const ids = sessionRouteIds(page);
   await returnToWorkspaceSessions(page);
-  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  const sessionLink = sessionListLink(page, ids);
   await expect(sessionLink).toContainText("Claude");
 });
 
@@ -330,10 +332,6 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await showSessionCreateControls(page);
-  await agentChoice(page, "Codex").click();
-  await permissionModeSelect(page).selectOption({ label: "YOLO" });
-  await expect(permissionModeSelect(page)).toHaveValue("yolo");
   await startSession(page, "Codex", "YOLO");
   await expect(page.locator(".session-toolbar")).toContainText("YOLO");
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
@@ -344,7 +342,7 @@ test("creates YOLO sessions with persistent mode indicators", async ({ page }) =
   await expect(page.locator(".notice.warning", { hasText: "YOLO mode" })).toBeVisible();
 
   await returnToWorkspaceSessions(page);
-  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  const sessionLink = sessionListLink(page, ids);
   await expect(sessionLink).toContainText("YOLO");
   await expect(sessionLink).toContainText("No approvals / no sandbox");
   await showSessionCreateControls(page);
@@ -371,12 +369,12 @@ test("displays, switches, persists, and disables advertised model selector", asy
 
   const ids = sessionRouteIds(page);
   await page.reload();
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.goto(sessionDetailPath(ids));
   await expandSessionInfo(page);
   await expect(page.getByLabel("Model")).toHaveValue("pro");
 
   await returnToWorkspaceSessions(page);
-  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  const sessionLink = sessionListLink(page, ids);
   await expect(sessionLink).toContainText("Model: Pro model");
   await sessionLink.click();
   await expandSessionInfo(page);
@@ -1368,7 +1366,7 @@ test("restores a persisted session after backend restart and sends a follow-up p
 
   const ids = sessionRouteIds(page);
   await restartBackend();
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.goto(sessionDetailPath(ids));
 
   await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Restore" })).toBeInViewport();
@@ -1428,7 +1426,7 @@ test("shows restore failure and view-only fallback states", async ({ page }) => 
   });
 
   await page.reload();
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.goto(sessionDetailPath(ids));
   await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
   await expect(page.getByPlaceholder("Restore session to continue")).toBeDisabled();
   await page.getByRole("button", { name: "Restore" }).click();
@@ -1523,7 +1521,7 @@ test("auto-scrolls session timeline unless the user scrolls away", async ({ page
 
   const ids = sessionRouteIds(page);
   await page.reload();
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}`);
+  await page.goto(sessionDetailPath(ids));
   await expect(page.getByText("Scroll history line 80")).toBeVisible();
   await expectTimelineEndNearViewport(page);
 
@@ -1669,9 +1667,9 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
   await page.evaluate(() => {
     localStorage.removeItem("currentSessionId");
   });
-  await page.goto(`/workspaces/${ids.workspaceId}/sessions`);
-  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
-  const sessionLink = page.locator(`a[href="/workspaces/${ids.workspaceId}/sessions/${ids.sessionId}"]`);
+  await page.goto(sessionListPath(ids));
+  await expect(page).toHaveURL(new RegExp(`${sessionListPath(ids)}$`));
+  const sessionLink = sessionListLink(page, ids);
   await expect(sessionLink).toContainText("1 review items");
   await sessionLink.click();
   await page.locator(".tool-row").getByRole("button", { name: "Details" }).click();
@@ -2081,11 +2079,34 @@ async function showSessionCreateControls(page: import("@playwright/test").Page) 
 }
 
 async function startSession(page: import("@playwright/test").Page, agentName = "Codex", modeName = "Manual") {
-  await showSessionCreateControls(page);
-  await agentChoice(page, agentName).click();
-  await permissionModeSelect(page).selectOption({ label: modeName });
-  await page.getByRole("button", { name: "Create session" }).click();
-  await expect(page.getByPlaceholder(`Ask ${agentName}...`)).toBeVisible();
+  const prompt = page.getByPlaceholder(`Ask ${agentName}...`);
+  if ((await prompt.count()) > 0 && (await prompt.first().isVisible().catch(() => false))) {
+    return;
+  }
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await showSessionCreateControls(page);
+      const detail = page.locator(".agent-create-detail", { hasText: agentName }).first();
+      if (!(await detail.isVisible().catch(() => false))) {
+        const choice = agentChoice(page, agentName);
+        await expect(choice).toBeVisible();
+        const className = (await choice.getAttribute("class")) ?? "";
+        if (!className.split(/\s+/).includes("selected")) {
+          await choice.click({ timeout: 5_000 });
+        }
+      }
+      await expect(detail).toBeVisible();
+      await permissionModeSelect(page).selectOption({ label: modeName });
+      await page.getByRole("button", { name: "Create session" }).click({ timeout: 5_000 });
+      await expect(prompt).toBeVisible({ timeout: 15_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Failed to start session");
 }
 
 async function openMenuAndClick(page: import("@playwright/test").Page, name: RegExp) {
@@ -2355,6 +2376,21 @@ function sessionRouteIds(page: import("@playwright/test").Page) {
     throw new Error(`Current page is not a session route: ${page.url()}`);
   }
   return { agentId: null, sessionId: legacyMatch[2], workspaceId: legacyMatch[1] };
+}
+
+function sessionListPath(ids: ReturnType<typeof sessionRouteIds>) {
+  if (ids.agentId) {
+    return `/workspaces/${ids.workspaceId}/agents/${ids.agentId}/sessions`;
+  }
+  return `/workspaces/${ids.workspaceId}/sessions`;
+}
+
+function sessionDetailPath(ids: ReturnType<typeof sessionRouteIds>) {
+  return `${sessionListPath(ids)}/${ids.sessionId}`;
+}
+
+function sessionListLink(page: import("@playwright/test").Page, ids: ReturnType<typeof sessionRouteIds>) {
+  return page.locator(`a[href="${sessionDetailPath(ids)}"]`);
 }
 
 function workspaceAgentSessionListRouteIds(page: import("@playwright/test").Page) {

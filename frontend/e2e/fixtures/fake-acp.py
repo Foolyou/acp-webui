@@ -13,6 +13,12 @@ for arg in sys.argv[1:]:
         agent_name = arg.split("=", 1)[1] or agent_name
 
 session_id = "fake-e2e-session"
+session_counter = 0
+native_session_id = (
+    "fake-e2e-claude-native-session"
+    if agent_name == "claude"
+    else "fake-e2e-native-session"
+)
 native_session_title = (
     "Fake E2E Claude session" if agent_name == "claude" else "Fake E2E session"
 )
@@ -80,7 +86,8 @@ for line in sys.stdin:
             }
         )
     elif method == "session/new":
-        session_id = "fake-e2e-session"
+        session_counter += 1
+        session_id = f"fake-e2e-session-{time.time_ns()}-{session_counter}"
         send(
             {
                 "jsonrpc": "2.0",
@@ -97,7 +104,7 @@ for line in sys.stdin:
                 "result": {
                     "sessions": [
                         {
-                            "sessionId": "fake-e2e-session",
+                            "sessionId": native_session_id,
                             "cwd": cwd,
                             "title": native_session_title,
                             "updatedAt": "2026-05-15T00:00:00Z",
@@ -108,7 +115,7 @@ for line in sys.stdin:
         )
     elif method == "session/load":
         load_session_id = message.get("params", {}).get("sessionId")
-        if load_session_id != "fake-e2e-session":
+        if load_session_id != native_session_id and not load_session_id.startswith("fake-e2e-session"):
             send(
                 {
                     "jsonrpc": "2.0",
