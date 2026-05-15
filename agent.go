@@ -141,7 +141,10 @@ func (m *AgentRuntimeManager) resolveLaunchProfile(agentID, permissionMode strin
 	return m.configs[agentID].resolveLaunchProfile(permissionMode, values)
 }
 
-func (m *AgentRuntimeManager) runtimeForLaunchProfile(agentID string, profile ResolvedAgentLaunchProfile, start bool) (*AgentRuntime, error) {
+func (m *AgentRuntimeManager) runtimeForLaunchProfile(ctx context.Context, agentID string, profile ResolvedAgentLaunchProfile, start bool) (*AgentRuntime, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agent, ok := m.configs[agentID]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", agentID)
@@ -167,16 +170,16 @@ func (m *AgentRuntimeManager) runtimeForLaunchProfile(agentID string, profile Re
 	}
 	m.mu.Unlock()
 	if start {
-		if err := runtime.ensureReady(context.Background()); err != nil {
+		if err := runtime.ensureReady(ctx); err != nil {
 			return runtime, err
 		}
 	}
 	return runtime, nil
 }
 
-func (m *AgentRuntimeManager) runtimeForSession(session Session, start bool) (*AgentRuntime, error) {
+func (m *AgentRuntimeManager) runtimeForSession(ctx context.Context, session Session, start bool) (*AgentRuntime, error) {
 	profile := ResolvedAgentLaunchProfile{Key: session.LaunchProfileKey, PermissionMode: session.PermissionMode, ID: session.LaunchProfileID}
-	return m.runtimeForLaunchProfile(session.AgentID, profile, start)
+	return m.runtimeForLaunchProfile(ctx, session.AgentID, profile, start)
 }
 
 func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, workspace Workspace, agentID string, profile ResolvedAgentLaunchProfile) ([]SessionListItem, error) {
@@ -201,8 +204,9 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 		}
 	}
 
-	runtime, runtimeErr := m.runtimeForLaunchProfile(resolvedAgentID, profile, true)
+	runtime, runtimeErr := m.runtimeForLaunchProfile(ctx, resolvedAgentID, profile, true)
 	workspaceCWD := nativePathString(workspace.Path)
+	projectionCtx := ctx
 	if runtimeErr == nil && runtime.supportsSessionList() {
 		if sessions, err := runtime.ListSessions(ctx, workspaceCWD); err == nil {
 			for _, item := range sessions {
@@ -225,10 +229,14 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 				}
 			}
 		} else {
-			runtime.setStatus(failedStatus(err.Error()))
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				projectionCtx = context.WithoutCancel(ctx)
+			} else {
+				runtime.failAndDisconnect(err.Error())
+			}
 		}
 	}
-	return m.storage.ListSessionItemsForAgent(ctx, workspace.ID, resolvedAgentID)
+	return m.storage.ListSessionItemsForAgent(projectionCtx, workspace.ID, resolvedAgentID)
 }
 
 func canonicalLaunchProfile(agent AgentConfig, key string) (ResolvedAgentLaunchProfile, error) {
@@ -400,6 +408,33 @@ func (r *AgentRuntime) setStatus(status ConnectionStatus) {
 	}
 }
 
+func (r *AgentRuntime) failAndDisconnect(message string) {
+	status := failedStatus(message)
+	r.mu.Lock()
+	stdin := r.stdin
+	cmd := r.cmd
+	pending := r.pending
+	r.statusValue = status
+	r.stdin = nil
+	r.cmd = nil
+	r.pending = map[string]chan rpcResponse{}
+	r.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	for _, ch := range pending {
+		ch <- rpcResponse{Error: &rpcError{Message: message}}
+	}
+	r.events.Publish(map[string]any{"type": "agent_connection_status", "agentId": r.agent.ID, "permissionMode": r.permissionMode, "status": status})
+	if r.agent.ID == codexAgentID && r.permissionMode == permissionManual {
+		r.events.Publish(map[string]any{"type": "connection_status", "status": status})
+	}
+}
+
 func (r *AgentRuntime) ensureReady(ctx context.Context) error {
 	r.mu.Lock()
 	if !r.agent.Enabled {
@@ -448,13 +483,13 @@ func (r *AgentRuntime) ensureReady(ctx context.Context) error {
 	go func() {
 		err := cmd.Wait()
 		if err != nil && r.status().State != "failed" {
-			r.setStatus(failedStatus(err.Error()))
+			r.failAndDisconnect(err.Error())
 		}
 	}()
 
 	var initResult initializeResult
 	if err := r.request(ctx, "initialize", initializeParams(), &initResult); err != nil {
-		r.setStatus(failedStatus(err.Error()))
+		r.failAndDisconnect(err.Error())
 		return err
 	}
 	promptCaps := AgentPromptCapabilities{
@@ -504,11 +539,13 @@ func (r *AgentRuntime) request(ctx context.Context, method string, params any, t
 	stdin := r.stdin
 	r.mu.Unlock()
 	if stdin == nil {
+		r.removePending(key)
 		return errors.New("agent runtime is not connected")
 	}
 	message := map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}
 	data, _ := json.Marshal(message)
 	if _, err := stdin.Write(append(data, '\n')); err != nil {
+		r.removePending(key)
 		return err
 	}
 	select {
@@ -523,10 +560,18 @@ func (r *AgentRuntime) request(ctx context.Context, method string, params any, t
 		}
 		return nil
 	case <-time.After(5 * time.Minute):
+		r.removePending(key)
 		return fmt.Errorf("%s timed out", method)
 	case <-ctx.Done():
+		r.removePending(key)
 		return ctx.Err()
 	}
+}
+
+func (r *AgentRuntime) removePending(key string) {
+	r.mu.Lock()
+	delete(r.pending, key)
+	r.mu.Unlock()
 }
 
 func (r *AgentRuntime) readLoop(stdout io.Reader) {

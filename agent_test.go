@@ -644,6 +644,126 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsMarksRuntimeFailedOnListEr
 	}
 }
 
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsClearsRuntimeResourcesAfterListError(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "missing-acp-runtime-for-sync-retry-test")
+	persistedTitle := "Persisted before retry"
+	if _, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "persisted-before-retry",
+		Title:             &persistedTitle,
+		NativeTitle:       &persistedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+	respondToSessionListRequestError(t, decoder, runtime, nativePathString(workspace.Path), nil, "native list failed")
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	runtime.mu.Lock()
+	stdinAfterFailure := runtime.stdin
+	cmdAfterFailure := runtime.cmd
+	pendingAfterFailure := len(runtime.pending)
+	runtime.mu.Unlock()
+	if stdinAfterFailure != nil || cmdAfterFailure != nil || pendingAfterFailure != 0 {
+		t.Fatalf("runtime resources after failure: stdin=%v cmd=%v pending=%d, want cleared", stdinAfterFailure, cmdAfterFailure, pendingAfterFailure)
+	}
+
+	items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("retry items = %#v, want persisted item", items)
+	}
+	runtime.mu.Lock()
+	stdinAfterRetry := runtime.stdin
+	runtime.mu.Unlock()
+	if stdinAfterRetry != nil {
+		t.Fatalf("runtime stdin after retry = %v, want nil after failed restart", stdinAfterRetry)
+	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsDoesNotFailRuntimeOnCanceledList(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	persistedTitle := "Persisted after cancellation"
+	if _, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "persisted-after-cancel",
+		Title:             &persistedTitle,
+		NativeTitle:       &persistedTitle,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, true)
+	writer := &countingWriteCloser{}
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	items, err := manager.SyncWorkspaceAgentSessions(canceledCtx, workspace, codexAgentID, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want persisted item", items)
+	}
+	status := manager.statusForMode(manager.configs[codexAgentID], permissionManual)
+	if status.State != "ready" {
+		t.Fatalf("runtime status = %#v, want ready", status)
+	}
+	runtime.mu.Lock()
+	pending := len(runtime.pending)
+	runtime.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending requests = %d, want 0 after canceled list", pending)
+	}
+}
+
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsIgnoresOtherCWD(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

@@ -222,7 +222,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, badRequest(err.Error()))
 		return
 	}
-	runtime, err := s.agents.runtimeForLaunchProfile(agentID, profile, true)
+	runtime, err := s.agents.runtimeForLaunchProfile(r.Context(), agentID, profile, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
@@ -264,7 +264,7 @@ func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspace, _ := s.storage.GetWorkspace(r.Context(), session.WorkspaceID)
-	runtime, err := s.agents.runtimeForSession(session, true)
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
@@ -343,7 +343,7 @@ func (s *Server) handleSetSessionConfig(w http.ResponseWriter, r *http.Request) 
 		writeError(w, conflict("Session is missing an ACP session id"))
 		return
 	}
-	runtime, err := s.agents.runtimeForSession(session, true)
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
@@ -395,7 +395,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict("Session is missing an ACP session id"))
 		return
 	}
-	runtime, err := s.agents.runtimeForSession(session, true)
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
@@ -549,7 +549,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict("This session does not have active work to stop."))
 		return
 	}
-	runtime, err := s.agents.runtimeForSession(session, false)
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, false)
 	if err == nil {
 		_ = runtime.CancelPendingPermissionsForSession(r.Context(), sessionID)
 		if session.ACPSessionID != nil {
@@ -584,7 +584,7 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeError(w, notFound("Session not found"))
 		return
 	}
-	runtime, err := s.agents.runtimeForSession(session, false)
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, false)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
@@ -780,7 +780,7 @@ func (s *Server) sessionContinuity(ctx context.Context, session Session) Session
 	if err != nil {
 		return viewOnlyContinuity(viewOnlyReason(session.AgentName))
 	}
-	runtime, err := s.agents.runtimeForSession(session, false)
+	runtime, err := s.agents.runtimeForSession(ctx, session, false)
 	if err != nil {
 		return viewOnlyContinuity(viewOnlyReason(session.AgentName) + " " + err.Error())
 	}
