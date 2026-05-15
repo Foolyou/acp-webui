@@ -13,6 +13,12 @@ import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
 import { messageToTimelineItem } from "./app/timeline";
 import { initialState } from "./app/types";
 import type { AppRouterContext, UiState } from "./app/types";
+import {
+  forgetWorkspaceAgent,
+  readWorkspaceAgentNavigation,
+  rememberWorkspaceAgent,
+  resolveWorkspaceAgentId
+} from "./app/workspaceAgentNavigation";
 import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
 import { applyRealtimeEvent } from "./realtime";
@@ -33,10 +39,11 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
     ...current,
     auth,
     codex: initialState.codex,
-  agents: [],
+    agents: [],
     socketState: "disconnected",
     inbox: [],
     sessions: [],
+    currentAgentId: null,
     currentSession: null,
     activeReview: null,
     liveAssistant: "",
@@ -183,20 +190,27 @@ export function App() {
     const [appState, workspaces, sessions] = await Promise.all([api.appState(), api.workspaces(), api.sessions()]);
 
     const storedWorkspaceId = localStorage.getItem("currentWorkspaceId");
+    const rememberedAgents = readWorkspaceAgentNavigation().currentAgentIdByWorkspace;
 
-    setState((current) => ({
-      ...current,
-      auth,
-      codex: appState.codex,
-      agents: appState.agents,
-      inbox: appState.inbox,
-      sessions,
-      workspaces,
-      currentWorkspaceId: current.currentSession?.workspace.id ?? current.currentWorkspaceId ?? storedWorkspaceId ?? workspaces[0]?.id ?? null,
-      currentSession: current.currentSession,
-      initialized: true,
-      error: null
-    }));
+    setState((current) => {
+      const currentWorkspaceId =
+        current.currentSession?.workspace.id ?? current.currentWorkspaceId ?? storedWorkspaceId ?? workspaces[0]?.id ?? null;
+      return {
+        ...current,
+        auth,
+        codex: appState.codex,
+        agents: appState.agents,
+        inbox: appState.inbox,
+        sessions,
+        workspaces,
+        currentWorkspaceId,
+        currentAgentId: current.currentSession?.session.agentId ?? resolveWorkspaceAgentId(currentWorkspaceId, appState.agents),
+        currentAgentIdByWorkspace: rememberedAgents,
+        currentSession: current.currentSession,
+        initialized: true,
+        error: null
+      };
+    });
   }, []);
 
   useEffect(() => {
@@ -403,6 +417,7 @@ export function App() {
           ...current,
           currentSession: detail,
           currentWorkspaceId: detail.workspace.id,
+          currentAgentId: detail.session.agentId,
           liveAssistant: ""
         }));
       } catch (error) {
@@ -426,6 +441,7 @@ export function App() {
           ...current,
           workspaces: [workspace, ...current.workspaces.filter((item) => item.id !== workspace.id)],
           currentWorkspaceId: workspace.id,
+          currentAgentId: resolveWorkspaceAgentId(workspace.id, current.agents),
           currentSession: null
         }));
         await router.navigate({ to: "/workspaces/$workspaceId/sessions", params: { workspaceId: workspace.id } });
@@ -456,6 +472,7 @@ export function App() {
         ...current,
         currentSession: detail,
         currentWorkspaceId: detail.workspace.id,
+        currentAgentId: detail.session.agentId,
         creatingSessionWorkspaceId: null,
         creatingSessionAgentId: null,
         creatingSessionPermissionMode: null,
@@ -605,6 +622,7 @@ export function App() {
           ...current,
           currentSession: detail,
           currentWorkspaceId: detail.workspace.id,
+          currentAgentId: detail.session.agentId,
           sessions: [
             sessionDetailToListItem(detail),
             ...current.sessions.filter((item) => item.session.id !== detail.session.id)
@@ -706,7 +724,24 @@ export function App() {
 
   const setCurrentWorkspace = useCallback((workspaceId: string | null) => {
     if (workspaceId) localStorage.setItem("currentWorkspaceId", workspaceId);
-    setState((current) => ({ ...current, currentWorkspaceId: workspaceId }));
+    setState((current) => ({
+      ...current,
+      currentWorkspaceId: workspaceId,
+      currentAgentId: resolveWorkspaceAgentId(workspaceId, current.agents)
+    }));
+  }, []);
+
+  const setCurrentWorkspaceAgent = useCallback((workspaceId: string, agentId: string | null) => {
+    localStorage.setItem("currentWorkspaceId", workspaceId);
+    const navigation = agentId
+      ? rememberWorkspaceAgent(workspaceId, agentId)
+      : forgetWorkspaceAgent(workspaceId);
+    setState((current) => ({
+      ...current,
+      currentWorkspaceId: workspaceId,
+      currentAgentId: agentId ?? resolveWorkspaceAgentId(workspaceId, current.agents),
+      currentAgentIdByWorkspace: navigation.currentAgentIdByWorkspace
+    }));
   }, []);
 
   const pairBrowser = useCallback(
@@ -732,7 +767,8 @@ export function App() {
         sendPrompt,
         setSessionConfigOption,
         setActiveReview: (artifact) => setState((current) => ({ ...current, activeReview: artifact })),
-        setCurrentWorkspace
+        setCurrentWorkspace,
+        setCurrentWorkspaceAgent
       },
       selectedWorkspace,
       state
@@ -751,6 +787,7 @@ export function App() {
       sendPrompt,
       setSessionConfigOption,
       setCurrentWorkspace,
+      setCurrentWorkspaceAgent,
       state
     ]
   );

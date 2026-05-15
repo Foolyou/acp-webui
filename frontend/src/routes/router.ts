@@ -28,7 +28,8 @@ export const placeholderContext: AppRouterContext = {
     sendPrompt: noopAsync,
     setSessionConfigOption: noopAsync,
     setActiveReview: () => {},
-    setCurrentWorkspace: () => {}
+    setCurrentWorkspace: () => {},
+    setCurrentWorkspaceAgent: () => {}
   },
   selectedWorkspace: null,
   state: initialState

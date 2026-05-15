@@ -12,6 +12,7 @@ import type {
   SocketState,
   Workspace
 } from "../types";
+import { readWorkspaceAgentNavigation } from "./workspaceAgentNavigation";
 
 export type UiState = {
   codex: ConnectionStatus;
@@ -23,6 +24,8 @@ export type UiState = {
   sessions: SessionListItem[];
   sessionsLoading: boolean;
   currentWorkspaceId: string | null;
+  currentAgentId: string | null;
+  currentAgentIdByWorkspace: Record<string, string>;
   currentSession: SessionDetail | null;
   activeReview: ReviewArtifact | null;
   liveAssistant: string;
@@ -53,6 +56,7 @@ export type AppActions = {
   setSessionConfigOption: (configId: string, value: string) => Promise<void>;
   setActiveReview: (artifact: ReviewArtifact | null) => void;
   setCurrentWorkspace: (workspaceId: string | null) => void;
+  setCurrentWorkspaceAgent: (workspaceId: string, agentId: string | null) => void;
 };
 
 export type AppRouterContext = {
@@ -60,6 +64,8 @@ export type AppRouterContext = {
   selectedWorkspace: Workspace | null;
   state: UiState;
 };
+
+const initialWorkspaceAgentNavigation = readWorkspaceAgentNavigation();
 
 export const initialState: UiState = {
   codex: { state: "starting", message: "Loading app state" },
@@ -71,6 +77,8 @@ export const initialState: UiState = {
   sessions: [],
   sessionsLoading: false,
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),
+  currentAgentId: null,
+  currentAgentIdByWorkspace: initialWorkspaceAgentNavigation.currentAgentIdByWorkspace,
   currentSession: null,
   activeReview: null,
   liveAssistant: "",
