@@ -61,8 +61,50 @@ func TestStorageImportsSQLxMigrationState(t *testing.T) {
 	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 12 {
-		t.Fatalf("schema migration count = %d, want 12", count)
+	if count != 13 {
+		t.Fatalf("schema migration count = %d, want 13", count)
+	}
+}
+
+func TestStorageSessionNativeImportMigration(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requiredColumns := []string{"title", "native_title", "native_updated_at", "import_source", "imported_at"}
+	for _, column := range requiredColumns {
+		var found int
+		if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?`, column).Scan(&found); err != nil {
+			t.Fatal(err)
+		}
+		if found != 1 {
+			t.Fatalf("sessions.%s column missing", column)
+		}
+	}
+
+	if _, err := storage.db.ExecContext(ctx, `
+		INSERT INTO sessions(id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at, external_session_id, continuation_state, agent_id)
+		VALUES ('native-a', ?, 'Codex', NULL, 'idle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'external-1', 'view_only', 'codex')`,
+		workspace.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.db.ExecContext(ctx, `
+		INSERT INTO sessions(id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at, external_session_id, continuation_state, agent_id)
+		VALUES ('native-b', ?, 'Claude', NULL, 'idle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'external-1', 'view_only', 'claude')`,
+		workspace.ID,
+	); err != nil {
+		t.Fatalf("same external id under another agent should be allowed: %v", err)
+	}
+	if _, err := storage.db.ExecContext(ctx, `
+		INSERT INTO sessions(id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at, external_session_id, continuation_state, agent_id)
+		VALUES ('native-duplicate', ?, 'Codex', NULL, 'idle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'external-1', 'view_only', 'codex')`,
+		workspace.ID,
+	); err == nil {
+		t.Fatal("duplicate external id under the same agent should be rejected")
 	}
 }
 
