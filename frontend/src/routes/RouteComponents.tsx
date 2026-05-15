@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useAppContext } from "../app/context";
+import { resolveWorkspaceAgentId } from "../app/workspaceAgentNavigation";
 import { LoadingPanel, PageHeader } from "../components/common";
 import { AgentsStatusPane } from "../features/agents/AgentsStatusPane";
 import { CreatingSessionPane } from "../features/sessions/CreatingSessionPane";
@@ -65,14 +66,25 @@ export function WorkspacesRoute() {
 
 export function WorkspaceSessionsRoute() {
   const { workspaceId } = workspaceSessionsRoute.useParams();
+  const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { createSession, loadSessionList, setCurrentWorkspace } = actions;
+  const { createSession, loadSessionList, setCurrentWorkspace, setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
 
   useEffect(() => {
+    const agentId = resolveWorkspaceAgentId(workspaceId, state.agents);
+    if (agentId) {
+      setCurrentWorkspaceAgent(workspaceId, agentId);
+      void navigate({
+        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+        params: { workspaceId, agentId },
+        replace: true
+      });
+      return;
+    }
     setCurrentWorkspace(workspaceId);
     void loadSessionList(workspaceId);
-  }, [loadSessionList, setCurrentWorkspace, workspaceId]);
+  }, [loadSessionList, navigate, setCurrentWorkspace, setCurrentWorkspaceAgent, state.agents, workspaceId]);
 
   return (
     <SessionsPane
@@ -113,9 +125,23 @@ export function WorkspaceAgentSessionsRoute() {
 
 export function NewSessionRoute() {
   const { workspaceId } = newSessionRoute.useParams();
+  const navigate = useNavigate();
   const { actions, state } = useAppContext();
+  const { setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
   const agent = state.agents.find((item) => item.id === state.creatingSessionAgentId) ?? null;
+
+  useEffect(() => {
+    const agentId = resolveWorkspaceAgentId(workspaceId, state.agents);
+    if (!agentId) return;
+    setCurrentWorkspaceAgent(workspaceId, agentId);
+    void navigate({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/new",
+      params: { workspaceId, agentId },
+      replace: true
+    });
+  }, [navigate, setCurrentWorkspaceAgent, state.agents, workspaceId]);
+
   return (
     <CreatingSessionPane
       agent={agent}
@@ -157,15 +183,39 @@ export function NewWorkspaceAgentSessionRoute() {
 
 export function SessionDetailRoute() {
   const { sessionId, workspaceId } = sessionDetailRoute.useParams();
+  const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { loadSession, setCurrentWorkspace } = actions;
+  const { loadSession, setCurrentWorkspace, setCurrentWorkspaceAgent } = actions;
 
   useEffect(() => {
-    setCurrentWorkspace(workspaceId);
     if (state.currentSession?.session.id !== sessionId) {
+      setCurrentWorkspace(workspaceId);
       void loadSession(sessionId);
+      return;
     }
-  }, [loadSession, sessionId, setCurrentWorkspace, state.currentSession?.session.id, workspaceId]);
+    const actualWorkspaceId = state.currentSession.workspace.id;
+    const actualAgentId = state.currentSession.session.agentId;
+    setCurrentWorkspaceAgent(actualWorkspaceId, actualAgentId);
+    void navigate({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      params: {
+        workspaceId: actualWorkspaceId,
+        agentId: actualAgentId,
+        sessionId
+      },
+      replace: true
+    });
+  }, [
+    loadSession,
+    navigate,
+    sessionId,
+    setCurrentWorkspace,
+    setCurrentWorkspaceAgent,
+    state.currentSession?.session.agentId,
+    state.currentSession?.session.id,
+    state.currentSession?.workspace.id,
+    workspaceId
+  ]);
 
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
     return <LoadingPanel text="Loading session" />;

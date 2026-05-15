@@ -1,5 +1,6 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { AppRouterContext, UiState } from "../app/types";
+import type { AgentRuntimeStatus } from "../types";
 import type { SessionDetail } from "../types";
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +15,24 @@ const mocks = vi.hoisted(() => ({
     }
   }
 }));
+
+function createStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    }
+  };
+}
 
 vi.mock("react", async () => {
   const actual = await vi.importActual<typeof import("react")>("react");
@@ -120,6 +139,17 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
   };
 }
 
+function agent(overrides: Partial<AgentRuntimeStatus> = {}): AgentRuntimeStatus {
+  return {
+    id: "agent-route",
+    title: "Agent",
+    enabled: true,
+    status: { state: "idle" },
+    permissionModes: [],
+    ...overrides
+  };
+}
+
 function baseState(): UiState {
   return {
     codex: { state: "starting", message: "Loading app state" },
@@ -171,6 +201,87 @@ function setContext(context: Partial<AppRouterContext> = {}) {
 }
 
 describe("workspace-agent route components", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorage());
+    localStorage.clear();
+    mocks.navigate.mockReset();
+    mocks.params.workspaceAgentSessions = { workspaceId: "workspace-route", agentId: "agent-route" };
+    mocks.params.workspaceAgentSessionDetail = {
+      workspaceId: "workspace-route",
+      agentId: "agent-route",
+      sessionId: "session-route"
+    };
+  });
+
+  test("replaces legacy workspace session list with remembered agent route", async () => {
+    localStorage.setItem(
+      "workspaceAgentNavigation",
+      JSON.stringify({
+        version: 1,
+        currentAgentIdByWorkspace: { "workspace-route": "agent-remembered" }
+      })
+    );
+    const context = setContext({
+      state: {
+        ...baseState(),
+        agents: [agent({ id: "agent-default" }), agent({ id: "agent-remembered" })]
+      }
+    });
+    const { WorkspaceSessionsRoute } = await import("./RouteComponents");
+
+    WorkspaceSessionsRoute();
+
+    expect(context.actions.setCurrentWorkspaceAgent).toHaveBeenCalledWith("workspace-route", "agent-remembered");
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      params: { workspaceId: "workspace-route", agentId: "agent-remembered" },
+      replace: true
+    });
+    expect(context.actions.loadSessionList).not.toHaveBeenCalled();
+  });
+
+  test("replaces legacy new session route with default agent route", async () => {
+    const context = setContext({
+      state: {
+        ...baseState(),
+        agents: [agent({ id: "agent-default" }), agent({ id: "agent-disabled", enabled: false })]
+      }
+    });
+    const { NewSessionRoute } = await import("./RouteComponents");
+
+    NewSessionRoute();
+
+    expect(context.actions.setCurrentWorkspaceAgent).toHaveBeenCalledWith("workspace-route", "agent-default");
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/new",
+      params: { workspaceId: "workspace-route", agentId: "agent-default" },
+      replace: true
+    });
+  });
+
+  test("replaces legacy detail route with the loaded session scope", async () => {
+    const context = setContext({
+      state: {
+        ...baseState(),
+        currentSession: detail()
+      }
+    });
+    const { SessionDetailRoute } = await import("./RouteComponents");
+
+    SessionDetailRoute();
+
+    expect(context.actions.setCurrentWorkspaceAgent).toHaveBeenCalledWith("workspace-actual", "agent-actual");
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      params: {
+        workspaceId: "workspace-actual",
+        agentId: "agent-actual",
+        sessionId: "session-route"
+      },
+      replace: true
+    });
+  });
+
   test("loads canonical session list with workspace and agent route params", async () => {
     const context = setContext();
     const { WorkspaceAgentSessionsRoute } = await import("./RouteComponents");
