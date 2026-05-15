@@ -482,6 +482,62 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsImportsNativeList(t *testi
 	}
 }
 
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPublishesScopedListChangedEventOnImport(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	events := manager.events.Subscribe()
+	defer manager.events.Unsubscribe(events)
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	nativeCWD := nativePathString(workspace.Path)
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "event-external-1",
+			CWD:       nativeCWD,
+		}},
+	})
+
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 1 {
+		t.Fatalf("items = %#v, want 1 item", result.items)
+	}
+	event := receiveSessionListChangedEvent(t, events)
+	if event["workspaceId"] != workspace.ID {
+		t.Fatalf("workspaceId = %#v, want %q", event["workspaceId"], workspace.ID)
+	}
+	if event["agentId"] != codexAgentID {
+		t.Fatalf("agentId = %#v, want %q", event["agentId"], codexAgentID)
+	}
+	if event["count"] != 1 {
+		t.Fatalf("count = %#v, want 1", event["count"])
+	}
+}
+
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPagesAndReimportsIdempotently(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
@@ -653,6 +709,68 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsCanonicalizesPartialProfil
 	if len(result.items[0].LaunchControlSummary) != len(canonicalProfile.Summary) {
 		t.Fatalf("launch summary = %#v, want configured summary %#v", result.items[0].LaunchControlSummary, canonicalProfile.Summary)
 	}
+}
+
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsSkipsListChangedEventWithoutRelevantImport(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	events := manager.events.Subscribe()
+	defer manager.events.Unsubscribe(events)
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		resultCh <- managerSyncResult{items: items, err: err}
+	}()
+	respondToSessionListRequest(t, decoder, runtime, nativePathString(workspace.Path), nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "other-cwd-session",
+			CWD:       nativePathString(t.TempDir()),
+		}},
+	})
+	result := receiveManagerSyncResult(t, resultCh)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.items) != 0 {
+		t.Fatalf("items = %#v, want no imported sessions", result.items)
+	}
+	assertNoSessionListChangedEvent(t, events)
+
+	unsupportedManager, unsupportedProfile := testSessionSyncManager(t, storage, "unused-acp")
+	unsupportedEvents := unsupportedManager.events.Subscribe()
+	defer unsupportedManager.events.Unsubscribe(unsupportedEvents)
+	unsupportedRuntime := newReadySessionListRuntime(t, storage, false)
+	unsupportedRuntime.mu.Lock()
+	unsupportedRuntime.stdin = &countingWriteCloser{}
+	unsupportedRuntime.mu.Unlock()
+	installManagerRuntime(unsupportedManager, codexAgentID, unsupportedProfile, unsupportedRuntime)
+
+	items, err := unsupportedManager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, unsupportedProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("unsupported items = %#v, want no sessions", items)
+	}
+	assertNoSessionListChangedEvent(t, unsupportedEvents)
 }
 
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsSkipsUnsupportedNativeList(t *testing.T) {
@@ -1047,6 +1165,40 @@ func receiveManagerSyncResult(t *testing.T, ch <-chan managerSyncResult) manager
 		t.Fatalf("timed out waiting for SyncWorkspaceAgentSessions result")
 	}
 	return managerSyncResult{}
+}
+
+func receiveSessionListChangedEvent(t *testing.T, ch <-chan any) map[string]any {
+	t.Helper()
+	deadline := time.After(sessionListTestTimeout)
+	for {
+		select {
+		case event := <-ch:
+			payload, ok := event.(map[string]any)
+			if !ok {
+				continue
+			}
+			if payload["type"] == "session_list_changed" {
+				return payload
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for session_list_changed event")
+		}
+	}
+}
+
+func assertNoSessionListChangedEvent(t *testing.T, ch <-chan any) {
+	t.Helper()
+	for {
+		select {
+		case event := <-ch:
+			payload, ok := event.(map[string]any)
+			if ok && payload["type"] == "session_list_changed" {
+				t.Fatalf("unexpected session_list_changed event: %#v", payload)
+			}
+		default:
+			return
+		}
+	}
 }
 
 func decodeSessionListRequest(t *testing.T, decoder *json.Decoder) sessionListRequest {

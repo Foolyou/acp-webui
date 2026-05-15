@@ -209,6 +209,7 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 	projectionCtx := ctx
 	if runtimeErr == nil && runtime.supportsSessionList() {
 		if sessions, err := runtime.ListSessions(ctx, workspaceCWD); err == nil {
+			importedCount := 0
 			for _, item := range sessions {
 				if !nativeSessionMatchesWorkspace(item, workspaceCWD) {
 					continue
@@ -227,6 +228,15 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 				}); err != nil {
 					return nil, err
 				}
+				importedCount++
+			}
+			if importedCount > 0 {
+				m.events.Publish(map[string]any{
+					"type":        "session_list_changed",
+					"workspaceId": workspace.ID,
+					"agentId":     resolvedAgentID,
+					"count":       importedCount,
+				})
 			}
 		} else {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
