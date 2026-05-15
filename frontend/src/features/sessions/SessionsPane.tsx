@@ -344,7 +344,8 @@ function cleanTitle(value?: string | null) {
 }
 
 function sessionRowTitle(item: SessionListItem) {
-  return cleanTitle(item.session.title) ?? cleanTitle(item.session.nativeTitle) ?? `${item.session.agentName || item.session.id} session`;
+  const fallbackSubject = cleanTitle(item.session.agentName) ?? cleanTitle(item.session.id);
+  return cleanTitle(item.session.title) ?? cleanTitle(item.session.nativeTitle) ?? (fallbackSubject ? `${fallbackSubject} session` : "Session");
 }
 
 function sessionNativeMetadata(item: SessionListItem) {

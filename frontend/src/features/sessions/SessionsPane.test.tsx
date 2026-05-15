@@ -156,4 +156,31 @@ describe("SessionsPane", () => {
     expect(html).toContain("Imported session");
     expect(html).not.toContain("Native: Imported session");
   });
+
+  test("cleans row title fallback when agent name is whitespace", async () => {
+    const { SessionsPane } = await import("./SessionsPane");
+
+    const html = renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent()]}
+        loading={false}
+        onCreate={vi.fn()}
+        selectedAgentId="agent-default"
+        sessions={[
+          sessionItem({
+            session: {
+              ...sessionItem().session,
+              id: "session-fallback",
+              agentName: "   "
+            }
+          })
+        ]}
+        workspace={workspace()}
+      />
+    );
+
+    expect(html).toContain("session-fallback session");
+    expect(html).not.toContain("> session<");
+    expect(html).not.toContain("undefined session");
+  });
 });
