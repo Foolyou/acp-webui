@@ -1,7 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useAppContext } from "../app/context";
-import { resolveWorkspaceAgentId } from "../app/workspaceAgentNavigation";
+import { resolveWorkspaceAgentId, workspaceSessionsRouteTarget } from "../app/workspaceAgentNavigation";
 import { LoadingPanel, PageHeader } from "../components/common";
 import { AgentsStatusPane } from "../features/agents/AgentsStatusPane";
 import { CreatingSessionPane } from "../features/sessions/CreatingSessionPane";
@@ -26,15 +26,15 @@ export function IndexRoute() {
   useEffect(() => {
     if (!state.initialized) return;
     if (state.currentWorkspaceId) {
+      const target = workspaceSessionsRouteTarget(state.currentWorkspaceId, state.agents);
       void navigate({
-        to: "/workspaces/$workspaceId/sessions",
-        params: { workspaceId: state.currentWorkspaceId },
+        ...target,
         replace: true
       });
       return;
     }
     void navigate({ to: "/workspaces", replace: true });
-  }, [navigate, state.currentWorkspaceId, state.initialized]);
+  }, [navigate, state.agents, state.currentWorkspaceId, state.initialized]);
 
   return <LoadingPanel text="Loading workspace" />;
 }
@@ -59,7 +59,7 @@ export function WorkspacesRoute() {
         description="Create a workspace or reopen one of your existing local workspaces."
       />
       <WorkspaceForm busy={state.busy} onCreateWorkspace={actions.createWorkspace} />
-      <WorkspaceList workspaces={state.workspaces} />
+      <WorkspaceList agents={state.agents} workspaces={state.workspaces} />
     </div>
   );
 }

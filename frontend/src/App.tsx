@@ -17,7 +17,8 @@ import {
   forgetWorkspaceAgent,
   readWorkspaceAgentNavigation,
   rememberWorkspaceAgent,
-  resolveWorkspaceAgentId
+  resolveWorkspaceAgentId,
+  workspaceSessionsRouteTarget
 } from "./app/workspaceAgentNavigation";
 import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
@@ -440,6 +441,7 @@ export function App() {
     async (path: string) => {
       await runBusy(async () => {
         const workspace = await api.createWorkspace(path);
+        const target = workspaceSessionsRouteTarget(workspace.id, state.agents);
         localStorage.setItem("currentWorkspaceId", workspace.id);
         localStorage.removeItem("currentSessionId");
         setState((current) => ({
@@ -449,10 +451,10 @@ export function App() {
           currentAgentId: resolveWorkspaceAgentId(workspace.id, current.agents),
           currentSession: null
         }));
-        await router.navigate({ to: "/workspaces/$workspaceId/sessions", params: { workspaceId: workspace.id } });
+        await router.navigate(target);
       });
     },
-    [runBusy]
+    [runBusy, state.agents]
   );
 
   const createSession = useCallback(async (

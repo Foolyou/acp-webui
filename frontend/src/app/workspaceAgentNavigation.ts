@@ -113,3 +113,29 @@ export function resolveWorkspaceAgentId(
   }
   return agents.find(isAvailableWorkspaceAgent)?.id ?? null;
 }
+
+export function workspaceSessionsRouteTarget(
+  workspaceId: string,
+  agents: AgentRuntimeStatus[],
+  storage: Storage = localStorage
+):
+  | {
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions";
+      params: { workspaceId: string; agentId: string };
+    }
+  | {
+      to: "/workspaces/$workspaceId/sessions";
+      params: { workspaceId: string };
+    } {
+  const agentId = resolveWorkspaceAgentId(workspaceId, agents, storage);
+  if (agentId) {
+    return {
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      params: { workspaceId, agentId }
+    };
+  }
+  return {
+    to: "/workspaces/$workspaceId/sessions",
+    params: { workspaceId }
+  };
+}

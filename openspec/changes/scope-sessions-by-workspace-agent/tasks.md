@@ -24,7 +24,7 @@
 - [x] 4.1 Add current-agent navigation state stored separately from last session creation profile state.
 - [x] 4.2 Add canonical workspace-agent session list, new session, and session detail routes.
 - [x] 4.3 Redirect legacy workspace session routes to the remembered or default agent route.
-- [ ] 4.4 Update workbench navigation and workspace shortcuts to enter the remembered workspace-agent sessions route.
+- [x] 4.4 Update workbench navigation and workspace shortcuts to enter the remembered workspace-agent sessions route.
 
 ## 5. Frontend Sessions UX
 

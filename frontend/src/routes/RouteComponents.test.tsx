@@ -244,6 +244,70 @@ describe("workspace-agent route components", () => {
     expect(context.actions.loadSessionList).not.toHaveBeenCalled();
   });
 
+  test("opens root route at remembered workspace-agent sessions route", async () => {
+    localStorage.setItem(
+      "workspaceAgentNavigation",
+      JSON.stringify({
+        version: 1,
+        currentAgentIdByWorkspace: { "workspace-current": "agent-remembered" }
+      })
+    );
+    setContext({
+      state: {
+        ...baseState(),
+        currentWorkspaceId: "workspace-current",
+        agents: [agent({ id: "agent-default" }), agent({ id: "agent-remembered" })]
+      }
+    });
+    const { IndexRoute } = await import("./RouteComponents");
+
+    IndexRoute();
+
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      params: { workspaceId: "workspace-current", agentId: "agent-remembered" },
+      replace: true
+    });
+  });
+
+  test("opens root route at default workspace-agent sessions route", async () => {
+    setContext({
+      state: {
+        ...baseState(),
+        currentWorkspaceId: "workspace-current",
+        agents: [agent({ id: "agent-default" })]
+      }
+    });
+    const { IndexRoute } = await import("./RouteComponents");
+
+    IndexRoute();
+
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      params: { workspaceId: "workspace-current", agentId: "agent-default" },
+      replace: true
+    });
+  });
+
+  test("opens root route at safe legacy workspace sessions route when no agent resolves", async () => {
+    setContext({
+      state: {
+        ...baseState(),
+        currentWorkspaceId: "workspace-current",
+        agents: [agent({ enabled: false })]
+      }
+    });
+    const { IndexRoute } = await import("./RouteComponents");
+
+    IndexRoute();
+
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/sessions",
+      params: { workspaceId: "workspace-current" },
+      replace: true
+    });
+  });
+
   test("replaces legacy new session route with default agent route", async () => {
     const context = setContext({
       state: {
