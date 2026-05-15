@@ -38,6 +38,7 @@ export function SessionsPane({
 }) {
   const [createOpen, setCreateOpen] = useState(false);
   const showCreate = sessions.length === 0 || createOpen;
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
 
   return (
     <section className="page-surface">
@@ -57,7 +58,7 @@ export function SessionsPane({
       ) : null}
       {showCreate ? (
         <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
-          {sessions.length === 0 ? <p className="empty">No sessions yet.</p> : null}
+          {sessions.length === 0 ? <p className="empty">{emptySessionsText(selectedAgent?.title)}</p> : null}
           <AgentCreateControls agents={agents} onCreate={onCreate} size={sessions.length > 0 ? "small" : undefined} />
         </div>
       ) : null}
@@ -72,6 +73,11 @@ export function SessionsPane({
       )}
     </section>
   );
+}
+
+function emptySessionsText(selectedAgentTitle?: string) {
+  if (!selectedAgentTitle) return "No sessions yet.";
+  return `No sessions for ${selectedAgentTitle} in this workspace.`;
 }
 
 function AgentSessionSwitcher({
@@ -290,17 +296,21 @@ function agentStatusText(agent: AgentRuntimeStatus) {
 }
 
 function SessionListRow({ item }: { item: SessionListItem }) {
+  const title = sessionRowTitle(item);
+  const nativeMetadata = sessionNativeMetadata(item);
+
   return (
     <Link
       className="list-item session-row"
       params={{ workspaceId: item.workspace.id, sessionId: item.session.id }}
       to="/workspaces/$workspaceId/sessions/$sessionId"
     >
-      <span className="item-title">{item.workspace.name}</span>
+      <span className="item-title">{title}</span>
       <span>
         {item.session.agentName} · {sessionStatusLabel(item.session.status)} · {formatRelativeTime(item.lastActivityAt)}
         <span className="visually-hidden"> {item.session.status}</span>
       </span>
+      {nativeMetadata ? <span className="model-summary">{nativeMetadata}</span> : null}
       {item.currentModel ? (
         <span className="model-summary">Model: {item.currentModel.name ?? item.currentModel.value}</span>
       ) : null}
@@ -326,6 +336,28 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       </span>
     </Link>
   );
+}
+
+function cleanTitle(value?: string | null) {
+  const title = value?.trim();
+  return title || null;
+}
+
+function sessionRowTitle(item: SessionListItem) {
+  return cleanTitle(item.session.title) ?? cleanTitle(item.session.nativeTitle) ?? `${item.session.agentName || item.session.id} session`;
+}
+
+function sessionNativeMetadata(item: SessionListItem) {
+  const metadata: string[] = [];
+  const localTitle = cleanTitle(item.session.title);
+  const nativeTitle = cleanTitle(item.session.nativeTitle);
+  if (nativeTitle && localTitle && nativeTitle !== localTitle) {
+    metadata.push(`Native: ${nativeTitle}`);
+  }
+  if (item.session.nativeUpdatedAt) {
+    metadata.push(`Native updated ${formatRelativeTime(item.session.nativeUpdatedAt)}`);
+  }
+  return metadata.join(" · ");
 }
 
 function ContinuityBadge({ item }: { item: SessionListItem }) {

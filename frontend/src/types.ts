@@ -81,6 +81,11 @@ export type Session = {
   workspaceId: string;
   agentId: string;
   agentName: string;
+  title?: string | null;
+  nativeTitle?: string | null;
+  nativeUpdatedAt?: string | null;
+  importSource?: string | null;
+  importedAt?: string | null;
   permissionMode: PermissionModeId;
   launchProfileId?: string;
   launchProfileKey?: string;

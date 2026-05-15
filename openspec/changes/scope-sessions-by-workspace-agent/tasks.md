@@ -29,7 +29,7 @@
 ## 5. Frontend Sessions UX
 
 - [x] 5.1 Add an agent switcher to the workspace Sessions surface and load the selected agent's list on change.
-- [ ] 5.2 Update session rows and empty states to use selected-agent scope and display native title metadata when available.
+- [x] 5.2 Update session rows and empty states to use selected-agent scope and display native title metadata when available.
 - [ ] 5.3 Update new-session flow to create sessions under the selected workspace and agent.
 - [ ] 5.4 Update Session Detail links, return navigation, and restore controls to preserve workspace-agent route context.
 - [ ] 5.5 Apply scoped realtime list-refresh events without showing sessions from unselected agents.
