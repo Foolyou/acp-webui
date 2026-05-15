@@ -399,6 +399,23 @@ pre {
   justify-content: flex-end;
 }
 
+.agent-session-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-session-switcher select {
+  min-width: min(100%, 13rem);
+  max-width: 100%;
+}
+
 .agent-create-controls {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));

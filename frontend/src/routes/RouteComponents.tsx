@@ -70,21 +70,21 @@ export function WorkspaceSessionsRoute() {
   const { actions, state } = useAppContext();
   const { createSession, loadSessionList, setCurrentWorkspace, setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+  const selectedAgentId = resolveWorkspaceAgentId(workspaceId, state.agents);
 
   useEffect(() => {
-    const agentId = resolveWorkspaceAgentId(workspaceId, state.agents);
-    if (agentId) {
-      setCurrentWorkspaceAgent(workspaceId, agentId);
+    if (selectedAgentId) {
+      setCurrentWorkspaceAgent(workspaceId, selectedAgentId);
       void navigate({
         to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-        params: { workspaceId, agentId },
+        params: { workspaceId, agentId: selectedAgentId },
         replace: true
       });
       return;
     }
     setCurrentWorkspace(workspaceId);
     void loadSessionList(workspaceId);
-  }, [loadSessionList, navigate, setCurrentWorkspace, setCurrentWorkspaceAgent, state.agents, workspaceId]);
+  }, [loadSessionList, navigate, selectedAgentId, setCurrentWorkspace, setCurrentWorkspaceAgent, workspaceId]);
 
   return (
     <SessionsPane
@@ -93,6 +93,13 @@ export function WorkspaceSessionsRoute() {
       onCreate={(agentId, permissionMode, launchControlValues) =>
         createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
+      onSelectAgent={(agentId) =>
+        void navigate({
+          to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+          params: { workspaceId, agentId }
+        })
+      }
+      selectedAgentId={selectedAgentId}
       sessions={state.sessions}
       workspace={workspace}
     />
@@ -101,6 +108,7 @@ export function WorkspaceSessionsRoute() {
 
 export function WorkspaceAgentSessionsRoute() {
   const { agentId, workspaceId } = workspaceAgentSessionsRoute.useParams();
+  const navigate = useNavigate();
   const { actions, state } = useAppContext();
   const { createSession, loadSessionList, setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
@@ -117,6 +125,13 @@ export function WorkspaceAgentSessionsRoute() {
       onCreate={(selectedAgentId, permissionMode, launchControlValues) =>
         createSession(workspaceId, selectedAgentId, permissionMode, launchControlValues)
       }
+      onSelectAgent={(selectedAgentId) =>
+        void navigate({
+          to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+          params: { workspaceId, agentId: selectedAgentId }
+        })
+      }
+      selectedAgentId={agentId}
       sessions={state.sessions}
       workspace={workspace}
     />

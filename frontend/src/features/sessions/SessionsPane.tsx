@@ -7,6 +7,7 @@ import {
   resolveLastSessionProfile,
   writeLastSessionProfile
 } from "../../app/lastSessionProfile";
+import { isAvailableWorkspaceAgent } from "../../app/workspaceAgentNavigation";
 import { PageHeader } from "../../components/common";
 import type { AgentPermissionModeStatus, AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
 import { formatRelativeTime } from "../../utils/format";
@@ -22,12 +23,16 @@ export function SessionsPane({
   agents,
   loading,
   onCreate,
+  onSelectAgent,
+  selectedAgentId,
   sessions,
   workspace
 }: {
   agents: AgentRuntimeStatus[];
   loading: boolean;
   onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
+  onSelectAgent?: (agentId: string) => void;
+  selectedAgentId?: string | null;
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
@@ -47,6 +52,9 @@ export function SessionsPane({
           ) : null}
         </div>
       </div>
+      {onSelectAgent ? (
+        <AgentSessionSwitcher agents={agents} onSelectAgent={onSelectAgent} selectedAgentId={selectedAgentId ?? null} />
+      ) : null}
       {showCreate ? (
         <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
           {sessions.length === 0 ? <p className="empty">No sessions yet.</p> : null}
@@ -63,6 +71,42 @@ export function SessionsPane({
         </div>
       )}
     </section>
+  );
+}
+
+function AgentSessionSwitcher({
+  agents,
+  onSelectAgent,
+  selectedAgentId
+}: {
+  agents: AgentRuntimeStatus[];
+  onSelectAgent: (agentId: string) => void;
+  selectedAgentId: string | null;
+}) {
+  if (!agents.length) return null;
+
+  return (
+    <label className="agent-session-switcher">
+      <span>Agent</span>
+      <select
+        aria-label="Selected agent"
+        onChange={(event) => {
+          const agentId = event.target.value;
+          const nextAgent = agents.find((agent) => agent.id === agentId);
+          if (!nextAgent || !isAvailableWorkspaceAgent(nextAgent) || agentId === selectedAgentId) return;
+          onSelectAgent(agentId);
+        }}
+        value={selectedAgentId ?? ""}
+      >
+        {!selectedAgentId ? <option value="">Select agent</option> : null}
+        {agents.map((agent) => (
+          <option disabled={!isAvailableWorkspaceAgent(agent)} key={agent.id} value={agent.id}>
+            {agent.title}
+            {isAvailableWorkspaceAgent(agent) ? "" : " (unavailable)"}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

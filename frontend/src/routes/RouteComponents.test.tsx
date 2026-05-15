@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
       sessionId: "session-route"
     }
   },
+  sessionsPane: vi.fn(),
   sessionPane: vi.fn()
 }));
 
@@ -58,7 +59,7 @@ vi.mock("../app/context", () => ({
 }));
 
 vi.mock("../features/sessions/SessionsPane", () => ({
-  SessionsPane: () => null
+  SessionsPane: mocks.sessionsPane
 }));
 
 vi.mock("../features/sessions/SessionPane", () => ({
@@ -208,6 +209,7 @@ describe("workspace-agent route components", () => {
     localStorage.clear();
     mocks.loadingPanel.mockReset();
     mocks.navigate.mockReset();
+    mocks.sessionsPane.mockReset();
     mocks.sessionPane.mockReset();
     mocks.params.workspaceAgentSessions = { workspaceId: "workspace-route", agentId: "agent-route" };
     mocks.params.workspaceAgentSessionDetail = {
@@ -363,6 +365,27 @@ describe("workspace-agent route components", () => {
 
     expect(context.actions.setCurrentWorkspaceAgent).toHaveBeenCalledWith("workspace-route", "agent-route");
     expect(context.actions.loadSessionList).toHaveBeenCalledWith("workspace-route", "agent-route");
+  });
+
+  test("passes selected agent and navigates when switching agents on canonical session list", async () => {
+    setContext();
+    const { WorkspaceAgentSessionsRoute } = await import("./RouteComponents");
+
+    const result = WorkspaceAgentSessionsRoute();
+
+    expect(result).toMatchObject({
+      type: mocks.sessionsPane,
+      props: {
+        selectedAgentId: "agent-route"
+      }
+    });
+
+    result.props.onSelectAgent("agent-next");
+
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      params: { workspaceId: "workspace-route", agentId: "agent-next" }
+    });
   });
 
   test("replaces mismatched canonical detail route with the loaded session scope", async () => {
