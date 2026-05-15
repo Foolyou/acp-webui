@@ -10,7 +10,11 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
-import { createSessionCreatingRouteTarget, createSessionDetailRouteTarget } from "./app/sessionCreationRoutes";
+import {
+  createRestoredSessionDetailRouteTarget,
+  createSessionCreatingRouteTarget,
+  createSessionDetailRouteTarget
+} from "./app/sessionCreationRoutes";
 import { messageToTimelineItem } from "./app/timeline";
 import { initialState } from "./app/types";
 import type { AppRouterContext, UiState } from "./app/types";
@@ -622,6 +626,7 @@ export function App() {
         const detail = await api.restoreSession(sessionId);
         localStorage.setItem("currentWorkspaceId", detail.workspace.id);
         localStorage.setItem("currentSessionId", detail.session.id);
+        rememberWorkspaceAgent(detail.workspace.id, detail.session.agentId);
         setState((current) => ({
           ...current,
           currentSession: detail,
@@ -633,6 +638,7 @@ export function App() {
           ],
           liveAssistant: ""
         }));
+        await router.navigate(createRestoredSessionDetailRouteTarget(detail));
       });
     },
     [runBusy]

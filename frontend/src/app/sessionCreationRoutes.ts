@@ -40,3 +40,15 @@ export function createSessionDetailRouteTarget(agentId: string | undefined, deta
     replace: true
   };
 }
+
+export function createRestoredSessionDetailRouteTarget(detail: SessionDetail) {
+  return {
+    to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId" as const,
+    params: {
+      workspaceId: detail.workspace.id,
+      agentId: detail.session.agentId,
+      sessionId: detail.session.id
+    },
+    replace: true
+  };
+}

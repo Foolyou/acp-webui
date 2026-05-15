@@ -309,8 +309,8 @@ function SessionListRow({ item }: { item: SessionListItem }) {
   return (
     <Link
       className="list-item session-row"
-      params={{ workspaceId: item.workspace.id, sessionId: item.session.id }}
-      to="/workspaces/$workspaceId/sessions/$sessionId"
+      params={{ workspaceId: item.workspace.id, agentId: item.session.agentId, sessionId: item.session.id }}
+      to="/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId"
     >
       <span className="item-title">{title}</span>
       <span>

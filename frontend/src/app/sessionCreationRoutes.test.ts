@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createSessionRouteTargets } from "./sessionCreationRoutes";
+import { createRestoredSessionDetailRouteTarget, createSessionRouteTargets } from "./sessionCreationRoutes";
 import type { SessionDetail } from "../types";
 
 function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
@@ -61,6 +61,35 @@ describe("createSessionRouteTargets", () => {
     expect(targets.detail).toEqual({
       to: "/workspaces/$workspaceId/sessions/$sessionId",
       params: { workspaceId: "workspace-1", sessionId: "session-1" },
+      replace: true
+    });
+  });
+});
+
+describe("createRestoredSessionDetailRouteTarget", () => {
+  test("uses the restored session's persisted workspace and agent", () => {
+    expect(
+      createRestoredSessionDetailRouteTarget(
+        detail({
+          session: {
+            ...detail().session,
+            id: "session-restored",
+            workspaceId: "workspace-returned",
+            agentId: "agent-returned"
+          },
+          workspace: {
+            ...detail().workspace,
+            id: "workspace-returned"
+          }
+        })
+      )
+    ).toEqual({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      params: {
+        workspaceId: "workspace-returned",
+        agentId: "agent-returned",
+        sessionId: "session-restored"
+      },
       replace: true
     });
   });

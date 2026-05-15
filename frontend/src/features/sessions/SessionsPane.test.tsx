@@ -5,12 +5,16 @@ import type { AgentRuntimeStatus, SessionListItem, Workspace } from "../../types
 
 const mocks = vi.hoisted(() => ({
   buttons: [] as Array<{ className?: string; label: string; onPress?: () => void }>,
+  links: [] as Array<{ params?: unknown; to?: string }>,
   button: vi.fn(({ children, className, onPress }: { children: ReactNode; className?: string; onPress?: () => void }) => {
     const label = Array.isArray(children) ? children.join(" ") : String(children);
     mocks.buttons.push({ className, label, onPress });
     return <button className={className}>{children}</button>;
   }),
-  link: vi.fn(({ children }) => <a>{children}</a>)
+  link: vi.fn(({ children, params, to }) => {
+    mocks.links.push({ params, to });
+    return <a>{children}</a>;
+  })
 }));
 
 function createStorage(): Storage {
@@ -94,6 +98,7 @@ describe("SessionsPane", () => {
     vi.stubGlobal("localStorage", createStorage());
     localStorage.clear();
     mocks.buttons = [];
+    mocks.links = [];
     mocks.button.mockClear();
     mocks.link.mockClear();
   });
@@ -143,6 +148,40 @@ describe("SessionsPane", () => {
     expect(html).toContain("Native: Native plan");
     expect(html).toContain("Native updated");
     expect(html).not.toContain("item-title\">Workspace Alpha");
+  });
+
+  test("links session rows to canonical workspace-agent detail routes", async () => {
+    const { SessionsPane } = await import("./SessionsPane");
+
+    renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent({ id: "agent-codex", title: "Codex" })]}
+        loading={false}
+        onCreate={vi.fn()}
+        selectedAgentId="agent-codex"
+        sessions={[
+          sessionItem({
+            session: {
+              ...sessionItem().session,
+              id: "session-imported",
+              agentId: "agent-codex",
+              agentName: "Codex"
+            },
+            workspace: workspace({ id: "workspace-routed" })
+          })
+        ]}
+        workspace={workspace({ id: "workspace-routed" })}
+      />
+    );
+
+    expect(mocks.links).toContainEqual({
+      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      params: {
+        workspaceId: "workspace-routed",
+        agentId: "agent-codex",
+        sessionId: "session-imported"
+      }
+    });
   });
 
   test("falls back to native session title when no local title exists", async () => {

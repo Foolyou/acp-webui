@@ -467,8 +467,8 @@ function SessionContextHeader({
       <div className="session-toolbar-summary">
         <Link
           className="secondary small session-list-link"
-          params={{ workspaceId: currentSession.workspace.id }}
-          to="/workspaces/$workspaceId/sessions"
+          params={{ workspaceId: currentSession.workspace.id, agentId: currentSession.session.agentId }}
+          to="/workspaces/$workspaceId/agents/$agentId/sessions"
         >
           Sessions
         </Link>
