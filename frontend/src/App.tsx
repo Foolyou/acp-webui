@@ -10,6 +10,7 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
+import { canApplySessionListLoad } from "./app/sessionListLoad";
 import {
   beginScopedSessionListRefresh,
   canApplyScopedSessionListRefresh,
@@ -184,6 +185,7 @@ export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const currentSessionIdRef = useRef<string | null>(null);
+  const sessionListLoadGenerationRef = useRef(0);
   const scopedRefreshRef = useRef(createScopedSessionListRefreshState({
     currentWorkspaceId: initialState.currentWorkspaceId,
     currentAgentId: initialState.currentAgentId
@@ -452,6 +454,12 @@ export function App() {
 
   const loadSessionList = useCallback(
     async (workspaceId?: string | null, agentId?: string | null) => {
+      const loadToken = {
+        workspaceId,
+        agentId,
+        generation: sessionListLoadGenerationRef.current + 1
+      };
+      sessionListLoadGenerationRef.current = loadToken.generation;
       setState((current) => ({ ...current, sessionsLoading: true, error: null }));
       try {
         const sessions =
@@ -460,13 +468,21 @@ export function App() {
             : workspaceId
               ? await api.workspaceSessions(workspaceId)
               : await api.sessions();
-        setState((current) => ({ ...current, sessions, sessionsLoading: false }));
+        setState((current) =>
+          canApplySessionListLoad(loadToken, sessionListLoadGenerationRef.current, current)
+            ? { ...current, sessions, sessionsLoading: false }
+            : current
+        );
       } catch (error) {
         if (isUnauthorized(error)) {
           await markUnauthorized();
           return;
         }
-        setState((current) => ({ ...current, error: errorMessage(error), sessionsLoading: false }));
+        setState((current) =>
+          canApplySessionListLoad(loadToken, sessionListLoadGenerationRef.current, current)
+            ? { ...current, error: errorMessage(error), sessionsLoading: false }
+            : current
+        );
       }
     },
     [markUnauthorized]
