@@ -47,13 +47,17 @@ async function startBackend() {
       "--codex-acp-arg=--script",
       "--codex-acp-arg",
       fakeAcpScript,
+      "--codex-acp-arg",
+      "--agent=codex",
       "--claude-acp-command",
       "uv",
       "--claude-acp-arg",
       "run",
       "--claude-acp-arg=--script",
       "--claude-acp-arg",
-      fakeAcpScript
+      fakeAcpScript,
+      "--claude-acp-arg",
+      "--agent=claude"
     ],
     {
       cwd: repoRoot,
@@ -1592,18 +1596,33 @@ test("approves a pending permission request and allows always options", async ({
   await expect(page.getByText("No approvals waiting.")).toBeVisible();
 });
 
-test("opens home to the workspace sessions list instead of the last session", async ({ page }) => {
+test("defaults home to remembered workspace-agent sessions and scopes native imports by selected agent", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
   await ensureWorkspace(page);
 
-  await startSession(page);
-  const ids = sessionRouteIds(page);
+  await expect(page).toHaveURL(/\/workspaces\/[^/]+\/agents\/codex\/sessions$/);
+  const ids = workspaceAgentSessionListRouteIds(page);
+  await expect(page.getByLabel("Selected agent")).toHaveValue("codex");
+  const codexNativeSession = page.getByRole("link", { name: /Fake E2E session/ });
+  await expect(codexNativeSession).toBeVisible();
+  await expect(codexNativeSession).toHaveAttribute(
+    "href",
+    new RegExp(`^/workspaces/${ids.workspaceId}/agents/codex/sessions/[^/]+$`)
+  );
 
   await page.goto("/");
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/agents/codex/sessions$`));
 
-  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/sessions$`));
+  await page.getByLabel("Selected agent").selectOption("claude");
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/agents/claude/sessions$`));
+  await expect(page.getByLabel("Selected agent")).toHaveValue("claude");
+  await expect(page.getByRole("link", { name: /Fake E2E session/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Fake E2E Claude session/ })).toBeVisible();
+
+  await page.goto("/");
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${ids.workspaceId}/agents/claude/sessions$`));
   await expect(page.getByRole("button", { name: "New session" })).toBeVisible();
   await expect(page.getByPlaceholder("Ask Codex...")).toHaveCount(0);
 });
@@ -2075,14 +2094,18 @@ async function openMenuAndClick(page: import("@playwright/test").Page, name: Reg
 }
 
 async function returnToWorkspaceSessions(page: import("@playwright/test").Page) {
-  const { workspaceId } = sessionRouteIds(page);
+  const { agentId, workspaceId } = sessionRouteIds(page);
   const legacyBackLink = page.getByRole("link", { name: "Back to sessions" });
   if ((await legacyBackLink.count()) > 0) {
     await legacyBackLink.click();
   } else {
     await page.getByRole("link", { name: "Sessions" }).click();
   }
-  await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/sessions$`));
+  if (agentId) {
+    await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/agents/${agentId}/sessions$`));
+  } else {
+    await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/sessions$`));
+  }
 }
 
 async function expandSessionInfo(page: import("@playwright/test").Page) {
@@ -2322,11 +2345,24 @@ function sessionWorkspaceId(page: import("@playwright/test").Page) {
 }
 
 function sessionRouteIds(page: import("@playwright/test").Page) {
-  const match = new URL(page.url()).pathname.match(/^\/workspaces\/([^/]+)\/sessions\/([^/]+)/);
-  if (!match) {
+  const path = new URL(page.url()).pathname;
+  const canonicalMatch = path.match(/^\/workspaces\/([^/]+)\/agents\/([^/]+)\/sessions\/([^/]+)/);
+  if (canonicalMatch) {
+    return { agentId: canonicalMatch[2], sessionId: canonicalMatch[3], workspaceId: canonicalMatch[1] };
+  }
+  const legacyMatch = path.match(/^\/workspaces\/([^/]+)\/sessions\/([^/]+)/);
+  if (!legacyMatch) {
     throw new Error(`Current page is not a session route: ${page.url()}`);
   }
-  return { sessionId: match[2], workspaceId: match[1] };
+  return { agentId: null, sessionId: legacyMatch[2], workspaceId: legacyMatch[1] };
+}
+
+function workspaceAgentSessionListRouteIds(page: import("@playwright/test").Page) {
+  const match = new URL(page.url()).pathname.match(/^\/workspaces\/([^/]+)\/agents\/([^/]+)\/sessions$/);
+  if (!match) {
+    throw new Error(`Current page is not a workspace-agent session list route: ${page.url()}`);
+  }
+  return { agentId: match[2], workspaceId: match[1] };
 }
 
 async function waitForBackend() {

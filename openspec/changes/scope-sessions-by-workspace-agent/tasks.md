@@ -40,4 +40,4 @@
 - [ ] 6.2 Run Go backend tests.
 - [ ] 6.3 Run frontend unit tests.
 - [ ] 6.4 Run frontend lint/build checks.
-- [ ] 6.5 Run or update browser automation coverage for route defaults, agent switching, and imported native sessions.
+- [x] 6.5 Run or update browser automation coverage for route defaults, agent switching, and imported native sessions.

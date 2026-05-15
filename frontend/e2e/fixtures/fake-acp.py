@@ -7,12 +7,23 @@ import json
 import sys
 import time
 
+agent_name = "codex"
+for arg in sys.argv[1:]:
+    if arg.startswith("--agent="):
+        agent_name = arg.split("=", 1)[1] or agent_name
+
 session_id = "fake-e2e-session"
+native_session_title = (
+    "Fake E2E Claude session" if agent_name == "claude" else "Fake E2E session"
+)
 current_model = "fast"
 
 
 def send(message):
-    print(json.dumps(message), flush=True)
+    try:
+        print(json.dumps(message), flush=True)
+    except OSError:
+        sys.exit(0)
 
 
 def config_options():
@@ -88,7 +99,7 @@ for line in sys.stdin:
                         {
                             "sessionId": "fake-e2e-session",
                             "cwd": cwd,
-                            "title": "Fake E2E session",
+                            "title": native_session_title,
                             "updatedAt": "2026-05-15T00:00:00Z",
                         }
                     ]
