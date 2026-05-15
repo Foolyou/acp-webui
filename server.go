@@ -53,6 +53,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}/sessions", s.handleWorkspaceSessions)
 	s.mux.HandleFunc("POST /api/workspaces/{workspaceId}/sessions", s.handleCreateSession)
+	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}/agents/{agentId}/sessions", s.handleWorkspaceAgentSessions)
 	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}/agents/{agentId}/prompt-templates", s.handlePromptTemplates)
 	s.mux.HandleFunc("POST /api/workspaces/{workspaceId}/agents/{agentId}/prompt-templates", s.handleCreatePromptTemplate)
 	s.mux.HandleFunc("PATCH /api/prompt-templates/{templateId}", s.handleUpdatePromptTemplate)
@@ -173,6 +174,36 @@ func (s *Server) handleWorkspaceSessions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items, err := s.storage.ListSessionItems(r.Context(), &workspaceID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, nonNilSlice(s.applySessionListContinuity(items)))
+}
+
+func (s *Server) handleWorkspaceAgentSessions(w http.ResponseWriter, r *http.Request) {
+	workspace, err := s.storage.GetWorkspace(r.Context(), r.PathValue("workspaceId"))
+	if err != nil {
+		writeError(w, notFound("Workspace not found"))
+		return
+	}
+	agentID, err := s.agents.resolveAgentID(r.PathValue("agentId"))
+	if err != nil {
+		writeError(w, badRequest(err.Error()))
+		return
+	}
+	permissionMode, err := s.agents.resolvePermissionMode(agentID, permissionManual)
+	if err != nil {
+		writeError(w, badRequest(err.Error()))
+		return
+	}
+	// Until route/query launch controls exist, list sync uses the selected agent's default manual profile.
+	profile, err := s.agents.resolveLaunchProfile(agentID, permissionMode, nil)
+	if err != nil {
+		writeError(w, badRequest(err.Error()))
+		return
+	}
+	items, err := s.agents.SyncWorkspaceAgentSessions(r.Context(), workspace, agentID, profile)
 	if err != nil {
 		writeError(w, err)
 		return
