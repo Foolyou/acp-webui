@@ -4,12 +4,12 @@
 Define the mobile Sessions surface, including the backend session list projection, row metadata, navigation to Session Detail, realtime freshness, and loading or empty states.
 ## Requirements
 ### Requirement: Backend provides session list projection
-The system SHALL provide persisted session list projections suitable for workspace-scoped navigation.
+The system SHALL provide persisted session list projections suitable for workspace-agent-scoped navigation.
 
 #### Scenario: Browser loads session list
-- **WHEN** the browser requests the session list for a workspace
-- **THEN** the backend SHALL return persisted sessions for that workspace ordered by most recent activity first
-- **AND** each row SHALL include the session id, workspace id, workspace name, agent name, permission mode, current status, creation timestamp, last activity timestamp, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
+- **WHEN** the browser requests the session list for a workspace and agent
+- **THEN** the backend SHALL return persisted sessions for that workspace and agent ordered by most recent activity first
+- **AND** each row SHALL include the session id, workspace id, workspace name, agent id, agent name, title when available, permission mode, current status, creation timestamp, last activity timestamp, native updated timestamp when available, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
 
 #### Scenario: Session has non-manual permission mode
 - **WHEN** a listed session has permission mode `full_auto` or `yolo`
@@ -32,17 +32,17 @@ The system SHALL provide persisted session list projections suitable for workspa
 - **AND** it SHALL include a compact reason suitable for the browser to present in Session Detail
 
 ### Requirement: User can open session from Sessions list
-The system SHALL allow the user to navigate from a workspace-scoped session list row to the corresponding Session Detail route.
+The system SHALL allow the user to navigate from a workspace-agent-scoped session list row to the corresponding Session Detail route.
 
 #### Scenario: User selects a session
 - **WHEN** the user selects a session from the Sessions list
-- **THEN** the browser SHALL navigate to that session's routed Session Detail
+- **THEN** the browser SHALL navigate to that session's routed Session Detail including workspace id, agent id, and session id
 - **AND** it SHALL render the Session Detail for that session
 
 #### Scenario: Selected session no longer exists
 - **WHEN** the user selects a session that no longer exists or cannot be loaded
 - **THEN** the browser SHALL show a readable error
-- **AND** it SHALL keep the user in the current workspace context
+- **AND** it SHALL keep the user in the current workspace and agent context
 
 ### Requirement: Sessions list stays current during realtime updates
 The system SHALL keep the visible Sessions list current as session status, approval state, permission mode metadata, and review artifact availability change.
@@ -67,13 +67,13 @@ The system SHALL keep the visible Sessions list current as session status, appro
 ### Requirement: Sessions list supports empty and loading states
 The Sessions surface SHALL provide clear loading, creation, agent selection, and empty states aligned to the routed workbench.
 
-#### Scenario: No sessions exist
-- **WHEN** the browser loads the Sessions list for a workspace and no sessions have been created
-- **THEN** the browser SHALL show an empty state
-- **AND** it SHALL provide a path to start a new session in that workspace with an available agent
+#### Scenario: No sessions exist for selected agent
+- **WHEN** the browser loads the Sessions list for a workspace and selected agent and no sessions exist for that scope
+- **THEN** the browser SHALL show an empty state for that selected agent
+- **AND** it SHALL provide a path to start a new session in that workspace with the selected agent
 
 #### Scenario: Sessions are loading
-- **WHEN** the browser is fetching the Sessions list
+- **WHEN** the browser is fetching the Sessions list for a workspace and agent
 - **THEN** the browser SHALL show a non-blocking loading state that does not obscure existing application status indicators
 
 #### Scenario: Session is being created
@@ -159,4 +159,35 @@ The Sessions surface SHALL present session creation controls and session rows wi
 - **WHEN** the session creation area includes disabled, failed, idle, and ready agent modes together
 - **THEN** it SHALL keep available modes visually comparable and selectable where allowed
 - **AND** unavailable modes SHALL show readable status without breaking row or grid alignment
+
+### Requirement: Sessions surface is scoped by selected agent
+The Sessions surface SHALL render and operate on sessions for one selected agent within the current workspace.
+
+#### Scenario: User views workspace sessions
+- **WHEN** the workspace Sessions surface is visible
+- **THEN** it SHALL show the selected agent as part of the session-list context
+- **AND** it SHALL list only sessions whose persisted workspace id and agent id match that context
+
+#### Scenario: User changes selected agent
+- **WHEN** the user changes the selected agent
+- **THEN** the browser SHALL request the session list for the new workspace-agent scope
+- **AND** rows from the previously selected agent SHALL no longer be shown in the active list
+
+#### Scenario: Existing sessions belong to other agents
+- **WHEN** sessions exist for the workspace under agents other than the selected agent
+- **THEN** the active Sessions surface SHALL keep those sessions hidden
+- **AND** it SHALL make them reachable by switching to their owning agent
+
+### Requirement: Session list refreshes after native import
+The system SHALL keep the visible workspace-agent Sessions list current when native ACP sessions are imported or updated.
+
+#### Scenario: Native sessions are imported for visible scope
+- **WHEN** the backend imports native sessions for the workspace and selected agent currently visible in the browser
+- **THEN** the browser SHALL refresh or patch the visible session list
+- **AND** it SHALL show newly imported sessions without requiring a page reload
+
+#### Scenario: Native sessions are imported for another agent
+- **WHEN** the backend imports native sessions for a different agent than the one currently selected
+- **THEN** the browser SHALL keep the active list scoped to the selected agent
+- **AND** it SHALL NOT show the other agent's sessions until the user switches agents
 
