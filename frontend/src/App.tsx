@@ -10,6 +10,7 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
+import { shouldRefreshScopedSessionList } from "./app/scopedSessionListRefresh";
 import {
   createRestoredSessionDetailRouteTarget,
   createSessionCreatingRouteTarget,
@@ -178,10 +179,21 @@ export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const currentSessionIdRef = useRef<string | null>(null);
+  const currentScopeRef = useRef({
+    currentWorkspaceId: initialState.currentWorkspaceId,
+    currentAgentId: initialState.currentAgentId
+  });
 
   useEffect(() => {
     currentSessionIdRef.current = state.currentSession?.session.id ?? null;
   }, [state.currentSession?.session.id]);
+
+  useEffect(() => {
+    currentScopeRef.current = {
+      currentWorkspaceId: state.currentWorkspaceId,
+      currentAgentId: state.currentAgentId
+    };
+  }, [state.currentWorkspaceId, state.currentAgentId]);
 
   const markUnauthorized = useCallback(async () => {
     const auth = await api.authStatus().catch(() => ({
@@ -280,6 +292,36 @@ export function App() {
       }
     }
 
+    async function refreshScopedSessionList(message: Extract<RealtimeEvent, { type: "session_list_changed" }>) {
+      if (!shouldRefreshScopedSessionList(message, currentScopeRef.current)) {
+        return;
+      }
+      try {
+        const sessions = await api.workspaceAgentSessions(message.workspaceId, message.agentId);
+        setState((current) =>
+          shouldRefreshScopedSessionList(message, {
+            currentWorkspaceId: current.currentWorkspaceId,
+            currentAgentId: current.currentAgentId
+          })
+            ? { ...current, sessions }
+            : current
+        );
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          await markUnauthorized();
+          return;
+        }
+        setState((current) =>
+          shouldRefreshScopedSessionList(message, {
+            currentWorkspaceId: current.currentWorkspaceId,
+            currentAgentId: current.currentAgentId
+          })
+            ? { ...current, error: errorMessage(error) }
+            : current
+        );
+      }
+    }
+
     function scheduleReconnect() {
       if (closedByEffect || reconnectTimer.current !== undefined) return;
       reconnectTimer.current = window.setTimeout(() => {
@@ -317,6 +359,10 @@ export function App() {
             codex: message.agentId === "codex" ? message.status : current.codex,
             agents: updateAgentStatus(current.agents, message.agentId, message.status, message.permissionMode)
           }));
+          return;
+        }
+        if (message.type === "session_list_changed") {
+          void refreshScopedSessionList(message);
           return;
         }
         setState((current) => ({

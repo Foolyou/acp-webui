@@ -376,6 +376,7 @@ export type RealtimeEvent =
   | { type: "session_restore_started"; sessionId: string }
   | { type: "session_restore_succeeded"; sessionId: string }
   | { type: "session_restore_failed"; sessionId: string; message: string }
+  | { type: "session_list_changed"; workspaceId: string; agentId: string; count: number }
   | {
       type: "session_config_updated";
       sessionId: string;
