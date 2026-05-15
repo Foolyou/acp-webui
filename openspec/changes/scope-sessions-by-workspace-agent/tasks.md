@@ -7,7 +7,7 @@
 
 ## 2. ACP Runtime Sync
 
-- [ ] 2.1 Add ACP `session/list` capability parsing and request/response models.
+- [x] 2.1 Add ACP `session/list` capability parsing and request/response models.
 - [ ] 2.2 Implement paged native session list calls filtered by workspace cwd when the agent supports listing.
 - [ ] 2.3 Add an agent runtime manager sync helper that starts or retries the selected compatible runtime and imports native sessions before list projection.
 - [ ] 2.4 Add fake ACP and backend tests for list support, unsupported list capability, paging, startup failure, and repeated sync idempotence.

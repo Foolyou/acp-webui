@@ -208,6 +208,31 @@ func TestAgentRuntimePermissionResponsesPreserveJSONRPCIDType(t *testing.T) {
 	}
 }
 
+func TestParseAgentSessionCapabilitiesTreatsExplicitListFalseAsUnsupported(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{name: "missing", json: `{}`, want: false},
+		{name: "false", json: `{"list": false}`, want: false},
+		{name: "true", json: `{"list": true}`, want: true},
+		{name: "object", json: `{"list": {"pagination": true}}`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var caps initializeSessionCapabilities
+			if err := json.Unmarshal([]byte(tt.json), &caps); err != nil {
+				t.Fatal(err)
+			}
+			got := parseAgentSessionCapabilities(false, caps).ListSessions
+			if got != tt.want {
+				t.Fatalf("ListSessions = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func testRuntimeSession(t *testing.T) (*Storage, Session) {
 	t.Helper()
 	ctx := context.Background()

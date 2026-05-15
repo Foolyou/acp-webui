@@ -19,6 +19,43 @@ import (
 
 const maxDisplayImageBytes = 5 * 1024 * 1024
 
+type initializeResult struct {
+	AgentInfo         any `json:"agentInfo"`
+	AgentCapabilities struct {
+		LoadSession         bool                          `json:"loadSession"`
+		SessionCapabilities initializeSessionCapabilities `json:"sessionCapabilities"`
+		PromptCapabilities  struct {
+			Image           bool `json:"image"`
+			Audio           bool `json:"audio"`
+			EmbeddedContext bool `json:"embeddedContext"`
+		} `json:"promptCapabilities"`
+	} `json:"agentCapabilities"`
+}
+
+type initializeSessionCapabilities struct {
+	List   any `json:"list"`
+	Resume any `json:"resume"`
+	Close  any `json:"close"`
+}
+
+type ACPSessionListParams struct {
+	CWD    string  `json:"cwd,omitempty"`
+	Cursor *string `json:"cursor,omitempty"`
+}
+
+type ACPSessionListResult struct {
+	Sessions   []ACPSessionListItem `json:"sessions"`
+	NextCursor *string              `json:"nextCursor,omitempty"`
+}
+
+type ACPSessionListItem struct {
+	SessionID string         `json:"sessionId"`
+	CWD       string         `json:"cwd"`
+	Title     *string        `json:"title,omitempty"`
+	UpdatedAt *string        `json:"updatedAt,omitempty"`
+	Meta      map[string]any `json:"_meta,omitempty"`
+}
+
 type EventHub struct {
 	mu   sync.Mutex
 	subs map[chan any]struct{}
@@ -340,22 +377,7 @@ func (r *AgentRuntime) ensureReady(ctx context.Context) error {
 		}
 	}()
 
-	var initResult struct {
-		AgentInfo         any `json:"agentInfo"`
-		AgentCapabilities struct {
-			LoadSession         bool `json:"loadSession"`
-			SessionCapabilities struct {
-				List   any `json:"list"`
-				Resume any `json:"resume"`
-				Close  any `json:"close"`
-			} `json:"sessionCapabilities"`
-			PromptCapabilities struct {
-				Image           bool `json:"image"`
-				Audio           bool `json:"audio"`
-				EmbeddedContext bool `json:"embeddedContext"`
-			} `json:"promptCapabilities"`
-		} `json:"agentCapabilities"`
-	}
+	var initResult initializeResult
 	if err := r.request(ctx, "initialize", initializeParams(), &initResult); err != nil {
 		r.setStatus(failedStatus(err.Error()))
 		return err
@@ -365,21 +387,33 @@ func (r *AgentRuntime) ensureReady(ctx context.Context) error {
 		Audio:           initResult.AgentCapabilities.PromptCapabilities.Audio,
 		EmbeddedContext: initResult.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 	}
-	sessionCaps := AgentSessionCapabilities{
-		LoadSession:   initResult.AgentCapabilities.LoadSession,
-		ResumeSession: initResult.AgentCapabilities.SessionCapabilities.Resume != nil && initResult.AgentCapabilities.SessionCapabilities.Resume != false,
-		ListSessions:  initResult.AgentCapabilities.SessionCapabilities.List != nil,
-		CloseSession:  initResult.AgentCapabilities.SessionCapabilities.Close != nil,
-	}
-	if initResult.AgentCapabilities.LoadSession {
-		sessionCaps.LoadSession = true
-	}
+	sessionCaps := parseAgentSessionCapabilities(initResult.AgentCapabilities.LoadSession, initResult.AgentCapabilities.SessionCapabilities)
 	r.mu.Lock()
 	r.promptCaps = promptCaps
 	r.sessionCaps = sessionCaps
 	r.mu.Unlock()
 	r.setStatus(readyStatus(initResult.AgentInfo, promptCaps, sessionCaps))
 	return nil
+}
+
+func parseAgentSessionCapabilities(loadSession bool, caps initializeSessionCapabilities) AgentSessionCapabilities {
+	return AgentSessionCapabilities{
+		LoadSession:   loadSession,
+		ResumeSession: acpCapabilityAdvertised(caps.Resume),
+		ListSessions:  acpCapabilityAdvertised(caps.List),
+		CloseSession:  acpCapabilityAdvertised(caps.Close),
+	}
+}
+
+func acpCapabilityAdvertised(value any) bool {
+	switch capability := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return capability
+	default:
+		return true
+	}
 }
 
 func (r *AgentRuntime) request(ctx context.Context, method string, params any, target any) error {
