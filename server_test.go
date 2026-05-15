@@ -262,6 +262,56 @@ func TestHandleCreateSessionResponseIncludesWorkspaceAgentRouteContext(t *testin
 	}
 }
 
+func TestHandleCreateSessionPublishesScopedListChangedEvent(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	events := manager.events.Subscribe()
+	defer manager.events.Unsubscribe(events)
+	runtime := newReadySessionListRuntime(t, storage, false)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"codex","permissionMode":"manual"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequest(t, decoder, runtime, nativePathString(workspace.Path), "created-event-session")
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	event := receiveSessionListChangedEvent(t, events)
+	if event["workspaceId"] != workspace.ID {
+		t.Fatalf("workspaceId = %#v, want %q", event["workspaceId"], workspace.ID)
+	}
+	if event["agentId"] != codexAgentID {
+		t.Fatalf("agentId = %#v, want %q", event["agentId"], codexAgentID)
+	}
+	if event["count"] != 1 {
+		t.Fatalf("count = %#v, want 1", event["count"])
+	}
+}
+
 func TestImportedNativeSessionListAndDetailIncludeRouteContext(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)

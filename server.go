@@ -275,6 +275,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.events.Publish(map[string]any{
+		"type":        "session_list_changed",
+		"workspaceId": session.WorkspaceID,
+		"agentId":     session.AgentID,
+		"count":       1,
+	})
 	writeJSON(w, http.StatusOK, detail)
 }
 
