@@ -108,6 +108,82 @@ func TestStorageSessionNativeImportMigration(t *testing.T) {
 	}
 }
 
+func TestStorageImportsNativeSessionProjection(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ResolvedAgentLaunchProfile{
+		ID:             permissionManual,
+		Key:            "permission=manual",
+		PermissionMode: permissionManual,
+		Summary: []AgentControlSelection{{
+			ID:         "permission",
+			Label:      "Permission",
+			Value:      permissionManual,
+			ValueLabel: "Manual",
+			Category:   "permission",
+			Scope:      "launch",
+			RiskLevel:  stringPtr("low"),
+		}},
+	}
+	nativeUpdated := "2026-05-15T12:00:00Z"
+	imported, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-1",
+		Title:             stringPtr("Native title"),
+		NativeUpdatedAt:   &nativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      "acp_session_list",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.ACPSessionID != nil || imported.ExternalSessionID == nil || *imported.ExternalSessionID != "external-1" {
+		t.Fatalf("imported session ids = acp:%#v external:%#v", imported.ACPSessionID, imported.ExternalSessionID)
+	}
+	if imported.Status != statusIdle || imported.Title == nil || *imported.Title != "Native title" {
+		t.Fatalf("imported session metadata = %#v", imported)
+	}
+
+	updatedTitle := "Renamed native title"
+	updated, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       "ignored-workspace",
+		AgentID:           codexAgentID,
+		AgentName:         "Ignored Agent",
+		ExternalSessionID: "external-1",
+		Title:             &updatedTitle,
+		PermissionMode:    permissionYolo,
+		LaunchProfile:     ResolvedAgentLaunchProfile{ID: "ignored", Key: "ignored"},
+		ImportSource:      "acp_session_list",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != imported.ID {
+		t.Fatalf("upsert created a new row: %s != %s", updated.ID, imported.ID)
+	}
+	if updated.WorkspaceID != workspace.ID || updated.AgentName != "Codex" || updated.PermissionMode != permissionManual {
+		t.Fatalf("upsert mutated preserved fields: %#v", updated)
+	}
+	if updated.Title == nil || *updated.Title != updatedTitle {
+		t.Fatalf("updated title = %#v", updated.Title)
+	}
+
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Session.ID != imported.ID {
+		t.Fatalf("agent-scoped items = %#v", items)
+	}
+}
+
 func TestStorageStartupExpiresPendingPermissionsAndFailsSessions(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

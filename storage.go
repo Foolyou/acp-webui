@@ -36,6 +36,19 @@ type NewPermissionRequest struct {
 	Options      []PermissionOption
 }
 
+type NativeSessionImport struct {
+	WorkspaceID       string
+	AgentID           string
+	AgentName         string
+	ExternalSessionID string
+	Title             *string
+	NativeTitle       *string
+	NativeUpdatedAt   *string
+	PermissionMode    string
+	LaunchProfile     ResolvedAgentLaunchProfile
+	ImportSource      string
+}
+
 func openStorage(databaseURL string) (*Storage, error) {
 	path := sqlitePathFromURL(databaseURL)
 	if path != ":memory:" {
@@ -352,26 +365,130 @@ func (s *Storage) CreateSession(ctx context.Context, workspaceID string, agentID
 	return s.GetSession(ctx, id)
 }
 
+func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionImport) (Session, error) {
+	if strings.TrimSpace(input.WorkspaceID) == "" {
+		return Session{}, fmt.Errorf("workspace id is required")
+	}
+	if strings.TrimSpace(input.AgentID) == "" {
+		return Session{}, fmt.Errorf("agent id is required")
+	}
+	if strings.TrimSpace(input.ExternalSessionID) == "" {
+		return Session{}, fmt.Errorf("external session id is required")
+	}
+	nativeTitle := input.NativeTitle
+	if nativeTitle == nil {
+		nativeTitle = input.Title
+	}
+	importSource := strings.TrimSpace(input.ImportSource)
+	if importSource == "" {
+		importSource = importSourceACPSessionList
+	}
+	now := nowString()
+
+	var existingID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM sessions
+		WHERE agent_id = ? AND external_session_id = ?
+		LIMIT 1`,
+		input.AgentID, input.ExternalSessionID,
+	).Scan(&existingID)
+	if err == nil {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE sessions
+			SET title = COALESCE(?, title),
+			    native_title = COALESCE(?, native_title),
+			    native_updated_at = COALESCE(?, native_updated_at),
+			    import_source = ?,
+			    imported_at = ?,
+			    updated_at = ?
+			WHERE id = ?`,
+			input.Title, nativeTitle, input.NativeUpdatedAt, importSource, now, now, existingID,
+		)
+		if err != nil {
+			return Session{}, err
+		}
+		return s.GetSession(ctx, existingID)
+	}
+	if err != sql.ErrNoRows {
+		return Session{}, err
+	}
+
+	permissionMode := strings.TrimSpace(input.PermissionMode)
+	if permissionMode == "" {
+		permissionMode = input.LaunchProfile.PermissionMode
+	}
+	if permissionMode == "" {
+		permissionMode = permissionManual
+	}
+	launchProfileID := strings.TrimSpace(input.LaunchProfile.ID)
+	if launchProfileID == "" {
+		launchProfileID = permissionMode
+	}
+	launchProfileKey := strings.TrimSpace(input.LaunchProfile.Key)
+	if launchProfileKey == "" {
+		launchProfileKey = launchProfileID
+	}
+
+	id := uuid.NewString()
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO sessions(
+			id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at,
+			external_session_id, continuation_state, agent_id, config_options_json,
+			current_model_config_id, current_model_value, current_model_name, permission_mode,
+			launch_profile_id, launch_profile_key, launch_control_summary_json,
+			title, native_title, native_updated_at, import_source, imported_at
+		)
+		VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, input.WorkspaceID, input.AgentName, statusIdle, now, now,
+		input.ExternalSessionID, continuityViewOnly, input.AgentID, permissionMode,
+		launchProfileID, launchProfileKey, mustJSON(input.LaunchProfile.Summary),
+		input.Title, nativeTitle, input.NativeUpdatedAt, importSource, now,
+	)
+	if err != nil {
+		return Session{}, err
+	}
+	return s.GetSession(ctx, id)
+}
+
 func (s *Storage) GetSession(ctx context.Context, id string) (Session, error) {
 	return scanSession(s.db.QueryRowContext(ctx, `
 		SELECT id, workspace_id, agent_id, agent_name, permission_mode, launch_profile_id, launch_profile_key,
-		       acp_session_id, external_session_id, status, created_at, updated_at
+		       title, native_title, native_updated_at, acp_session_id, external_session_id, status,
+		       import_source, imported_at, created_at, updated_at
 		FROM sessions WHERE id = ?`, id))
 }
 
 func scanSession(scanner interface{ Scan(dest ...any) error }) (Session, error) {
 	var session Session
-	var acpID, externalID sql.NullString
+	var title, nativeTitle, nativeUpdatedAt, acpID, externalID, importSource, importedAt sql.NullString
 	err := scanner.Scan(
 		&session.ID, &session.WorkspaceID, &session.AgentID, &session.AgentName, &session.PermissionMode,
-		&session.LaunchProfileID, &session.LaunchProfileKey, &acpID, &externalID,
-		&session.Status, &session.CreatedAt, &session.UpdatedAt,
+		&session.LaunchProfileID, &session.LaunchProfileKey, &title, &nativeTitle, &nativeUpdatedAt,
+		&acpID, &externalID, &session.Status, &importSource, &importedAt, &session.CreatedAt, &session.UpdatedAt,
 	)
+	if title.Valid {
+		session.Title = &title.String
+	}
+	if nativeTitle.Valid {
+		session.NativeTitle = &nativeTitle.String
+	}
+	if nativeUpdatedAt.Valid {
+		session.NativeUpdatedAt = &nativeUpdatedAt.String
+	}
 	if acpID.Valid {
 		session.ACPSessionID = &acpID.String
 	}
 	if externalID.Valid {
 		session.ExternalSessionID = &externalID.String
+	}
+	if importSource.Valid {
+		session.ImportSource = importSource.String
+	} else {
+		session.ImportSource = importSourceLocal
+	}
+	if importedAt.Valid {
+		session.ImportedAt = &importedAt.String
 	}
 	return session, err
 }
@@ -435,6 +552,8 @@ func (s *Storage) SessionContinuityRow(ctx context.Context, id string) (SessionC
 			value = &started.String
 		}
 		return SessionContinuity{State: continuityRestoreFailed, Reason: &message, FailureMessage: &message, RestoreStartedAt: value}, nil
+	case continuityViewOnly:
+		return viewOnlyContinuity("This session is not connected to a live agent runtime."), nil
 	default:
 		return liveContinuity(), nil
 	}
@@ -1270,15 +1389,32 @@ func (s *Storage) timeline(ctx context.Context, sessionID string, permissionHist
 }
 
 func (s *Storage) ListSessionItems(ctx context.Context, workspaceID *string) ([]SessionListItem, error) {
+	return s.listSessionItems(ctx, workspaceID, nil)
+}
+
+func (s *Storage) ListSessionItemsForAgent(ctx context.Context, workspaceID string, agentID string) ([]SessionListItem, error) {
+	return s.listSessionItems(ctx, &workspaceID, &agentID)
+}
+
+func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, agentID *string) ([]SessionListItem, error) {
 	query := `
 		SELECT s.id, s.workspace_id, s.agent_id, s.agent_name, s.permission_mode, s.launch_profile_id, s.launch_profile_key,
-		       s.acp_session_id, s.external_session_id, s.status, s.created_at, s.updated_at,
+		       s.title, s.native_title, s.native_updated_at, s.acp_session_id, s.external_session_id, s.status,
+		       s.import_source, s.imported_at, s.created_at, s.updated_at,
 		       w.id, w.name, w.path, w.created_at
 		FROM sessions s JOIN workspaces w ON w.id = s.workspace_id`
 	args := []any{}
+	var conditions []string
 	if workspaceID != nil {
-		query += ` WHERE s.workspace_id = ?`
+		conditions = append(conditions, `s.workspace_id = ?`)
 		args = append(args, *workspaceID)
+	}
+	if agentID != nil {
+		conditions = append(conditions, `s.agent_id = ?`)
+		args = append(args, *agentID)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	query += ` ORDER BY s.updated_at DESC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1293,19 +1429,36 @@ func (s *Storage) ListSessionItems(ctx context.Context, workspaceID *string) ([]
 	for rows.Next() {
 		var session Session
 		var workspace Workspace
-		var acpID, externalID sql.NullString
+		var title, nativeTitle, nativeUpdatedAt, acpID, externalID, importSource, importedAt sql.NullString
 		if err := rows.Scan(
 			&session.ID, &session.WorkspaceID, &session.AgentID, &session.AgentName, &session.PermissionMode, &session.LaunchProfileID, &session.LaunchProfileKey,
-			&acpID, &externalID, &session.Status, &session.CreatedAt, &session.UpdatedAt,
+			&title, &nativeTitle, &nativeUpdatedAt, &acpID, &externalID, &session.Status, &importSource, &importedAt, &session.CreatedAt, &session.UpdatedAt,
 			&workspace.ID, &workspace.Name, &workspace.Path, &workspace.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if title.Valid {
+			session.Title = &title.String
+		}
+		if nativeTitle.Valid {
+			session.NativeTitle = &nativeTitle.String
+		}
+		if nativeUpdatedAt.Valid {
+			session.NativeUpdatedAt = &nativeUpdatedAt.String
 		}
 		if acpID.Valid {
 			session.ACPSessionID = &acpID.String
 		}
 		if externalID.Valid {
 			session.ExternalSessionID = &externalID.String
+		}
+		if importSource.Valid {
+			session.ImportSource = importSource.String
+		} else {
+			session.ImportSource = importSourceLocal
+		}
+		if importedAt.Valid {
+			session.ImportedAt = &importedAt.String
 		}
 		bases = append(bases, sessionListBase{session: session, workspace: workspace})
 	}

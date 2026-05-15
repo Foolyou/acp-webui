@@ -38,6 +38,9 @@ const (
 	continuityRestoreFailed = "restore_failed"
 	continuityViewOnly      = "view_only"
 
+	importSourceLocal          = "local"
+	importSourceACPSessionList = "acp_session_list"
+
 	roleUser      = "user"
 	roleAssistant = "assistant"
 	roleSystem    = "system"
@@ -129,12 +132,17 @@ type Session struct {
 	WorkspaceID       string  `json:"workspaceId"`
 	AgentID           string  `json:"agentId"`
 	AgentName         string  `json:"agentName"`
+	Title             *string `json:"title"`
+	NativeTitle       *string `json:"nativeTitle"`
+	NativeUpdatedAt   *string `json:"nativeUpdatedAt"`
 	PermissionMode    string  `json:"permissionMode"`
 	LaunchProfileID   string  `json:"launchProfileId"`
 	LaunchProfileKey  string  `json:"launchProfileKey"`
 	ACPSessionID      *string `json:"acpSessionId"`
 	ExternalSessionID *string `json:"externalSessionId"`
 	Status            string  `json:"status"`
+	ImportSource      string  `json:"importSource"`
+	ImportedAt        *string `json:"importedAt"`
 	CreatedAt         string  `json:"createdAt"`
 	UpdatedAt         string  `json:"updatedAt"`
 }
