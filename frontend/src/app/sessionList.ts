@@ -43,7 +43,7 @@ export function applySessionListRealtime(
     case "active_turn_updated":
       return updateSessionListActiveTurn(sessions, event.sessionId, event.status, event.activeTurn ?? null);
     case "queued_prompts_updated":
-      return updateSessionListQueue(sessions, event.sessionId, event.queuedPrompts.length);
+      return updateSessionListQueue(sessions, event.sessionId, (event.queuedPrompts ?? []).length);
     case "permission_requested":
       return setSessionListPermission(
         sessions,

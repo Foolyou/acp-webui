@@ -11,7 +11,10 @@ const dataDir = path.join(repoRoot, ".data", "e2e");
 const databasePath = path.join(dataDir, "playwright.db");
 const backendUrl = "http://127.0.0.1:7638";
 const fakeAcpScript = path.join(repoRoot, "frontend", "e2e", "fixtures", "fake-acp.py");
-const backendBinary = process.env.ACP_WEBUI_E2E_BINARY ?? path.join(repoRoot, "target", "debug", "acp-webui");
+const defaultBackendBinary = process.platform === "win32"
+  ? path.join(repoRoot, "target", "debug", "acp-webui.exe")
+  : path.join(repoRoot, "target", "debug", "acp-webui");
+const backendBinary = process.env.ACP_WEBUI_E2E_BINARY ?? defaultBackendBinary;
 
 let backend: ChildProcessWithoutNullStreams | undefined;
 
@@ -36,6 +39,7 @@ async function startBackend() {
       "7638",
       "--database-url",
       `sqlite://${databasePath}`,
+      "--disable-auth",
       "--codex-acp-command",
       "uv",
       "--codex-acp-arg",
@@ -239,6 +243,39 @@ test("creates a workspace and session, sends a prompt, and restores after refres
   await navigation.getByRole("button", { name: "Close" }).click();
   await expect(page.locator(".notice.warning", { hasText: "This session history is available for review" })).toBeVisible();
   await expect(page.getByPlaceholder("Start a new session to continue")).toBeDisabled();
+});
+
+test("interleaves assistant messages and tool activity by event time", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.locator(".mobile-status", { hasText: /idle|ready/ })).toBeVisible();
+  await ensureWorkspace(page);
+  await startSession(page);
+
+  await page.getByPlaceholder("Ask Codex...").fill("Exercise interleaved timeline.");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByText("First assistant segment.")).toBeVisible();
+  await expect(page.getByText("Second assistant segment.")).toBeVisible();
+  await expect(page.locator(".tool-group-row", { hasText: "npm run timeline" })).toBeVisible();
+
+  const blocks = page.locator(".timeline > article.message, .timeline > .tool-group-row");
+  await expect(blocks).toHaveCount(4);
+  await expect(blocks.nth(0)).toContainText("Exercise interleaved timeline.");
+  await expect(blocks.nth(1)).toContainText("First assistant segment.");
+  await expect(blocks.nth(2)).toContainText("npm run timeline");
+  await expect(blocks.nth(3)).toContainText("Second assistant segment.");
+
+  const ids = sessionRouteIds(page);
+  const detailResponse = await page.request.get(`${backendUrl}/api/sessions/${ids.sessionId}`);
+  const detail = (await detailResponse.json()) as SessionDetail;
+  const coreTimeline = detail.timeline.filter((item) => item.kind !== "review_artifact");
+  expect(coreTimeline.map((item) => item.kind)).toEqual(["message", "message", "tool_call", "message"]);
+  expect(
+    coreTimeline
+      .filter((item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message")
+      .map((item) => item.content)
+  ).toEqual(["Exercise interleaved timeline.", "First assistant segment.", "Second assistant segment."]);
 });
 
 test("re-enables prompt composer after a completed turn", async ({ page }) => {
@@ -1538,7 +1575,7 @@ test("approves a pending permission request and allows always options", async ({
   await expect(page.getByRole("heading", { name: "Run approval smoke command" })).toBeVisible();
   await expectOverlayPrimaryControlsReachable(page.getByRole("dialog", { name: "Approval request" }));
   await expect(page.getByRole("button", { name: /Allow always/ })).toBeEnabled();
-  await expect(page.getByPlaceholder("Resolve approval before sending another prompt")).toBeDisabled();
+  await expect(page.getByPlaceholder("Queue a follow-up for Codex...")).toBeEnabled();
 
   const workspaceId = sessionWorkspaceId(page);
   await page.evaluate(() => {
@@ -2296,12 +2333,9 @@ async function waitForBackend() {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${backendUrl}/api/app-state`);
+      const response = await fetch(`${backendUrl}/api/auth/status`);
       if (response.ok) {
-        const state = (await response.json()) as { codex: { state: string } };
-        if (state.codex.state === "idle" || state.codex.state === "ready") {
-          return;
-        }
+        return;
       }
     } catch {
       // Retry until the backend is listening.

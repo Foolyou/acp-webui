@@ -1556,6 +1556,13 @@ pre {
   word-break: break-word;
 }
 
+.tool-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .tool-action {
   color: var(--color-text-muted);
   font-size: 0.75rem;
@@ -2251,6 +2258,21 @@ pre {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     padding: 0.5rem 0.55rem;
+  }
+
+  .composer {
+    gap: 0.35rem;
+  }
+
+  .composer textarea {
+    min-height: 3.65rem;
+    padding: 0.62rem 0.7rem;
+  }
+
+  .composer-actions .primary,
+  .composer-actions .secondary {
+    min-height: 36px;
+    padding: 0.5rem 0.75rem;
   }
 
   .scroll-follow-control {

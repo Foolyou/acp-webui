@@ -487,14 +487,14 @@ function Get-ProjectDevProcessIds {
         }
 
         $LowerCommandLine = $CommandLine.ToLowerInvariant()
-        $IsCargoRun = ($Name -eq "cargo.exe" -or $Name -eq "cargo") -and $LowerCommandLine -match '(^|\s)run(\s|$)'
+        $IsGoRun = ($Name -eq "go.exe" -or $Name -eq "go") -and $LowerCommandLine -match '(^|\s)run(\s|$)'
         $IsViteNode = ($Name -eq "node.exe" -or $Name -eq "node") -and $LowerCommandLine.Contains("vite")
         $IsNpmDev = ($Name -eq "npm.cmd" -or $Name -eq "npm" -or $Name -eq "cmd.exe") -and
             $LowerCommandLine.Contains("npm") -and
             $LowerCommandLine.Contains("run") -and
             $LowerCommandLine.Contains("dev")
 
-        if ($IsCargoRun -or $IsViteNode -or $IsNpmDev) {
+        if ($IsGoRun -or $IsViteNode -or $IsNpmDev) {
             $Ids.Add($ProcessId)
         }
     }
@@ -631,7 +631,7 @@ if (-not $SkipBuild) {
     Write-Host "Building embedded release binary..."
     Push-Location $RepoRoot
     try {
-        cargo build --release --features embedded-frontend
+        go build -tags embedded_frontend -o $WindowsBinary .
     } finally {
         Pop-Location
     }

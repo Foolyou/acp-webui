@@ -94,12 +94,17 @@ export function buildTimelineBlocks(
         }
         const toolItemWithArtifacts = withLinkedArtifactIds(toolItem, reviewArtifacts);
         const entry = { item: toolItemWithArtifacts, display: toolCallDisplay(toolItemWithArtifacts, reviewArtifacts) };
-        if (toolItemWithArtifacts.status.toLowerCase() === "completed") {
-          pendingTools.push(entry);
+        const status = toolItemWithArtifacts.status.toLowerCase();
+        if (status === "running") {
+          flushTools();
+          blocks.push(toolGroupBlock([entry]));
           break;
         }
-        flushTools();
-        blocks.push(toolGroupBlock([entry]));
+        if (status === "failed" && pendingTools.length === 0) {
+          blocks.push(toolGroupBlock([entry]));
+          break;
+        }
+        pendingTools.push(entry);
         break;
       }
       case "review_artifact":

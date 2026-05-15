@@ -75,10 +75,6 @@ codex_acp_args=()
 claude_acp_args=()
 extra_args=()
 
-if [[ -f "$HOME/.cargo/env" ]]; then
-  # shellcheck disable=SC1091
-  . "$HOME/.cargo/env"
-fi
 if [[ -f "$HOME/.local/bin/env" ]]; then
   # shellcheck disable=SC1091
   . "$HOME/.local/bin/env"
@@ -411,7 +407,7 @@ get_project_process_pids() {
 
     if command_line_references_path "$args" "$repo_root" || command_line_references_path "$args" "$frontend_dir"; then
       case "$args" in
-        *"cargo run"*|*"npm run dev"*|*" vite"*|*"node "*vite*|*"$target_root/release/acp-webui"*)
+        *"go run"*|*"npm run dev"*|*" vite"*|*"node "*vite*|*"$target_root/release/acp-webui"*)
           printf '%s\n' "$pid"
           ;;
       esac
@@ -619,7 +615,7 @@ else
 fi
 
 if ! ((skip_build)); then
-  require_command cargo
+  require_command go
   require_command npm
 
   if ((install_frontend_deps)) || [[ ! -d "$frontend_dir/node_modules" ]]; then
@@ -631,7 +627,7 @@ if ! ((skip_build)); then
   (cd "$frontend_dir" && npm run build)
 
   echo "Building embedded release binary..."
-  (cd "$repo_root" && cargo build --release --features embedded-frontend)
+  (cd "$repo_root" && go build -tags embedded_frontend -o "$binary" .)
 fi
 
 [[ -f "$binary" ]] || die "Release binary not found at $binary. Run without --skip-build first."

@@ -82,7 +82,7 @@ export function SessionPane({
   const permissionModes = agentStatus ? fallbackPermissionModes(agentStatus) : [];
   const permissionMode = currentSession.session.permissionMode;
   const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
-  const agentReady = !agentConnection || agentConnection.state === "ready";
+  const agentReady = continuity.continuable || !agentConnection || agentConnection.state === "ready";
   const canSend = continuity.continuable && agentReady;
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
@@ -499,6 +499,7 @@ function SessionContextHeader({
             <strong>{agentName} Session</strong>
             <span className={`badge ${currentSession.session.status}`}>
               {sessionStatusLabel(currentSession.session.status)}
+              <span className="visually-hidden"> {currentSession.session.status}</span>
             </span>
           </div>
           {sessionSelectOptions.length ? (
@@ -580,7 +581,7 @@ function TimelineBlockRow({
     case "message":
       return <MessageBubble message={timelineMessage(block.item)} />;
     case "tool_group":
-      return <ToolGroupRow block={block} />;
+      return <ToolGroupRow block={block} onOpenReviewArtifact={onOpenReviewArtifact} reviewArtifacts={reviewArtifacts} />;
     case "review_artifact": {
       const artifact = reviewArtifacts.find((item) => item.id === block.item.id);
       return (
@@ -611,9 +612,13 @@ function TimelineBlockRow({
 }
 
 function ToolGroupRow({
-  block
+  block,
+  onOpenReviewArtifact,
+  reviewArtifacts
 }: {
   block: Extract<TimelineDisplayBlock, { kind: "tool_group" }>;
+  onOpenReviewArtifact: (artifactId: string) => void;
+  reviewArtifacts: ReviewArtifactSummary[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const isMulti = block.entries.length > 1;
@@ -649,7 +654,12 @@ function ToolGroupRow({
       {expanded ? (
         <div className="tool-group-items">
           {block.entries.map((entry) => (
-            <ToolGroupItem entry={entry} key={entry.item.id} />
+            <ToolGroupItem
+              entry={entry}
+              key={entry.item.id}
+              onOpenReviewArtifact={onOpenReviewArtifact}
+              reviewArtifacts={reviewArtifacts}
+            />
           ))}
         </div>
       ) : null}
@@ -657,8 +667,21 @@ function ToolGroupRow({
   );
 }
 
-function ToolGroupItem({ entry }: { entry: TimelineToolGroupEntry }) {
+function ToolGroupItem({
+  entry,
+  onOpenReviewArtifact,
+  reviewArtifacts
+}: {
+  entry: TimelineToolGroupEntry;
+  onOpenReviewArtifact: (artifactId: string) => void;
+  reviewArtifacts: ReviewArtifactSummary[];
+}) {
   const { display, item } = entry;
+  const linkedArtifacts = item.reviewArtifactIds
+    .map((artifactId) => reviewArtifacts.find((artifact) => artifact.id === artifactId))
+    .filter((artifact): artifact is ReviewArtifactSummary => Boolean(artifact));
+  const [showOutput, setShowOutput] = useState(Boolean(display.outputTail && item.status.toLowerCase() === "failed"));
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   return (
     <div className={`tool-item ${display.kind} ${item.status}`}>
@@ -667,9 +690,50 @@ function ToolGroupItem({ entry }: { entry: TimelineToolGroupEntry }) {
         <strong>{display.subject}</strong>
         <span className={`tool-status ${display.status}`}>{display.statusLabel}</span>
       </div>
+      <div className="tool-item-actions">
+        {display.outputTail ? (
+          <Button className="secondary small" onPress={() => setShowOutput((current) => !current)} type="button">
+            Output
+          </Button>
+        ) : null}
+        <Button className="secondary small" onPress={() => setShowDiagnostics((current) => !current)} type="button">
+          Diagnostics
+        </Button>
+        {linkedArtifacts.map((artifact) => (
+          <Button
+            className="secondary small"
+            key={artifact.id}
+            onPress={() => onOpenReviewArtifact(artifact.id)}
+            type="button"
+          >
+            {reviewArtifactActionLabel(artifact)}
+          </Button>
+        ))}
+      </div>
+      {showOutput && display.outputTail ? <pre className="tool-output">{display.outputTail}</pre> : null}
+      {showDiagnostics ? (
+        <div className="tool-diagnostics">
+          <pre className="review-pre">{display.detailText}</pre>
+        </div>
+      ) : null}
       <pre className="tool-detail-text">{display.detailText}</pre>
     </div>
   );
+}
+
+function reviewArtifactActionLabel(artifact: ReviewArtifactSummary) {
+  switch (artifact.kind) {
+    case "diff":
+      return "Diff";
+    case "markdown":
+      return "Markdown";
+    case "terminal":
+      return "Terminal";
+    case "tool_call":
+      return "Terminal";
+    default:
+      return "Review";
+  }
 }
 
 function RunningSkeleton({ agentName, waitingApproval }: { agentName: string; waitingApproval: boolean }) {
@@ -835,16 +899,30 @@ function PromptComposer({
       setAttachmentError(`${agentName} does not support image attachments.`);
       return;
     }
-    await onSendPrompt(
-      trimmed,
-      attachments.map(({ data, mimeType, name, type, uri }) => ({ data, mimeType, name, type, uri }))
-    );
+    const submittedPrompt = prompt;
+    const submittedAttachments = attachments;
+    setPrompt("");
+    setAttachments([]);
+    try {
+      await onSendPrompt(
+        trimmed,
+        submittedAttachments.map((attachment) => ({
+          type: attachment.type,
+          mimeType: attachment.mimeType,
+          data: attachment.data,
+          uri: attachment.uri,
+          name: attachment.name
+        }))
+      );
+    } catch (error) {
+      setPrompt(submittedPrompt);
+      setAttachments(submittedAttachments);
+      throw error;
+    }
     if (voiceListening) {
       voiceAdapterRef.current?.stop();
       setVoiceListening(false);
     }
-    setPrompt("");
-    setAttachments([]);
     setAttachmentError(null);
   }
 
@@ -996,7 +1074,7 @@ function PromptComposer({
           : null;
 
   return (
-    <div className={`composer-wrap ${waitingApproval ? "blocked" : ""}`}>
+    <div className="composer-wrap">
       {status || restoreButtonLabel || queuedPromptCount > 0 || canStop ? (
         <div className="composer-topline">
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
@@ -1046,13 +1124,11 @@ function PromptComposer({
               ? restoreRequired
                 ? "Restore session to continue"
                 : "Start a new session to continue"
-              : waitingApproval
-                ? "Queue a follow-up behind the approval..."
-                : running
+              : running
                   ? `Queue a follow-up for ${agentName}...`
                 : `Ask ${agentName}...`
           }
-          rows={waitingApproval ? 1 : 2}
+          rows={2}
           value={prompt}
         />
         {skillSuggestions.length ? (

@@ -110,7 +110,7 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
         ...state,
         currentSession: {
           ...state.currentSession,
-          queuedPrompts: event.queuedPrompts
+          queuedPrompts: event.queuedPrompts ?? []
         }
       };
 
