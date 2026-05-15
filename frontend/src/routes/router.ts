@@ -4,10 +4,13 @@ import { initialState } from "../app/types";
 import { WorkbenchShell } from "../components/WorkbenchShell";
 import {
   AgentsRoute,
+  NewWorkspaceAgentSessionRoute,
   InboxRoute,
   IndexRoute,
   NewSessionRoute,
   SessionDetailRoute,
+  WorkspaceAgentSessionDetailRoute,
+  WorkspaceAgentSessionsRoute,
   WorkspaceSessionsRoute,
   WorkspacesRoute
 } from "./RouteComponents";
@@ -81,6 +84,24 @@ export const sessionDetailRoute = createRoute({
   component: SessionDetailRoute
 });
 
+export const workspaceAgentSessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/agents/$agentId/sessions",
+  component: WorkspaceAgentSessionsRoute
+});
+
+export const workspaceAgentNewSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/agents/$agentId/sessions/new",
+  component: NewWorkspaceAgentSessionRoute
+});
+
+export const workspaceAgentSessionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+  component: WorkspaceAgentSessionDetailRoute
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   inboxRoute,
@@ -88,7 +109,10 @@ const routeTree = rootRoute.addChildren([
   workspacesRoute,
   workspaceSessionsRoute,
   newSessionRoute,
-  sessionDetailRoute
+  sessionDetailRoute,
+  workspaceAgentSessionsRoute,
+  workspaceAgentNewSessionRoute,
+  workspaceAgentSessionDetailRoute
 ]);
 
 export const router = createRouter({ routeTree, context: placeholderContext });

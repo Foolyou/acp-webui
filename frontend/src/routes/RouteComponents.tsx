@@ -9,7 +9,14 @@ import { SessionPane } from "../features/sessions/SessionPane";
 import { SessionsPane } from "../features/sessions/SessionsPane";
 import { WorkspaceForm } from "../features/workspaces/WorkspaceForm";
 import { WorkspaceList } from "../features/workspaces/WorkspaceList";
-import { newSessionRoute, sessionDetailRoute, workspaceSessionsRoute } from "./router";
+import {
+  newSessionRoute,
+  sessionDetailRoute,
+  workspaceAgentNewSessionRoute,
+  workspaceAgentSessionDetailRoute,
+  workspaceAgentSessionsRoute,
+  workspaceSessionsRoute
+} from "./router";
 
 export function IndexRoute() {
   const { state } = useAppContext();
@@ -80,6 +87,30 @@ export function WorkspaceSessionsRoute() {
   );
 }
 
+export function WorkspaceAgentSessionsRoute() {
+  const { agentId, workspaceId } = workspaceAgentSessionsRoute.useParams();
+  const { actions, state } = useAppContext();
+  const { createSession, loadSessionList, setCurrentWorkspaceAgent } = actions;
+  const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+
+  useEffect(() => {
+    setCurrentWorkspaceAgent(workspaceId, agentId);
+    void loadSessionList(workspaceId);
+  }, [agentId, loadSessionList, setCurrentWorkspaceAgent, workspaceId]);
+
+  return (
+    <SessionsPane
+      agents={state.agents}
+      loading={state.sessionsLoading}
+      onCreate={(selectedAgentId, permissionMode, launchControlValues) =>
+        createSession(workspaceId, selectedAgentId, permissionMode, launchControlValues)
+      }
+      sessions={state.sessions}
+      workspace={workspace}
+    />
+  );
+}
+
 export function NewSessionRoute() {
   const { workspaceId } = newSessionRoute.useParams();
   const { actions, state } = useAppContext();
@@ -102,6 +133,28 @@ export function NewSessionRoute() {
   );
 }
 
+export function NewWorkspaceAgentSessionRoute() {
+  const { agentId, workspaceId } = workspaceAgentNewSessionRoute.useParams();
+  const { actions, state } = useAppContext();
+  const { createSession, setCurrentWorkspaceAgent } = actions;
+  const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
+  const agent = state.agents.find((item) => item.id === agentId) ?? null;
+
+  useEffect(() => {
+    setCurrentWorkspaceAgent(workspaceId, agentId);
+  }, [agentId, setCurrentWorkspaceAgent, workspaceId]);
+
+  return (
+    <CreatingSessionPane
+      agent={agent}
+      creating={state.creatingSessionWorkspaceId === workspaceId}
+      permissionMode={state.creatingSessionPermissionMode}
+      onRetry={() => createSession(workspaceId, agentId, state.creatingSessionPermissionMode ?? undefined)}
+      workspace={workspace}
+    />
+  );
+}
+
 export function SessionDetailRoute() {
   const { sessionId, workspaceId } = sessionDetailRoute.useParams();
   const { actions, state } = useAppContext();
@@ -113,6 +166,47 @@ export function SessionDetailRoute() {
       void loadSession(sessionId);
     }
   }, [loadSession, sessionId, setCurrentWorkspace, state.currentSession?.session.id, workspaceId]);
+
+  if (!state.currentSession || state.currentSession.session.id !== sessionId) {
+    return <LoadingPanel text="Loading session" />;
+  }
+  const agentStatus =
+    state.agents.find((agent) => agent.id === state.currentSession?.session.agentId) ?? null;
+
+  return (
+    <SessionPane
+      agentStatus={agentStatus}
+      busy={state.busy}
+      currentSession={state.currentSession}
+      liveAssistant={state.liveAssistant}
+      onOpenDiffFallback={actions.openDiffFallback}
+      onOpenReviewArtifact={actions.openReviewArtifact}
+      onRestoreSession={actions.restoreSession}
+      onSendPrompt={actions.sendPrompt}
+      onSetSessionConfigOption={actions.setSessionConfigOption}
+      onStopSession={actions.cancelApproval}
+    />
+  );
+}
+
+export function WorkspaceAgentSessionDetailRoute() {
+  const { agentId, sessionId, workspaceId } = workspaceAgentSessionDetailRoute.useParams();
+  const { actions, state } = useAppContext();
+  const { loadSession, setCurrentWorkspaceAgent } = actions;
+
+  useEffect(() => {
+    setCurrentWorkspaceAgent(workspaceId, agentId);
+    if (state.currentSession?.session.id !== sessionId) {
+      void loadSession(sessionId);
+    }
+  }, [
+    agentId,
+    loadSession,
+    sessionId,
+    setCurrentWorkspaceAgent,
+    state.currentSession?.session.id,
+    workspaceId
+  ]);
 
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
     return <LoadingPanel text="Loading session" />;
