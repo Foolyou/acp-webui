@@ -36,8 +36,8 @@
 
 ## 6. Validation
 
-- [ ] 6.1 Run OpenSpec validation for `scope-sessions-by-workspace-agent`.
-- [ ] 6.2 Run Go backend tests.
-- [ ] 6.3 Run frontend unit tests.
-- [ ] 6.4 Run frontend lint/build checks.
+- [x] 6.1 Run OpenSpec validation for `scope-sessions-by-workspace-agent`.
+- [x] 6.2 Run Go backend tests.
+- [x] 6.3 Run frontend unit tests.
+- [x] 6.4 Run frontend lint/build checks.
 - [x] 6.5 Run or update browser automation coverage for route defaults, agent switching, and imported native sessions.
