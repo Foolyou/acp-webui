@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactNode } from "react";
 import type { AgentRuntimeStatus, SessionListItem, Workspace } from "../../types";
 
 const mocks = vi.hoisted(() => ({
+  buttons: [] as Array<{ className?: string; label: string; onPress?: () => void }>,
+  button: vi.fn(({ children, className, onPress }: { children: ReactNode; className?: string; onPress?: () => void }) => {
+    const label = Array.isArray(children) ? children.join(" ") : String(children);
+    mocks.buttons.push({ className, label, onPress });
+    return <button className={className}>{children}</button>;
+  }),
   link: vi.fn(({ children }) => <a>{children}</a>)
 }));
 
@@ -26,6 +33,10 @@ function createStorage(): Storage {
 
 vi.mock("@tanstack/react-router", () => ({
   Link: mocks.link
+}));
+
+vi.mock("react-aria-components", () => ({
+  Button: mocks.button
 }));
 
 function agent(overrides: Partial<AgentRuntimeStatus> = {}): AgentRuntimeStatus {
@@ -82,6 +93,8 @@ describe("SessionsPane", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", createStorage());
     localStorage.clear();
+    mocks.buttons = [];
+    mocks.button.mockClear();
     mocks.link.mockClear();
   });
 
@@ -182,5 +195,56 @@ describe("SessionsPane", () => {
     expect(html).toContain("session-fallback session");
     expect(html).not.toContain("> session<");
     expect(html).not.toContain("undefined session");
+  });
+
+  test("scopes create choices to the selected agent and ignores a last profile for another agent", async () => {
+    localStorage.setItem(
+      "lastSessionProfile",
+      JSON.stringify({
+        version: 1,
+        agentId: "agent-other",
+        permissionMode: "full_auto",
+        launchControlValues: { permission: "full_auto" }
+      })
+    );
+    const { SessionsPane } = await import("./SessionsPane");
+
+    const html = renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent(), agent({ id: "agent-other", title: "Other Agent" })]}
+        loading={false}
+        onCreate={vi.fn()}
+        selectedAgentId="agent-default"
+        sessions={[]}
+        workspace={workspace()}
+      />
+    );
+
+    expect(html).toContain("Default Agent");
+    expect(html).not.toContain("Other Agent");
+    expect(html).not.toContain("Last profile");
+  });
+
+  test("creates with the selected agent when create controls are scoped", async () => {
+    const onCreate = vi.fn();
+    const { SessionsPane } = await import("./SessionsPane");
+
+    renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent(), agent({ id: "agent-other", title: "Other Agent" })]}
+        loading={false}
+        onCreate={onCreate}
+        selectedAgentId="agent-default"
+        sessions={[]}
+        workspace={workspace()}
+      />
+    );
+
+    const createButton = mocks.buttons.find((button) => button.label.includes("Create session"));
+    expect(createButton).toBeDefined();
+
+    createButton?.onPress?.();
+
+    expect(onCreate).toHaveBeenCalledWith("agent-default", "manual", { permission: "manual" });
   });
 });

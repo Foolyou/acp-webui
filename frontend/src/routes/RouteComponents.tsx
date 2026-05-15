@@ -122,8 +122,8 @@ export function WorkspaceAgentSessionsRoute() {
     <SessionsPane
       agents={state.agents}
       loading={state.sessionsLoading}
-      onCreate={(selectedAgentId, permissionMode, launchControlValues) =>
-        createSession(workspaceId, selectedAgentId, permissionMode, launchControlValues)
+      onCreate={(_selectedAgentId, permissionMode, launchControlValues) =>
+        createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
       onSelectAgent={(selectedAgentId) =>
         void navigate({

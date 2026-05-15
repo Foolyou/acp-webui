@@ -59,7 +59,12 @@ export function SessionsPane({
       {showCreate ? (
         <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
           {sessions.length === 0 ? <p className="empty">{emptySessionsText(selectedAgent?.title)}</p> : null}
-          <AgentCreateControls agents={agents} onCreate={onCreate} size={sessions.length > 0 ? "small" : undefined} />
+          <AgentCreateControls
+            agents={agents}
+            onCreate={onCreate}
+            scopedAgentId={selectedAgentId ?? null}
+            size={sessions.length > 0 ? "small" : undefined}
+          />
         </div>
       ) : null}
       {sessions.length === 0 ? (
@@ -119,18 +124,35 @@ function AgentSessionSwitcher({
 function AgentCreateControls({
   agents,
   onCreate,
+  scopedAgentId,
   size
 }: {
   agents: AgentRuntimeStatus[];
   onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
+  scopedAgentId?: string | null;
   size?: "small";
 }) {
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(scopedAgentId ?? null);
   const [selectedModeId, setSelectedModeId] = useState<PermissionModeId | null>(null);
   const [controlValues, setControlValues] = useState<Record<string, Record<string, string>>>({});
   const [lastProfile] = useState(() => readLastSessionProfile());
-  const resolvedLastProfile = useMemo(() => resolveLastSessionProfile(agents, lastProfile), [agents, lastProfile]);
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const createAgents = useMemo(
+    () => (scopedAgentId ? agents.filter((agent) => agent.id === scopedAgentId) : agents),
+    [agents, scopedAgentId]
+  );
+  const resolvedLastProfile = useMemo(() => {
+    const profile = resolveLastSessionProfile(createAgents, lastProfile);
+    if (scopedAgentId && profile?.agent.id !== scopedAgentId) return null;
+    return profile;
+  }, [createAgents, lastProfile, scopedAgentId]);
+  const activeAgentId = scopedAgentId ?? selectedAgentId;
+  const selectedAgent = createAgents.find((agent) => agent.id === activeAgentId) ?? null;
+  const selectedAgentModes = selectedAgent ? fallbackPermissionModes(selectedAgent) : [];
+  const activeModeId =
+    selectedModeId ??
+    selectedAgentModes.find((mode) => selectedAgent && canLaunch(selectedAgent, mode))?.id ??
+    selectedAgentModes[0]?.id ??
+    null;
 
   function selectedValues(agent: AgentRuntimeStatus) {
     const agentValues = controlValues[agent.id] ?? {};
@@ -180,7 +202,7 @@ function AgentCreateControls({
             </span>
           </Button>
         ) : null}
-        {agents.map((agent) => (
+        {createAgents.map((agent) => (
           <Button
             className={`agent-choice ${selectedAgentId === agent.id ? "selected" : ""} ${agent.status.state}`}
             key={agent.id}
@@ -206,7 +228,7 @@ function AgentCreateControls({
           }
           onConfirm={(permissionMode) => createWithProfile(selectedAgent, permissionMode, selectedValues(selectedAgent))}
           onSelectMode={setSelectedModeId}
-          selectedModeId={selectedModeId}
+          selectedModeId={activeModeId}
         />
       ) : null}
     </div>

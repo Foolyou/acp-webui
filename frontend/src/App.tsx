@@ -10,6 +10,7 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
+import { createSessionCreatingRouteTarget, createSessionDetailRouteTarget } from "./app/sessionCreationRoutes";
 import { messageToTimelineItem } from "./app/timeline";
 import { initialState } from "./app/types";
 import type { AppRouterContext, UiState } from "./app/types";
@@ -470,7 +471,7 @@ export function App() {
       creatingSessionPermissionMode: permissionMode ?? "manual",
       error: null
     }));
-    await router.navigate({ to: "/workspaces/$workspaceId/sessions/new", params: { workspaceId } });
+    await router.navigate(createSessionCreatingRouteTarget(workspaceId, agentId));
     try {
       const detail = await api.createSession(workspaceId, agentId, permissionMode, launchControlValues);
       localStorage.setItem("currentWorkspaceId", detail.workspace.id);
@@ -486,11 +487,7 @@ export function App() {
         sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
         liveAssistant: ""
       }));
-      await router.navigate({
-        to: "/workspaces/$workspaceId/sessions/$sessionId",
-        params: { workspaceId: detail.workspace.id, sessionId: detail.session.id },
-        replace: true
-      });
+      await router.navigate(createSessionDetailRouteTarget(agentId, detail));
     } catch (error) {
       if (isUnauthorized(error)) {
         await markUnauthorized();

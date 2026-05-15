@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
       sessionId: "session-route"
     }
   },
+  creatingSessionPane: vi.fn(),
   sessionsPane: vi.fn(),
   sessionPane: vi.fn()
 }));
@@ -67,7 +68,7 @@ vi.mock("../features/sessions/SessionPane", () => ({
 }));
 
 vi.mock("../features/sessions/CreatingSessionPane", () => ({
-  CreatingSessionPane: () => null
+  CreatingSessionPane: mocks.creatingSessionPane
 }));
 
 vi.mock("../features/sessions/InboxPane", () => ({
@@ -208,6 +209,7 @@ describe("workspace-agent route components", () => {
     vi.stubGlobal("localStorage", createStorage());
     localStorage.clear();
     mocks.loadingPanel.mockReset();
+    mocks.creatingSessionPane.mockReset();
     mocks.navigate.mockReset();
     mocks.sessionsPane.mockReset();
     mocks.sessionPane.mockReset();
@@ -386,6 +388,37 @@ describe("workspace-agent route components", () => {
       to: "/workspaces/$workspaceId/agents/$agentId/sessions",
       params: { workspaceId: "workspace-route", agentId: "agent-next" }
     });
+  });
+
+  test("scopes canonical session creation to the route agent", async () => {
+    const context = setContext();
+    const { WorkspaceAgentSessionsRoute } = await import("./RouteComponents");
+
+    const result = WorkspaceAgentSessionsRoute();
+
+    result.props.onCreate("agent-other", "full_auto", { permission: "full_auto" });
+
+    expect(context.actions.createSession).toHaveBeenCalledWith("workspace-route", "agent-route", "full_auto", {
+      permission: "full_auto"
+    });
+  });
+
+  test("retries canonical new session creation with the route agent", async () => {
+    const context = setContext({
+      state: {
+        ...baseState(),
+        creatingSessionWorkspaceId: "workspace-route",
+        creatingSessionAgentId: "agent-other",
+        creatingSessionPermissionMode: "full_auto"
+      }
+    });
+    const { NewWorkspaceAgentSessionRoute } = await import("./RouteComponents");
+
+    const result = NewWorkspaceAgentSessionRoute();
+
+    result.props.onRetry();
+
+    expect(context.actions.createSession).toHaveBeenCalledWith("workspace-route", "agent-route", "full_auto");
   });
 
   test("replaces mismatched canonical detail route with the loaded session scope", async () => {
