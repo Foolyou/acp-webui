@@ -1463,6 +1463,10 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		reviewCount := s.count(ctx, `SELECT COUNT(*) FROM review_artifacts WHERE session_id = ?`, session.ID)
 		queuedCount := s.count(ctx, `SELECT COUNT(*) FROM queued_prompts WHERE session_id = ? AND status = ?`, session.ID, queuedPromptQueued)
 		continuity, _ := s.SessionContinuityRow(ctx, session.ID)
+		var viewOnlyReason *string
+		if !continuity.Continuable {
+			viewOnlyReason = continuity.Reason
+		}
 		items = append(items, SessionListItem{
 			Session:              session,
 			Workspace:            workspace,
@@ -1477,6 +1481,7 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 			HasReviewArtifacts:   reviewCount > 0,
 			Continuity:           continuity,
 			Continuable:          continuity.Continuable,
+			ViewOnlyReason:       viewOnlyReason,
 		})
 	}
 	return nonNilSlice(items), nil

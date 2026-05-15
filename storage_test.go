@@ -392,6 +392,12 @@ func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(
 		if item.Continuity.State != continuityRestoreFailed || item.Continuity.FailureMessage == nil || *item.Continuity.FailureMessage != "restore failed" {
 			t.Fatalf("continuity = %#v", item.Continuity)
 		}
+		if item.Continuable {
+			t.Fatal("continuable = true, want false for restore failure")
+		}
+		if item.ViewOnlyReason == nil || *item.ViewOnlyReason != "restore failed" {
+			t.Fatalf("view-only reason = %#v, want restore failed", item.ViewOnlyReason)
+		}
 	}
 
 	workspaceItems, err := storage.ListSessionItems(ctx, &workspace.ID)
@@ -420,6 +426,37 @@ func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(
 		t.Fatalf("agent items = %d, want 1", len(agentItems))
 	}
 	assertProjection(t, agentItems[0])
+}
+
+func TestStorageSessionListProjectionOmitsViewOnlyReasonForContinuableSession(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "acp-continuable"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.MarkSessionRestoreSucceeded(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if !items[0].Continuable {
+		t.Fatal("continuable = false, want true")
+	}
+	if items[0].ViewOnlyReason != nil {
+		t.Fatalf("view-only reason = %#v, want nil", items[0].ViewOnlyReason)
+	}
 }
 
 func TestStorageImportsSameExternalIDForDifferentAgents(t *testing.T) {
