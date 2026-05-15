@@ -9,7 +9,7 @@ import {
 } from "../../app/lastSessionProfile";
 import { isAvailableWorkspaceAgent } from "../../app/workspaceAgentNavigation";
 import { PageHeader } from "../../components/common";
-import type { AgentPermissionModeStatus, AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
+import type { AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
 import { formatRelativeTime } from "../../utils/format";
 import {
   fallbackPermissionModes,
@@ -18,6 +18,7 @@ import {
   permissionModeLabel
 } from "../../utils/permissionMode";
 import { sessionStatusLabel } from "../../utils/sessionStatus";
+import { canLaunchPermissionMode, resolveActiveCreateModeId } from "./sessionCreateMode";
 
 export function SessionsPane({
   agents,
@@ -147,27 +148,15 @@ function AgentCreateControls({
   }, [createAgents, lastProfile, scopedAgentId]);
   const activeAgentId = scopedAgentId ?? selectedAgentId;
   const selectedAgent = createAgents.find((agent) => agent.id === activeAgentId) ?? null;
-  const selectedAgentModes = selectedAgent ? fallbackPermissionModes(selectedAgent) : [];
-  const activeModeId =
-    selectedModeId ??
-    selectedAgentModes.find((mode) => selectedAgent && canLaunch(selectedAgent, mode))?.id ??
-    selectedAgentModes[0]?.id ??
-    null;
+  const activeModeId = resolveActiveCreateModeId(selectedAgent, selectedModeId);
 
   function selectedValues(agent: AgentRuntimeStatus) {
-    const agentValues = controlValues[agent.id] ?? {};
-    const values: Record<string, string> = {};
-    for (const control of agent.launchControls ?? []) {
-      values[control.id] = agentValues[control.id] ?? control.defaultValue;
-    }
-    return values;
+    return normalizeLaunchControlValues(agent, controlValues[agent.id] ?? {});
   }
 
   function selectAgent(agent: AgentRuntimeStatus) {
-    const modes = fallbackPermissionModes(agent);
-    const firstAvailable = modes.find((mode) => canLaunch(agent, mode));
     setSelectedAgentId(agent.id);
-    setSelectedModeId(firstAvailable?.id ?? modes[0]?.id ?? null);
+    setSelectedModeId(resolveActiveCreateModeId(agent, null));
     setControlValues((current) => ({
       ...current,
       [agent.id]: {
@@ -204,7 +193,7 @@ function AgentCreateControls({
         ) : null}
         {createAgents.map((agent) => (
           <Button
-            className={`agent-choice ${selectedAgentId === agent.id ? "selected" : ""} ${agent.status.state}`}
+            className={`agent-choice ${activeAgentId === agent.id ? "selected" : ""} ${agent.status.state}`}
             key={agent.id}
             onPress={() => selectAgent(agent)}
           >
@@ -253,7 +242,7 @@ function AgentCreateDetail({
   const modes = fallbackPermissionModes(agent);
   const controls = (agent.launchControls ?? []).filter((control) => control.id !== "permission");
   const selectedMode = modes.find((mode) => mode.id === selectedModeId) ?? modes[0] ?? null;
-  const selectedLaunchable = selectedMode ? canLaunch(agent, selectedMode) : false;
+  const selectedLaunchable = selectedMode ? canLaunchPermissionMode(agent, selectedMode) : false;
 
   return (
     <div className={`agent-create-detail ${agent.status.state}`}>
@@ -288,12 +277,12 @@ function AgentCreateDetail({
       <label className="permission-mode-select-field">
         <span>Permission mode</span>
         <select
-          disabled={!agent.enabled || !modes.some((mode) => canLaunch(agent, mode))}
+          disabled={!agent.enabled || !modes.some((mode) => canLaunchPermissionMode(agent, mode))}
           onChange={(event) => onSelectMode(event.target.value as PermissionModeId)}
           value={selectedMode?.id ?? ""}
         >
           {modes.map((mode) => (
-            <option disabled={!canLaunch(agent, mode)} key={mode.id} value={mode.id}>
+            <option disabled={!canLaunchPermissionMode(agent, mode)} key={mode.id} value={mode.id}>
               {mode.label}
             </option>
           ))}
@@ -304,10 +293,6 @@ function AgentCreateDetail({
       </Button>
     </div>
   );
-}
-
-function canLaunch(agent: AgentRuntimeStatus, mode: AgentPermissionModeStatus) {
-  return agent.enabled && mode.status.state !== "starting" && mode.status.state !== "disabled";
 }
 
 function agentStatusText(agent: AgentRuntimeStatus) {

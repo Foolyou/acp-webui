@@ -247,4 +247,29 @@ describe("SessionsPane", () => {
 
     expect(onCreate).toHaveBeenCalledWith("agent-default", "manual", { permission: "manual" });
   });
+
+  test("ignores stale non-launchable permission mode for the scoped agent", async () => {
+    const { resolveActiveCreateModeId } = await import("./sessionCreateMode");
+    const scopedAgent = agent({
+      id: "agent-other",
+      permissionModes: [
+        {
+          id: "yolo",
+          label: "YOLO",
+          description: "No approvals / no sandbox",
+          riskLevel: "high",
+          status: { state: "disabled", message: "Not allowed" }
+        },
+        {
+          id: "manual",
+          label: "Manual",
+          description: "Ask before approval-managed actions",
+          riskLevel: "low",
+          status: { state: "idle" }
+        }
+      ]
+    });
+
+    expect(resolveActiveCreateModeId(scopedAgent, "yolo")).toBe("manual");
+  });
 });
