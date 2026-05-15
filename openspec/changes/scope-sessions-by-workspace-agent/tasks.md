@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add SQLite migration fields for session title, native updated timestamp, import source metadata, and idempotent `(agent_id, external_session_id)` native imports.
 - [x] 1.2 Add storage models and helpers for workspace-agent session listing and native session import/update.
-- [ ] 1.3 Preserve existing session list projections while adding title and native metadata to session list rows.
+- [x] 1.3 Preserve existing session list projections while adding title and native metadata to session list rows.
 - [ ] 1.4 Add storage tests for workspace-agent filtering, duplicate external ids across agents, import idempotence, and metadata updates.
 
 ## 2. ACP Runtime Sync

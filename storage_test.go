@@ -249,6 +249,179 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 	}
 }
 
+func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "acp-projection"
+	modelValue := "gpt-5"
+	modelName := "GPT-5"
+	profile := ResolvedAgentLaunchProfile{
+		ID:             permissionFullAuto,
+		Key:            "permission=full_auto",
+		PermissionMode: permissionFullAuto,
+		Summary: []AgentControlSelection{{
+			ID:         "permission",
+			Label:      "Permission",
+			Value:      permissionFullAuto,
+			ValueLabel: "Full Auto",
+			Category:   "permission",
+			Scope:      "launch",
+			RiskLevel:  stringPtr("high"),
+		}},
+	}
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionFullAuto, profile, []SessionConfigOption{{
+		ID:           "model",
+		Name:         "Model",
+		Type:         "select",
+		CurrentValue: &modelValue,
+		Options: []SessionConfigOptionValue{{
+			Value: modelValue,
+			Name:  modelName,
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := storage.StartActiveTurn(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, statusIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: acpSessionID,
+		ACPRequestID: "approval-1",
+		Title:        "Approve file write",
+		Kind:         "write",
+		ToolCall:     map[string]any{"toolCallId": "tool-1"},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: acpSessionID,
+		ACPRequestID: "approval-2",
+		Title:        "Approve command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{"toolCallId": "tool-2"},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateReviewArtifact(ctx, session.ID, nil, "markdown", "Review", "summary", map[string]any{"markdown": "# ok"}, "tool_call"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.MarkSessionRestoreFailed(ctx, session.ID, "restore failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	title := "Projected title"
+	nativeTitle := "Native projected title"
+	nativeUpdatedAt := "2026-05-15T12:00:00Z"
+	importedAt := "2026-05-15T12:01:00Z"
+	localUpdatedAt := "2026-05-14T11:00:00Z"
+	if _, err := storage.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET title = ?,
+		    native_title = ?,
+		    native_updated_at = ?,
+		    import_source = ?,
+		    imported_at = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		title, nativeTitle, nativeUpdatedAt, importSourceACPSessionList, importedAt, localUpdatedAt, session.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertProjection := func(t *testing.T, item SessionListItem) {
+		t.Helper()
+		if item.Session.ID != session.ID || item.Workspace.ID != workspace.ID {
+			t.Fatalf("projected identities = session:%s workspace:%s", item.Session.ID, item.Workspace.ID)
+		}
+		if item.Session.Title == nil || *item.Session.Title != title {
+			t.Fatalf("title = %#v, want %s", item.Session.Title, title)
+		}
+		if item.Session.NativeTitle == nil || *item.Session.NativeTitle != nativeTitle {
+			t.Fatalf("native title = %#v, want %s", item.Session.NativeTitle, nativeTitle)
+		}
+		if item.Session.NativeUpdatedAt == nil || *item.Session.NativeUpdatedAt != nativeUpdatedAt {
+			t.Fatalf("native updated at = %#v, want %s", item.Session.NativeUpdatedAt, nativeUpdatedAt)
+		}
+		if item.Session.ImportSource != importSourceACPSessionList {
+			t.Fatalf("import source = %s, want %s", item.Session.ImportSource, importSourceACPSessionList)
+		}
+		if item.Session.ImportedAt == nil || *item.Session.ImportedAt != importedAt {
+			t.Fatalf("imported at = %#v, want %s", item.Session.ImportedAt, importedAt)
+		}
+		if item.LastActivityAt != localUpdatedAt {
+			t.Fatalf("last activity = %s, want local updated_at %s", item.LastActivityAt, localUpdatedAt)
+		}
+		if item.CurrentModel == nil || item.CurrentModel.Value != modelValue || item.CurrentModel.Name == nil || *item.CurrentModel.Name != modelName {
+			t.Fatalf("current model = %#v", item.CurrentModel)
+		}
+		if len(item.LaunchControlSummary) != 1 || item.LaunchControlSummary[0].Value != permissionFullAuto {
+			t.Fatalf("launch summary = %#v", item.LaunchControlSummary)
+		}
+		if item.QueuedPromptCount != 1 {
+			t.Fatalf("queued prompt count = %d, want 1", item.QueuedPromptCount)
+		}
+		if item.ActiveTurn == nil || item.ActiveTurn.StartedAt != active.StartedAt {
+			t.Fatalf("active turn = %#v, want started at %s", item.ActiveTurn, active.StartedAt)
+		}
+		if item.PendingPermission == nil || item.PendingPermission.Title != "Approve file write" {
+			t.Fatalf("pending permission = %#v", item.PendingPermission)
+		}
+		if item.QueuedApprovalCount != 1 {
+			t.Fatalf("queued approval count = %d, want 1", item.QueuedApprovalCount)
+		}
+		if item.ReviewArtifactCount != 1 || !item.HasReviewArtifacts {
+			t.Fatalf("review availability = count:%d has:%t", item.ReviewArtifactCount, item.HasReviewArtifacts)
+		}
+		if item.Continuity.State != continuityRestoreFailed || item.Continuity.FailureMessage == nil || *item.Continuity.FailureMessage != "restore failed" {
+			t.Fatalf("continuity = %#v", item.Continuity)
+		}
+	}
+
+	workspaceItems, err := storage.ListSessionItems(ctx, &workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspaceItems) != 1 {
+		t.Fatalf("workspace items = %d, want 1", len(workspaceItems))
+	}
+	assertProjection(t, workspaceItems[0])
+
+	globalItems, err := storage.ListSessionItems(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(globalItems) != 1 {
+		t.Fatalf("global items = %d, want 1", len(globalItems))
+	}
+	assertProjection(t, globalItems[0])
+
+	agentItems, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agentItems) != 1 {
+		t.Fatalf("agent items = %d, want 1", len(agentItems))
+	}
+	assertProjection(t, agentItems[0])
+}
+
 func TestStorageImportsSameExternalIDForDifferentAgents(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
