@@ -250,14 +250,10 @@ func TestAgentRuntimeListSessionsRequestsAllPages(t *testing.T) {
 	runtime.mu.Unlock()
 	decoder := json.NewDecoder(reader)
 
-	type listResult struct {
-		sessions []ACPSessionListItem
-		err      error
-	}
-	resultCh := make(chan listResult, 1)
+	resultCh := make(chan sessionListCallResult, 1)
 	go func() {
 		sessions, err := runtime.ListSessions(ctx, "C:\\workspace")
-		resultCh <- listResult{sessions: sessions, err: err}
+		resultCh <- sessionListCallResult{sessions: sessions, err: err}
 	}()
 
 	cursor := "page-2"
@@ -274,7 +270,7 @@ func TestAgentRuntimeListSessionsRequestsAllPages(t *testing.T) {
 		},
 	})
 
-	result := <-resultCh
+	result := receiveSessionListResult(t, resultCh)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -301,19 +297,15 @@ func TestAgentRuntimeListSessionsReturnsEmptySliceForNilACPResult(t *testing.T) 
 	runtime.mu.Unlock()
 	decoder := json.NewDecoder(reader)
 
-	type listResult struct {
-		sessions []ACPSessionListItem
-		err      error
-	}
-	resultCh := make(chan listResult, 1)
+	resultCh := make(chan sessionListCallResult, 1)
 	go func() {
 		sessions, err := runtime.ListSessions(ctx, "/workspace")
-		resultCh <- listResult{sessions: sessions, err: err}
+		resultCh <- sessionListCallResult{sessions: sessions, err: err}
 	}()
 
 	respondToSessionListRequest(t, decoder, runtime, "/workspace", nil, ACPSessionListResult{})
 
-	result := <-resultCh
+	result := receiveSessionListResult(t, resultCh)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -326,8 +318,7 @@ func TestAgentRuntimeListSessionsReturnsEmptySliceForNilACPResult(t *testing.T) 
 }
 
 func TestAgentRuntimeListSessionsDoesNotRequestWhenUnsupported(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	ctx := context.Background()
 	storage, _ := testRuntimeSession(t)
 	runtime := newReadySessionListRuntime(t, storage, false)
 	writer := &countingWriteCloser{}
@@ -347,6 +338,77 @@ func TestAgentRuntimeListSessionsDoesNotRequestWhenUnsupported(t *testing.T) {
 	}
 	if writer.writes != 0 {
 		t.Fatalf("request writes = %d, want 0", writer.writes)
+	}
+}
+
+func TestAgentRuntimeListSessionsDetectsCursorLoop(t *testing.T) {
+	ctx := context.Background()
+	storage, _ := testRuntimeSession(t)
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan sessionListCallResult, 1)
+	go func() {
+		sessions, err := runtime.ListSessions(ctx, "/workspace")
+		resultCh <- sessionListCallResult{sessions: sessions, err: err}
+	}()
+
+	cursor := "repeat"
+	respondToSessionListRequest(t, decoder, runtime, "/workspace", nil, ACPSessionListResult{NextCursor: &cursor})
+	respondToSessionListRequest(t, decoder, runtime, "/workspace", &cursor, ACPSessionListResult{NextCursor: &cursor})
+
+	result := receiveSessionListResult(t, resultCh)
+	if result.err == nil {
+		t.Fatal("ListSessions error = nil, want cursor loop error")
+	}
+	if !strings.Contains(result.err.Error(), "cursor loop") {
+		t.Fatalf("ListSessions error = %q, want cursor loop error", result.err.Error())
+	}
+}
+
+func TestAgentRuntimeListSessionsStopsAfterMaxPages(t *testing.T) {
+	ctx := context.Background()
+	storage, _ := testRuntimeSession(t)
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	decoder := json.NewDecoder(reader)
+
+	resultCh := make(chan sessionListCallResult, 1)
+	go func() {
+		sessions, err := runtime.ListSessions(ctx, "/workspace")
+		resultCh <- sessionListCallResult{sessions: sessions, err: err}
+	}()
+
+	var wantCursor *string
+	for page := 1; page <= maxACPSessionListPages; page++ {
+		nextCursor := fmt.Sprintf("page-%d", page)
+		respondToSessionListRequest(t, decoder, runtime, "/workspace", wantCursor, ACPSessionListResult{NextCursor: &nextCursor})
+		wantCursor = &nextCursor
+	}
+
+	result := receiveSessionListResult(t, resultCh)
+	if result.err == nil {
+		t.Fatal("ListSessions error = nil, want max-page error")
+	}
+	if !strings.Contains(result.err.Error(), fmt.Sprintf("exceeded %d pages", maxACPSessionListPages)) {
+		t.Fatalf("ListSessions error = %q, want max-page error", result.err.Error())
 	}
 }
 
@@ -396,16 +458,58 @@ func newReadySessionListRuntime(t *testing.T, storage *Storage, listSupported bo
 	return runtime
 }
 
+type sessionListCallResult struct {
+	sessions []ACPSessionListItem
+	err      error
+}
+
+type sessionListRequestDecodeResult struct {
+	request sessionListRequest
+	err     error
+}
+
+type sessionListRequest struct {
+	ID     int64                `json:"id"`
+	Method string               `json:"method"`
+	Params ACPSessionListParams `json:"params"`
+}
+
+const sessionListTestTimeout = 2 * time.Second
+
+func receiveSessionListResult(t *testing.T, ch <-chan sessionListCallResult) sessionListCallResult {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(sessionListTestTimeout):
+		t.Fatalf("timed out waiting for ListSessions result")
+	}
+	return sessionListCallResult{}
+}
+
+func decodeSessionListRequest(t *testing.T, decoder *json.Decoder) sessionListRequest {
+	t.Helper()
+	ch := make(chan sessionListRequestDecodeResult, 1)
+	go func() {
+		var request sessionListRequest
+		err := decoder.Decode(&request)
+		ch <- sessionListRequestDecodeResult{request: request, err: err}
+	}()
+	select {
+	case result := <-ch:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		return result.request
+	case <-time.After(sessionListTestTimeout):
+		t.Fatalf("timed out waiting for session/list request")
+	}
+	return sessionListRequest{}
+}
+
 func respondToSessionListRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, wantCursor *string, result ACPSessionListResult) {
 	t.Helper()
-	var request struct {
-		ID     int64                `json:"id"`
-		Method string               `json:"method"`
-		Params ACPSessionListParams `json:"params"`
-	}
-	if err := decoder.Decode(&request); err != nil {
-		t.Fatal(err)
-	}
+	request := decodeSessionListRequest(t, decoder)
 	if request.Method != "session/list" {
 		t.Fatalf("method = %q, want session/list", request.Method)
 	}
