@@ -482,6 +482,120 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsImportsNativeList(t *testi
 	}
 }
 
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPagesAndReimportsIdempotently(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	runtime := newReadySessionListRuntime(t, storage, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+
+	firstResultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		firstResultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	nativeCWD := nativePathString(workspace.Path)
+	firstCursor := "second-page"
+	firstTitle := "First title"
+	firstUpdatedAt := "2026-05-15T01:02:03Z"
+	secondTitle := "Second title"
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-1",
+			CWD:       nativeCWD,
+			Title:     &firstTitle,
+			UpdatedAt: &firstUpdatedAt,
+		}},
+		NextCursor: &firstCursor,
+	})
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, &firstCursor, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-2",
+			CWD:       nativeCWD,
+			Title:     &secondTitle,
+		}},
+	})
+
+	firstResult := receiveManagerSyncResult(t, firstResultCh)
+	if firstResult.err != nil {
+		t.Fatal(firstResult.err)
+	}
+	if len(firstResult.items) != 2 {
+		t.Fatalf("first sync items = %#v, want 2", firstResult.items)
+	}
+	firstIDs := map[string]string{}
+	for _, item := range firstResult.items {
+		if item.Session.ExternalSessionID == nil {
+			t.Fatalf("first sync session missing external id: %#v", item.Session)
+		}
+		firstIDs[*item.Session.ExternalSessionID] = item.Session.ID
+	}
+	if firstIDs["external-1"] == "" || firstIDs["external-2"] == "" {
+		t.Fatalf("first sync ids = %#v, want both external sessions", firstIDs)
+	}
+
+	secondResultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		secondResultCh <- managerSyncResult{items: items, err: err}
+	}()
+
+	updatedTitle := "Updated first title"
+	updatedAt := "2026-05-15T02:03:04Z"
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "external-1",
+			CWD:       nativeCWD,
+			Title:     &updatedTitle,
+			UpdatedAt: &updatedAt,
+		}, {
+			SessionID: "external-2",
+			CWD:       nativeCWD,
+			Title:     &secondTitle,
+		}},
+	})
+
+	secondResult := receiveManagerSyncResult(t, secondResultCh)
+	if secondResult.err != nil {
+		t.Fatal(secondResult.err)
+	}
+	if len(secondResult.items) != 2 {
+		t.Fatalf("second sync items = %#v, want 2 without duplicates", secondResult.items)
+	}
+	for _, item := range secondResult.items {
+		if item.Session.ExternalSessionID == nil {
+			t.Fatalf("second sync session missing external id: %#v", item.Session)
+		}
+		externalID := *item.Session.ExternalSessionID
+		if item.Session.ID != firstIDs[externalID] {
+			t.Fatalf("session %s id = %s, want original %s", externalID, item.Session.ID, firstIDs[externalID])
+		}
+		if externalID == "external-1" {
+			if item.Session.Title == nil || *item.Session.Title != updatedTitle {
+				t.Fatalf("updated title = %#v, want %q", item.Session.Title, updatedTitle)
+			}
+			if item.Session.NativeUpdatedAt == nil || *item.Session.NativeUpdatedAt != updatedAt {
+				t.Fatalf("updated native timestamp = %#v, want %q", item.Session.NativeUpdatedAt, updatedAt)
+			}
+		}
+	}
+}
+
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsCanonicalizesPartialProfile(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

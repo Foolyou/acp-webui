@@ -77,6 +77,24 @@ for line in sys.stdin:
                 "result": {"sessionId": session_id, "configOptions": config_options()},
             }
         )
+    elif method == "session/list":
+        cwd = message.get("params", {}).get("cwd", "")
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "sessions": [
+                        {
+                            "sessionId": "fake-e2e-session",
+                            "cwd": cwd,
+                            "title": "Fake E2E session",
+                            "updatedAt": "2026-05-15T00:00:00Z",
+                        }
+                    ]
+                },
+            }
+        )
     elif method == "session/load":
         load_session_id = message.get("params", {}).get("sessionId")
         if load_session_id != "fake-e2e-session":
