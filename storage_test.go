@@ -184,6 +184,83 @@ func TestStorageImportsNativeSessionProjection(t *testing.T) {
 	}
 }
 
+func TestStorageImportNativeSessionReportsMaterialProjectionChanges(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testLaunchProfile()
+	title := "Native title"
+	nativeUpdatedAt := "2026-05-15T12:00:00Z"
+	first, err := storage.ImportNativeSessionWithResult(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-change",
+		Title:             &title,
+		NativeTitle:       &title,
+		NativeUpdatedAt:   &nativeUpdatedAt,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Inserted || !first.MaterialChanged {
+		t.Fatalf("first import change metadata = %#v, want inserted material change", first)
+	}
+	originalImportedAt := "2026-05-14T12:00:00Z"
+	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET imported_at = ? WHERE id = ?`, originalImportedAt, first.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := storage.ImportNativeSessionWithResult(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-change",
+		Title:             &title,
+		NativeTitle:       &title,
+		NativeUpdatedAt:   &nativeUpdatedAt,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Inserted || second.MaterialChanged {
+		t.Fatalf("identical reimport change metadata = %#v, want no material change", second)
+	}
+	if second.Session.ImportedAt == nil || *second.Session.ImportedAt == originalImportedAt {
+		t.Fatalf("imported_at was not refreshed: before %s after %#v", originalImportedAt, second.Session.ImportedAt)
+	}
+
+	updatedTitle := "Renamed native title"
+	updatedNativeAt := "2026-05-15T13:00:00Z"
+	third, err := storage.ImportNativeSessionWithResult(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-change",
+		Title:             &updatedTitle,
+		NativeTitle:       &updatedTitle,
+		NativeUpdatedAt:   &updatedNativeAt,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Inserted || !third.MaterialChanged {
+		t.Fatalf("updated reimport change metadata = %#v, want material update", third)
+	}
+}
+
 func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

@@ -49,6 +49,12 @@ type NativeSessionImport struct {
 	ImportSource      string
 }
 
+type NativeSessionImportResult struct {
+	Session         Session
+	Inserted        bool
+	MaterialChanged bool
+}
+
 func openStorage(databaseURL string) (*Storage, error) {
 	path := sqlitePathFromURL(databaseURL)
 	if path != ":memory:" {
@@ -366,14 +372,22 @@ func (s *Storage) CreateSession(ctx context.Context, workspaceID string, agentID
 }
 
 func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionImport) (Session, error) {
+	result, err := s.ImportNativeSessionWithResult(ctx, input)
+	if err != nil {
+		return Session{}, err
+	}
+	return result.Session, nil
+}
+
+func (s *Storage) ImportNativeSessionWithResult(ctx context.Context, input NativeSessionImport) (NativeSessionImportResult, error) {
 	if strings.TrimSpace(input.WorkspaceID) == "" {
-		return Session{}, fmt.Errorf("workspace id is required")
+		return NativeSessionImportResult{}, fmt.Errorf("workspace id is required")
 	}
 	if strings.TrimSpace(input.AgentID) == "" {
-		return Session{}, fmt.Errorf("agent id is required")
+		return NativeSessionImportResult{}, fmt.Errorf("agent id is required")
 	}
 	if strings.TrimSpace(input.ExternalSessionID) == "" {
-		return Session{}, fmt.Errorf("external session id is required")
+		return NativeSessionImportResult{}, fmt.Errorf("external session id is required")
 	}
 	nativeTitle := input.NativeTitle
 	if nativeTitle == nil {
@@ -400,8 +414,33 @@ func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionIm
 		launchProfileKey = launchProfileID
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return NativeSessionImportResult{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	existing, err := scanSession(tx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, agent_id, agent_name, permission_mode, launch_profile_id, launch_profile_key,
+		       title, native_title, native_updated_at, acp_session_id, external_session_id, status,
+		       import_source, imported_at, created_at, updated_at
+		FROM sessions
+		WHERE agent_id = ? AND external_session_id = ?`, input.AgentID, input.ExternalSessionID))
+	inserted := false
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return NativeSessionImportResult{}, err
+		}
+		inserted = true
+	}
+
 	id := uuid.NewString()
-	err := s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO sessions(
 			id, workspace_id, agent_name, acp_session_id, status, created_at, updated_at,
 			external_session_id, continuation_state, agent_id, config_options_json,
@@ -425,9 +464,41 @@ func (s *Storage) ImportNativeSession(ctx context.Context, input NativeSessionIm
 		input.Title, nativeTitle, input.NativeUpdatedAt, importSource, now,
 	).Scan(&id)
 	if err != nil {
-		return Session{}, err
+		return NativeSessionImportResult{}, err
 	}
-	return s.GetSession(ctx, id)
+	session, err := scanSession(tx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, agent_id, agent_name, permission_mode, launch_profile_id, launch_profile_key,
+		       title, native_title, native_updated_at, acp_session_id, external_session_id, status,
+		       import_source, imported_at, created_at, updated_at
+		FROM sessions WHERE id = ?`, id))
+	if err != nil {
+		return NativeSessionImportResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return NativeSessionImportResult{}, err
+	}
+	committed = true
+
+	materialChanged := inserted || nativeImportProjectionChanged(existing, session)
+	return NativeSessionImportResult{
+		Session:         session,
+		Inserted:        inserted,
+		MaterialChanged: materialChanged,
+	}, nil
+}
+
+func nativeImportProjectionChanged(before Session, after Session) bool {
+	return !stringPtrEqual(before.Title, after.Title) ||
+		!stringPtrEqual(before.NativeTitle, after.NativeTitle) ||
+		!stringPtrEqual(before.NativeUpdatedAt, after.NativeUpdatedAt) ||
+		before.ImportSource != after.ImportSource
+}
+
+func stringPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func (s *Storage) GetSession(ctx context.Context, id string) (Session, error) {

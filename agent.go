@@ -209,12 +209,12 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 	projectionCtx := ctx
 	if runtimeErr == nil && runtime.supportsSessionList() {
 		if sessions, err := runtime.ListSessions(ctx, workspaceCWD); err == nil {
-			importedCount := 0
+			changedCount := 0
 			for _, item := range sessions {
 				if !nativeSessionMatchesWorkspace(item, workspaceCWD) {
 					continue
 				}
-				if _, err := m.storage.ImportNativeSession(ctx, NativeSessionImport{
+				result, err := m.storage.ImportNativeSessionWithResult(ctx, NativeSessionImport{
 					WorkspaceID:       workspace.ID,
 					AgentID:           resolvedAgentID,
 					AgentName:         agent.Title,
@@ -225,17 +225,20 @@ func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, wo
 					PermissionMode:    profile.PermissionMode,
 					LaunchProfile:     profile,
 					ImportSource:      importSourceACPSessionList,
-				}); err != nil {
+				})
+				if err != nil {
 					return nil, err
 				}
-				importedCount++
+				if result.MaterialChanged {
+					changedCount++
+				}
 			}
-			if importedCount > 0 {
+			if changedCount > 0 {
 				m.events.Publish(map[string]any{
 					"type":        "session_list_changed",
 					"workspaceId": workspace.ID,
 					"agentId":     resolvedAgentID,
-					"count":       importedCount,
+					"count":       changedCount,
 				})
 			}
 		} else {

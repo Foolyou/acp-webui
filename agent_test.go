@@ -482,7 +482,7 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsImportsNativeList(t *testi
 	}
 }
 
-func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPublishesScopedListChangedEventOnImport(t *testing.T) {
+func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPublishesScopedListChangedEventOnlyOnMaterialImportChange(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
 	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
@@ -505,17 +505,20 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPublishesScopedListChanged
 	installManagerRuntime(manager, codexAgentID, profile, runtime)
 	decoder := json.NewDecoder(reader)
 
+	nativeCWD := nativePathString(workspace.Path)
+	title := "Native session"
+	updatedAt := "2026-05-15T01:02:03Z"
 	resultCh := make(chan managerSyncResult, 1)
 	go func() {
 		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
 		resultCh <- managerSyncResult{items: items, err: err}
 	}()
-
-	nativeCWD := nativePathString(workspace.Path)
 	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
 		Sessions: []ACPSessionListItem{{
 			SessionID: "event-external-1",
 			CWD:       nativeCWD,
+			Title:     &title,
+			UpdatedAt: &updatedAt,
 		}},
 	})
 
@@ -535,6 +538,55 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsPublishesScopedListChanged
 	}
 	if event["count"] != 1 {
 		t.Fatalf("count = %#v, want 1", event["count"])
+	}
+
+	secondResultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		secondResultCh <- managerSyncResult{items: items, err: err}
+	}()
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "event-external-1",
+			CWD:       nativeCWD,
+			Title:     &title,
+			UpdatedAt: &updatedAt,
+		}},
+	})
+	secondResult := receiveManagerSyncResult(t, secondResultCh)
+	if secondResult.err != nil {
+		t.Fatal(secondResult.err)
+	}
+	if len(secondResult.items) != 1 {
+		t.Fatalf("second sync items = %#v, want 1 item", secondResult.items)
+	}
+	assertNoSessionListChangedEvent(t, events)
+
+	renamedTitle := "Renamed native session"
+	renamedUpdatedAt := "2026-05-15T02:03:04Z"
+	thirdResultCh := make(chan managerSyncResult, 1)
+	go func() {
+		items, err := manager.SyncWorkspaceAgentSessions(ctx, workspace, codexAgentID, profile)
+		thirdResultCh <- managerSyncResult{items: items, err: err}
+	}()
+	respondToSessionListRequest(t, decoder, runtime, nativeCWD, nil, ACPSessionListResult{
+		Sessions: []ACPSessionListItem{{
+			SessionID: "event-external-1",
+			CWD:       nativeCWD,
+			Title:     &renamedTitle,
+			UpdatedAt: &renamedUpdatedAt,
+		}},
+	})
+	thirdResult := receiveManagerSyncResult(t, thirdResultCh)
+	if thirdResult.err != nil {
+		t.Fatal(thirdResult.err)
+	}
+	if len(thirdResult.items) != 1 {
+		t.Fatalf("third sync items = %#v, want 1 item", thirdResult.items)
+	}
+	event = receiveSessionListChangedEvent(t, events)
+	if event["count"] != 1 {
+		t.Fatalf("changed count = %#v, want 1", event["count"])
 	}
 }
 
