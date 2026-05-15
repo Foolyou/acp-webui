@@ -17,7 +17,10 @@ import (
 	"time"
 )
 
-const maxDisplayImageBytes = 5 * 1024 * 1024
+const (
+	maxDisplayImageBytes   = 5 * 1024 * 1024
+	maxACPSessionListPages = 100
+)
 
 type initializeResult struct {
 	AgentInfo         any `json:"agentInfo"`
@@ -566,6 +569,40 @@ func (r *AgentRuntime) NewSession(ctx context.Context, cwd string) (NewSessionOu
 		return NewSessionOutcome{}, err
 	}
 	return NewSessionOutcome{SessionID: result.SessionID, ConfigOptions: result.ConfigOptions}, nil
+}
+
+func (r *AgentRuntime) ListSessions(ctx context.Context, cwd string) ([]ACPSessionListItem, error) {
+	if err := r.ensureReady(ctx); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	canList := r.sessionCaps.ListSessions
+	agentTitle := r.agent.Title
+	r.mu.Unlock()
+	if !canList {
+		return nil, fmt.Errorf("%s does not support session/list", agentTitle)
+	}
+
+	sessions := make([]ACPSessionListItem, 0)
+	var cursor *string
+	seenCursors := map[string]struct{}{}
+	for page := 0; page < maxACPSessionListPages; page++ {
+		var result ACPSessionListResult
+		if err := r.request(ctx, "session/list", ACPSessionListParams{CWD: cwd, Cursor: cursor}, &result); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, result.Sessions...)
+		if result.NextCursor == nil || strings.TrimSpace(*result.NextCursor) == "" {
+			return sessions, nil
+		}
+		nextCursor := *result.NextCursor
+		if _, ok := seenCursors[nextCursor]; ok {
+			return nil, fmt.Errorf("session/list cursor loop detected at %q", nextCursor)
+		}
+		seenCursors[nextCursor] = struct{}{}
+		cursor = &nextCursor
+	}
+	return nil, fmt.Errorf("session/list exceeded %d pages", maxACPSessionListPages)
 }
 
 func (r *AgentRuntime) RegisterSession(acpSessionID, localSessionID string) {
