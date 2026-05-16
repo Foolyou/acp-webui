@@ -11,6 +11,12 @@ import {
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
 import { writeLastWorkspaceSessionProfile } from "./app/lastSessionProfile";
+import {
+  canApplyProjectionRecovery,
+  canApplyRecoveredSessionDetail,
+  canApplyRecoveredSessionList,
+  type ProjectionRecoveryToken
+} from "./app/projectionRecovery";
 import { canApplySessionListLoad } from "./app/sessionListLoad";
 import {
   beginScopedSessionListRefresh,
@@ -59,6 +65,7 @@ function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState
     socketState: "disconnected",
     inbox: [],
     transcription: initialState.transcription,
+    access: null,
     sessions: [],
     currentAgentId: null,
     currentSession: null,
@@ -228,6 +235,11 @@ export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const currentSessionIdRef = useRef<string | null>(null);
+  const currentRecoveryScopeRef = useRef<{ workspaceId: string | null; agentId: string | null }>({
+    workspaceId: initialState.currentWorkspaceId,
+    agentId: initialState.currentAgentId
+  });
+  const projectionRecoveryGenerationRef = useRef(0);
   const notifiedTurnCompletionsRef = useRef(new Set<string>());
   const sessionListLoadGenerationRef = useRef(0);
   const scopedRefreshRef = useRef(createScopedSessionListRefreshState({
@@ -238,6 +250,13 @@ export function App() {
   useEffect(() => {
     currentSessionIdRef.current = state.currentSession?.session.id ?? null;
   }, [state.currentSession?.session.id]);
+
+  useEffect(() => {
+    currentRecoveryScopeRef.current = {
+      workspaceId: state.currentWorkspaceId,
+      agentId: state.currentAgentId
+    };
+  }, [state.currentAgentId, state.currentWorkspaceId]);
 
   useEffect(() => {
     scopedRefreshRef.current = syncScopedSessionListRefreshScope(scopedRefreshRef.current, {
@@ -266,11 +285,12 @@ export function App() {
         current.currentSession?.workspace.id ?? current.currentWorkspaceId ?? storedWorkspaceId ?? workspaces[0]?.id ?? null;
       return {
         ...current,
-        auth,
+        auth: appState.access?.auth ?? auth,
         codex: appState.codex,
         agents: appState.agents,
         inbox: appState.inbox,
         transcription: appState.transcription ?? { available: false, maxAudioBytes: 0 },
+        access: appState.access ?? null,
         sessions,
         workspaces,
         currentWorkspaceId,
@@ -282,6 +302,80 @@ export function App() {
       };
     });
   }, []);
+
+  const recoverProjections = useCallback(async () => {
+    const scope = currentRecoveryScopeRef.current;
+    const token: ProjectionRecoveryToken = {
+      generation: projectionRecoveryGenerationRef.current + 1,
+      workspaceId: scope.workspaceId,
+      agentId: scope.agentId,
+      sessionId: currentSessionIdRef.current
+    };
+    projectionRecoveryGenerationRef.current = token.generation;
+
+    try {
+      const sessionListPromise =
+        token.workspaceId && token.agentId
+          ? api.workspaceAgentSessions(token.workspaceId, token.agentId)
+          : token.workspaceId
+            ? api.workspaceSessions(token.workspaceId)
+            : api.sessions();
+      const sessionDetailPromise = token.sessionId
+        ? api.session(token.sessionId).catch((error) => {
+            if (isUnauthorized(error)) throw error;
+            return null;
+          })
+        : Promise.resolve(null);
+      const [appState, workspaces, sessions, detail] = await Promise.all([
+        api.appState(),
+        api.workspaces(),
+        sessionListPromise,
+        sessionDetailPromise
+      ]);
+
+      setState((current) => {
+        if (!canApplyProjectionRecovery(token, projectionRecoveryGenerationRef.current)) {
+          return current;
+        }
+        let next: UiState = {
+          ...current,
+          auth: appState.access?.auth ?? current.auth,
+          codex: appState.codex,
+          agents: appState.agents,
+          inbox: appState.inbox,
+          transcription: appState.transcription ?? { available: false, maxAudioBytes: 0 },
+          access: appState.access ?? null,
+          workspaces,
+          error: null
+        };
+        if (canApplyRecoveredSessionList(token, projectionRecoveryGenerationRef.current, next)) {
+          next = { ...next, sessions };
+        }
+        if (detail && canApplyRecoveredSessionDetail(token, projectionRecoveryGenerationRef.current, next)) {
+          next = {
+            ...next,
+            currentSession: detail,
+            sessions: [
+              sessionDetailToListItem(detail),
+              ...next.sessions.filter((item) => item.session.id !== detail.session.id)
+            ],
+            liveAssistant: liveAssistantAfterSessionReconcile(next.liveAssistant, detail)
+          };
+        }
+        return next;
+      });
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        await markUnauthorized();
+        return;
+      }
+      setState((current) =>
+        canApplyProjectionRecovery(token, projectionRecoveryGenerationRef.current)
+          ? { ...current, error: errorMessage(error) }
+          : current
+      );
+    }
+  }, [markUnauthorized]);
 
   useEffect(() => {
     let cancelled = false;
@@ -318,31 +412,6 @@ export function App() {
 
     let closedByEffect = false;
     let socket: WebSocket | null = null;
-
-    async function reconcileCurrentSession() {
-      const sessionId = currentSessionIdRef.current;
-      if (!sessionId) return;
-      try {
-        const detail = await api.session(sessionId);
-        setState((current) =>
-          current.currentSession?.session.id === sessionId
-            ? {
-                ...current,
-                currentSession: detail,
-                sessions: [
-                  sessionDetailToListItem(detail),
-                  ...current.sessions.filter((item) => item.session.id !== detail.session.id)
-                ],
-                liveAssistant: liveAssistantAfterSessionReconcile(current.liveAssistant, detail)
-              }
-            : current
-        );
-      } catch (error) {
-        if (isUnauthorized(error)) {
-          await markUnauthorized();
-        }
-      }
-    }
 
     async function refreshScopedSessionList(message: Extract<RealtimeEvent, { type: "session_list_changed" }>) {
       const started = beginScopedSessionListRefresh(scopedRefreshRef.current, message);
@@ -397,7 +466,7 @@ export function App() {
 
       nextSocket.addEventListener("open", () => {
         setState((current) => ({ ...current, socketState: "connected" }));
-        void reconcileCurrentSession();
+        void recoverProjections();
       });
 
       nextSocket.addEventListener("message", (event) => {
@@ -444,7 +513,7 @@ export function App() {
           return;
         }
         if (message.type === "session_updated") {
-          void reconcileCurrentSession();
+          void recoverProjections();
           return;
         }
         if (message.type === "session_deleted") {
@@ -499,14 +568,14 @@ export function App() {
         if (!socket || socket.readyState >= WebSocket.CLOSING) {
           connect();
         }
-        void reconcileCurrentSession();
+        void recoverProjections();
       }
     }
     function onOnline() {
       if (!socket || socket.readyState >= WebSocket.CLOSING) {
         connect();
       }
-      void reconcileCurrentSession();
+      void recoverProjections();
     }
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("online", onOnline);
@@ -517,7 +586,7 @@ export function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("online", onOnline);
     };
-  }, [markUnauthorized, state.auth]);
+  }, [markUnauthorized, recoverProjections, state.auth?.access]);
 
   const selectedWorkspace = useMemo(
     () => state.workspaces.find((workspace) => workspace.id === state.currentWorkspaceId) ?? null,

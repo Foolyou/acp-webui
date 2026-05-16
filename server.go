@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -267,7 +268,13 @@ func (s *Server) handleAppState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, AppData{Codex: s.agents.codexStatus(), Agents: s.agents.statuses(), Inbox: nonNilSlice(inbox), Transcription: s.transcriptionCapability()})
+	writeJSON(w, http.StatusOK, AppData{
+		Codex:         s.agents.codexStatus(),
+		Agents:        s.agents.statuses(),
+		Inbox:         nonNilSlice(inbox),
+		Transcription: s.transcriptionCapability(),
+		Access:        s.accessObservability(r),
+	})
 }
 
 func (s *Server) transcriptionCapability() TranscriptionCapability {
@@ -276,6 +283,73 @@ func (s *Server) transcriptionCapability() TranscriptionCapability {
 		maxBytes = defaultTranscriptionMaxAudioBytes
 	}
 	return TranscriptionCapability{Available: s.config.TranscriptionAvailable(), MaxAudioBytes: maxBytes}
+}
+
+func (s *Server) accessObservability(r *http.Request) AccessObservability {
+	scheme := requestScheme(r)
+	host := requestHost(r)
+	if strings.TrimSpace(host) == "" {
+		host = net.JoinHostPort(s.config.BindHost, strconv.Itoa(s.config.BindPort))
+	}
+	accessURL := (&url.URL{Scheme: scheme, Host: host, Path: "/"}).String()
+	tailscaleServeURL := tailscaleServeURLFromRequest(r)
+	return AccessObservability{
+		BindHost:          s.config.BindHost,
+		BindPort:          s.config.BindPort,
+		AccessURL:         accessURL,
+		Auth:              s.auth.status(r),
+		ExposureMode:      detectExposureMode(s.config.BindHost, requestHost(r), scheme, tailscaleServeURL != nil),
+		TailscaleServeURL: tailscaleServeURL,
+	}
+}
+
+func detectExposureMode(bindHost string, requestHost string, scheme string, hasTailscaleServeURL bool) string {
+	if hasTailscaleServeURL {
+		return "tailscale_serve"
+	}
+	normalizedBind := normalizeHost(bindHost)
+	if normalizedBind == "" {
+		return "unknown"
+	}
+	if isLoopbackHost(normalizedBind) {
+		return "loopback"
+	}
+	if isTailscaleIPv4(normalizedBind) {
+		return "tailscale_bind"
+	}
+	if requestHost != "" {
+		requestHostOnly, _ := splitHostPort(requestHost, scheme)
+		if isLoopbackHost(requestHostOnly) {
+			return "loopback_proxy"
+		}
+	}
+	return "network_bind"
+}
+
+func tailscaleServeURLFromRequest(r *http.Request) *string {
+	if requestScheme(r) != "https" {
+		return nil
+	}
+	host := requestHost(r)
+	hostOnly, _ := splitHostPort(host, "https")
+	if !isTailscaleServeHost(hostOnly) {
+		return nil
+	}
+	value := (&url.URL{Scheme: "https", Host: host, Path: "/"}).String()
+	return &value
+}
+
+func isTailscaleServeHost(host string) bool {
+	normalized := normalizeHost(host)
+	return strings.HasSuffix(normalized, ".ts.net") || strings.HasSuffix(normalized, ".tailnet.test")
+}
+
+func isTailscaleIPv4(host string) bool {
+	ip := net.ParseIP(normalizeHost(host)).To4()
+	if ip == nil {
+		return false
+	}
+	return ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127
 }
 
 func (s *Server) handleAudioTranscription(w http.ResponseWriter, r *http.Request) {

@@ -243,6 +243,68 @@ func TestAppStateIncludesDisplaySafeTranscriptionAvailability(t *testing.T) {
 	}
 }
 
+func TestAppStateIncludesAccessObservability(t *testing.T) {
+	config := Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}
+	server := newServer(config, testStorage(t), &AgentRuntimeManager{}, newAuthService(config), newEventHub())
+	request := httptest.NewRequest(http.MethodGet, "/api/app-state", nil)
+	request.Host = "127.0.0.1:7635"
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var data AppData
+	if err := json.Unmarshal(recorder.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Access.BindHost != "127.0.0.1" || data.Access.BindPort != 7635 {
+		t.Fatalf("bind access = %#v", data.Access)
+	}
+	if data.Access.AccessURL != "http://127.0.0.1:7635/" {
+		t.Fatalf("access URL = %q", data.Access.AccessURL)
+	}
+	if data.Access.Auth.Access != "auth_disabled" || data.Access.Auth.PairingRequired {
+		t.Fatalf("auth status = %#v", data.Access.Auth)
+	}
+	if data.Access.ExposureMode != "loopback" {
+		t.Fatalf("exposure mode = %q", data.Access.ExposureMode)
+	}
+	if data.Access.TailscaleServeURL != nil {
+		t.Fatalf("tailscale serve URL = %#v, want nil", data.Access.TailscaleServeURL)
+	}
+}
+
+func TestAppStateDetectsTailscaleServeFromForwardedRequest(t *testing.T) {
+	config := Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}
+	server := newServer(config, testStorage(t), &AgentRuntimeManager{}, newAuthService(config), newEventHub())
+	request := httptest.NewRequest(http.MethodGet, "/api/app-state", nil)
+	request.Host = "127.0.0.1:7635"
+	request.Header.Set("X-Forwarded-Host", "acp-webui.tailnet.test")
+	request.Header.Set("X-Forwarded-Proto", "https")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var data AppData
+	if err := json.Unmarshal(recorder.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Access.AccessURL != "https://acp-webui.tailnet.test/" {
+		t.Fatalf("access URL = %q", data.Access.AccessURL)
+	}
+	if data.Access.ExposureMode != "tailscale_serve" {
+		t.Fatalf("exposure mode = %q", data.Access.ExposureMode)
+	}
+	if data.Access.TailscaleServeURL == nil || *data.Access.TailscaleServeURL != "https://acp-webui.tailnet.test/" {
+		t.Fatalf("tailscale serve URL = %#v", data.Access.TailscaleServeURL)
+	}
+}
+
 func TestHandleAudioTranscriptionCallsConfiguredProvider(t *testing.T) {
 	server := newServer(Config{
 		DisableAuth:                true,

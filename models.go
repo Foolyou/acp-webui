@@ -372,11 +372,21 @@ type AppData struct {
 	Agents        []AgentRuntimeStatus    `json:"agents"`
 	Inbox         []InboxItem             `json:"inbox"`
 	Transcription TranscriptionCapability `json:"transcription"`
+	Access        AccessObservability     `json:"access"`
 }
 
 type TranscriptionCapability struct {
 	Available     bool  `json:"available"`
 	MaxAudioBytes int64 `json:"maxAudioBytes"`
+}
+
+type AccessObservability struct {
+	BindHost          string     `json:"bindHost"`
+	BindPort          int        `json:"bindPort"`
+	AccessURL         string     `json:"accessUrl"`
+	Auth              AuthStatus `json:"auth"`
+	ExposureMode      string     `json:"exposureMode"`
+	TailscaleServeURL *string    `json:"tailscaleServeUrl"`
 }
 
 func stringPtr(value string) *string {

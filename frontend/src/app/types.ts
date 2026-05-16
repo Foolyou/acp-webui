@@ -1,5 +1,6 @@
 import type {
   AgentRuntimeStatus,
+  AccessObservability,
   ConnectionStatus,
   AuthStatus,
   InboxItem,
@@ -23,6 +24,7 @@ export type UiState = {
   workspaces: Workspace[];
   inbox: InboxItem[];
   transcription: TranscriptionCapability;
+  access: AccessObservability | null;
   sessions: SessionListItem[];
   sessionsLoading: boolean;
   currentWorkspaceId: string | null;
@@ -83,6 +85,7 @@ export const initialState: UiState = {
   workspaces: [],
   inbox: [],
   transcription: { available: false, maxAudioBytes: 0 },
+  access: null,
   sessions: [],
   sessionsLoading: false,
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),

@@ -3,11 +3,11 @@ import { useEffect } from "react";
 import { useAppContext } from "../app/context";
 import { workspaceSessionsRouteTarget } from "../app/workspaceAgentNavigation";
 import { LoadingPanel, PageHeader } from "../components/common";
-import { AgentsStatusPane } from "../features/agents/AgentsStatusPane";
 import { InboxPane } from "../features/sessions/InboxPane";
 import { NewSessionComposePane } from "../features/sessions/NewSessionComposePane";
 import { SessionPane } from "../features/sessions/SessionPane";
 import { SessionsPane } from "../features/sessions/SessionsPane";
+import { SettingsPane } from "../features/settings/SettingsPane";
 import { WorkspaceForm } from "../features/workspaces/WorkspaceForm";
 import { WorkspaceList } from "../features/workspaces/WorkspaceList";
 import {
@@ -45,15 +45,21 @@ export function InboxRoute() {
 }
 
 export function AgentsRoute() {
-  const { state } = useAppContext();
-  return <AgentsStatusPane agents={state.agents} socketState={state.socketState} />;
+  return <SettingsRoute />;
 }
 
 export function SettingsRoute() {
+  const { state } = useAppContext();
   return (
-    <div className="page-surface">
-      <PageHeader eyebrow="Settings" title="Settings" description="Controller settings are managed from this route." />
-    </div>
+    <SettingsPane
+      access={state.access}
+      agents={state.agents}
+      inboxCount={state.inbox.length}
+      sessionsCount={state.sessions.length}
+      socketState={state.socketState}
+      transcriptionAvailable={state.transcription.available}
+      workspacesCount={state.workspaces.length}
+    />
   );
 }
 

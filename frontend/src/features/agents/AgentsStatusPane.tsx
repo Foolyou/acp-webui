@@ -2,9 +2,17 @@ import { PageHeader } from "../../components/common";
 import type { AgentRuntimeStatus } from "../../types";
 import { fallbackPermissionModes, permissionModeClass } from "../../utils/permissionMode";
 
-export function AgentsStatusPane({ agents, socketState }: { agents: AgentRuntimeStatus[]; socketState: string }) {
+export function AgentsStatusPane({
+  agents,
+  socketState,
+  surface = "page"
+}: {
+  agents: AgentRuntimeStatus[];
+  socketState: string;
+  surface?: "page" | "section";
+}) {
   return (
-    <section className="page-surface">
+    <section className={surface === "page" ? "page-surface" : "settings-section"} aria-label="Agents">
       <div className="section-head">
         <PageHeader eyebrow="Agents" title="Agent status" />
         <span className={`badge ${socketState}`}>{socketState}</span>

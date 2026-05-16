@@ -345,11 +345,21 @@ export type AppData = {
   agents: AgentRuntimeStatus[];
   inbox: InboxItem[];
   transcription: TranscriptionCapability;
+  access: AccessObservability;
 };
 
 export type TranscriptionCapability = {
   available: boolean;
   maxAudioBytes: number;
+};
+
+export type AccessObservability = {
+  bindHost: string;
+  bindPort: number;
+  accessUrl: string;
+  auth: AuthStatus;
+  exposureMode: string;
+  tailscaleServeUrl?: string | null;
 };
 
 export type SkillSummary = {

@@ -773,6 +773,57 @@ pre {
   padding: 0.8rem;
 }
 
+.settings-page,
+.settings-section {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.settings-section {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.95rem;
+}
+
+.settings-section h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.settings-data-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+}
+
+.settings-data-row {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  border-left: 3px solid var(--color-border);
+  padding-left: 0.6rem;
+}
+
+.settings-data-row dt {
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.settings-data-row dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
 .agent-status-section {
   display: grid;
   gap: 0.35rem;
