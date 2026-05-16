@@ -91,6 +91,22 @@ func TestServerAllowsConfiguredFrontendDevOrigin(t *testing.T) {
 	}
 }
 
+func TestServerAllowsForwardedHTTPSOrigin(t *testing.T) {
+	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	request.Host = "127.0.0.1:7635"
+	request.Header.Set("Origin", "https://acp-webui.tailnet.test")
+	request.Header.Set("X-Forwarded-Host", "acp-webui.tailnet.test")
+	request.Header.Set("X-Forwarded-Proto", "https")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestWebSocketRejectsDisallowedOrigin(t *testing.T) {
 	server := newServer(Config{DisableAuth: true}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
 	httpServer := httptest.NewServer(server)

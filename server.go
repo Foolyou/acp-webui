@@ -110,7 +110,7 @@ func (s *Server) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Add("vary", "Origin")
-	if s.isAllowedOrigin(origin, r.Host, requestScheme(r)) {
+	if s.isAllowedOrigin(origin, requestHost(r), requestScheme(r)) {
 		w.Header().Set("access-control-allow-origin", origin)
 		w.Header().Set("access-control-allow-credentials", "true")
 		w.Header().Set("access-control-allow-headers", "content-type, "+csrfRequestHeader)
@@ -122,7 +122,7 @@ func (s *Server) requireAllowedOrigin(r *http.Request) error {
 	if origin == "" {
 		return nil
 	}
-	if s.isAllowedOrigin(origin, r.Host, requestScheme(r)) {
+	if s.isAllowedOrigin(origin, requestHost(r), requestScheme(r)) {
 		return nil
 	}
 	return forbidden("Request origin is not allowed")
@@ -170,10 +170,26 @@ func requiresCSRFHeader(r *http.Request) bool {
 }
 
 func requestScheme(r *http.Request) string {
+	forwardedProto := strings.ToLower(strings.TrimSpace(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))))
+	if forwardedProto == "http" || forwardedProto == "https" {
+		return forwardedProto
+	}
 	if r.TLS != nil {
 		return "https"
 	}
 	return "http"
+}
+
+func requestHost(r *http.Request) string {
+	if forwardedHost := strings.TrimSpace(firstForwardedValue(r.Header.Get("X-Forwarded-Host"))); forwardedHost != "" {
+		return forwardedHost
+	}
+	return r.Host
+}
+
+func firstForwardedValue(value string) string {
+	value, _, _ = strings.Cut(value, ",")
+	return strings.TrimSpace(value)
 }
 
 func splitHostPort(value string, scheme string) (string, string) {
