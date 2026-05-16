@@ -305,14 +305,37 @@ func (m *AgentRuntimeManager) statusForMode(agent AgentConfig, mode string) Conn
 	if !ok {
 		return failedStatus(fmt.Sprintf("%s permission mode %q is not available", agent.Title, mode))
 	}
-	runtimeKey := agent.ID + "\x00" + key
 	m.mu.Lock()
-	runtime := m.runtimes[runtimeKey]
+	runtime := m.runtimes[agent.ID+"\x00"+key]
+	var modeRuntimes []*AgentRuntime
+	for _, profile := range agent.LaunchProfiles {
+		if profile.PermissionMode != mode || profile.Key == key {
+			continue
+		}
+		if runtime := m.runtimes[agent.ID+"\x00"+profile.Key]; runtime != nil {
+			modeRuntimes = append(modeRuntimes, runtime)
+		}
+	}
 	m.mu.Unlock()
-	if runtime == nil {
+
+	statuses := make([]ConnectionStatus, 0, len(modeRuntimes)+1)
+	if runtime != nil {
+		statuses = append(statuses, runtime.status())
+	}
+	for _, runtime := range modeRuntimes {
+		statuses = append(statuses, runtime.status())
+	}
+	if len(statuses) == 0 {
 		return idleStatus(agent.Title)
 	}
-	return runtime.status()
+	for _, state := range []string{"ready", "starting", "failed"} {
+		for _, status := range statuses {
+			if status.State == state {
+				return status
+			}
+		}
+	}
+	return statuses[0]
 }
 
 func (m *AgentRuntimeManager) codexStatus() ConnectionStatus {

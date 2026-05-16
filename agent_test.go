@@ -958,6 +958,30 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsMarksRuntimeFailedOnListEr
 	}
 }
 
+func TestAgentRuntimeManagerStatusForModeUsesStartedNonDefaultLaunchProfile(t *testing.T) {
+	storage := testStorage(t)
+	manager, _ := testSessionSyncManager(t, storage, "unused-acp")
+	agent := manager.configs[codexAgentID]
+	profile, err := agent.resolveLaunchProfile(permissionManual, map[string]string{
+		"reasoning_effort": "high",
+		"response_mode":    "standard",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newAgentRuntime(agent, permissionManual, storage, manager.events)
+	runtime.setStatus(readyStatus(map[string]any{"title": "Codex"}, AgentPromptCapabilities{Image: true}, AgentSessionCapabilities{LoadSession: true}))
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+
+	status := manager.statusForMode(agent, permissionManual)
+	if status.State != "ready" {
+		t.Fatalf("status = %#v, want ready from started non-default profile", status)
+	}
+	if !status.PromptCapabilities.Image || !status.SessionCapabilities.LoadSession {
+		t.Fatalf("status capabilities = %#v %#v, want non-default runtime capabilities", status.PromptCapabilities, status.SessionCapabilities)
+	}
+}
+
 func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsClearsRuntimeResourcesAfterListError(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
