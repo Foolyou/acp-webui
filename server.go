@@ -7,7 +7,9 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +30,9 @@ type Server struct {
 const (
 	maxPromptImageBytes      = 5 * 1024 * 1024
 	maxPromptImageTotalBytes = 10 * 1024 * 1024
+	csrfRequestHeader        = "x-acp-webui-request"
+	csrfRequestHeaderValue   = "1"
+	frontendDevPort          = "5777"
 )
 
 var supportedPromptImageMimeTypes = map[string]struct{}{
@@ -74,8 +79,17 @@ func (s *Server) routes() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("access-control-allow-origin", "*")
-	w.Header().Set("access-control-allow-headers", "content-type")
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		if err := s.requireAllowedOrigin(r); err != nil {
+			writeError(w, err)
+			return
+		}
+		if requiresCSRFHeader(r) && r.Header.Get(csrfRequestHeader) != csrfRequestHeaderValue {
+			writeError(w, forbidden("Missing CSRF request header"))
+			return
+		}
+	}
+	s.setCORSHeaders(w, r)
 	w.Header().Set("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -88,6 +102,119 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return
+	}
+	w.Header().Add("vary", "Origin")
+	if s.isAllowedOrigin(origin, r.Host, requestScheme(r)) {
+		w.Header().Set("access-control-allow-origin", origin)
+		w.Header().Set("access-control-allow-credentials", "true")
+		w.Header().Set("access-control-allow-headers", "content-type, "+csrfRequestHeader)
+	}
+}
+
+func (s *Server) requireAllowedOrigin(r *http.Request) error {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return nil
+	}
+	if s.isAllowedOrigin(origin, r.Host, requestScheme(r)) {
+		return nil
+	}
+	return forbidden("Request origin is not allowed")
+}
+
+func (s *Server) isAllowedOrigin(rawOrigin string, requestHost string, requestScheme string) bool {
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || origin.Scheme == "" || origin.Host == "" {
+		return false
+	}
+	if origin.Scheme != "http" && origin.Scheme != "https" {
+		return false
+	}
+	originHost, originPort := splitHostPort(origin.Host, origin.Scheme)
+	requestHostOnly, requestPort := splitHostPort(requestHost, requestScheme)
+	if sameHost(originHost, requestHostOnly) && originPort == requestPort {
+		return true
+	}
+	if originPort == frontendDevPort && s.isAllowedFrontendDevHost(originHost, requestHostOnly) {
+		return true
+	}
+	return false
+}
+
+func (s *Server) isAllowedFrontendDevHost(originHost string, requestHost string) bool {
+	if sameHost(originHost, requestHost) {
+		return true
+	}
+	if isLoopbackHost(originHost) && isLoopbackHost(requestHost) {
+		return true
+	}
+	return sameHost(originHost, s.config.BindHost)
+}
+
+func requiresCSRFHeader(r *http.Request) bool {
+	if strings.TrimSpace(r.Header.Get("Origin")) == "" {
+		return false
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return strings.HasPrefix(r.URL.Path, "/api/")
+	default:
+		return false
+	}
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func splitHostPort(value string, scheme string) (string, string) {
+	host := value
+	port := ""
+	if parsedHost, parsedPort, err := net.SplitHostPort(value); err == nil {
+		host = parsedHost
+		port = parsedPort
+	} else if strings.HasPrefix(value, "[") && strings.Contains(value, "]") {
+		host = strings.Trim(value, "[]")
+	}
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return normalizeHost(host), port
+}
+
+func normalizeHost(host string) string {
+	host = strings.Trim(strings.ToLower(host), "[]")
+	host = strings.TrimSuffix(host, ".")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return host
+}
+
+func sameHost(first string, second string) bool {
+	return normalizeHost(first) == normalizeHost(second)
+}
+
+func isLoopbackHost(host string) bool {
+	normalized := normalizeHost(host)
+	if normalized == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(normalized)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
@@ -611,9 +738,14 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeError(w, badRequest("Permission option id is required"))
 		return
 	}
+	optionID := strings.TrimSpace(payload.OptionID)
 	permission, err := s.storage.GetPermissionRequest(r.Context(), permissionID)
 	if err != nil {
 		writeError(w, notFound("Permission request not found"))
+		return
+	}
+	if !permissionOptionExists(permission.Options, optionID) {
+		writeError(w, badRequest("Permission option id is not valid for this request"))
 		return
 	}
 	session, err := s.storage.GetSession(r.Context(), permission.SessionID)
@@ -626,7 +758,7 @@ func (s *Server) handleResolvePermission(w http.ResponseWriter, r *http.Request)
 		writeError(w, unavailable(err.Error()))
 		return
 	}
-	resolved, err := runtime.ResolvePermission(r.Context(), permissionID, payload.OptionID)
+	resolved, err := runtime.ResolvePermission(r.Context(), permissionID, optionID)
 	if err != nil {
 		writeError(w, conflict(err.Error()))
 		return
@@ -886,9 +1018,12 @@ func agentUnavailableReason(agentName string, status ConnectionStatus) string {
 	return fmt.Sprintf("%s is %s%s. This session history is available for review, but the live %s runtime context is not available. Prompts are disabled until the agent runtime is ready.", agentName, status.State, suffix, agentName)
 }
 
-var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return s.requireAllowedOrigin(r) == nil
+		},
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -901,6 +1036,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func permissionOptionExists(options []PermissionOption, optionID string) bool {
+	for _, option := range options {
+		if option.OptionID == optionID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "content-type": "application/json",
+      "x-acp-webui-request": "1",
       ...(init?.headers ?? {})
     }
   });

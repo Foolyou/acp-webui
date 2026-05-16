@@ -16,7 +16,7 @@ describe("api", () => {
     await api.workspaceAgentSessions("workspace/a", "agent:b");
 
     expect(fetch).toHaveBeenCalledWith("/api/workspaces/workspace%2Fa/agents/agent%3Ab/sessions", {
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" }
     });
   });
 });

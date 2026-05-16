@@ -27,6 +27,10 @@ func unauthorized(message string) appError {
 	return appError{Status: http.StatusUnauthorized, Message: message}
 }
 
+func forbidden(message string) appError {
+	return appError{Status: http.StatusForbidden, Message: message}
+}
+
 func notFound(message string) appError {
 	return appError{Status: http.StatusNotFound, Message: message}
 }

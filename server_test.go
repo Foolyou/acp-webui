@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestPromptBlocksFromRequestValidatesImages(t *testing.T) {
@@ -33,6 +35,119 @@ func TestPromptBlocksFromRequestValidatesImages(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "Unsupported image type") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestServerRejectsDisallowedAPIOrigin(t *testing.T) {
+	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	request.Host = "127.0.0.1:7635"
+	request.Header.Set("Origin", "http://evil.example")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerRequiresCSRFHeaderForBrowserStateChanges(t *testing.T) {
+	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(`{"path":"`+strings.ReplaceAll(t.TempDir(), `\`, `\\`)+`"}`))
+	request.Host = "127.0.0.1:7635"
+	request.Header.Set("Origin", "http://127.0.0.1:7635")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerAllowsSameOriginStateChangeWithCSRFHeader(t *testing.T) {
+	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(`{"path":"`+strings.ReplaceAll(t.TempDir(), `\`, `\\`)+`"}`))
+	request.Host = "127.0.0.1:7635"
+	request.Header.Set("Origin", "http://127.0.0.1:7635")
+	request.Header.Set(csrfRequestHeader, csrfRequestHeaderValue)
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerAllowsConfiguredFrontendDevOrigin(t *testing.T) {
+	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	if !server.isAllowedOrigin("http://localhost:5777", "127.0.0.1:7635", "http") {
+		t.Fatal("expected loopback frontend dev origin to be allowed")
+	}
+	if server.isAllowedOrigin("http://127.0.0.1:5778", "127.0.0.1:7635", "http") {
+		t.Fatal("expected unexpected loopback port to be rejected")
+	}
+}
+
+func TestWebSocketRejectsDisallowedOrigin(t *testing.T) {
+	server := newServer(Config{DisableAuth: true}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/ws"
+
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": []string{"http://evil.example"}})
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("expected disallowed websocket origin to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("websocket response = %#v, err = %v", response, err)
+	}
+}
+
+func TestPermissionOptionMustBelongToRequest(t *testing.T) {
+	storage := testStorage(t)
+	ctx := t.Context()
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "acp-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permission, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: acpSessionID,
+		ACPRequestID: "approval-1",
+		Title:        "Approve command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{"toolCallId": "tool-1"},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodPost, "/api/permission-requests/"+permission.ID+"/resolve", strings.NewReader(`{"optionId":"deny"}`))
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	unchanged, err := storage.GetPermissionRequest(ctx, permission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Status != permissionPending || unchanged.SelectedOptionID != nil {
+		t.Fatalf("permission mutated after invalid option: %#v", unchanged)
 	}
 }
 
