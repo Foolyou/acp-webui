@@ -1,6 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  ChangeEvent,
+  ClipboardEvent as ReactClipboardEvent,
+  DragEvent as ReactDragEvent,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { Button } from "react-aria-components";
 import { api } from "../../api";
 import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
@@ -800,6 +806,8 @@ function PromptComposer({
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [previewAttachmentId, setPreviewAttachmentId] = useState<string | null>(null);
+  const [draggingImages, setDraggingImages] = useState(false);
   const [recordingSupported] = useState(() => audioRecordingSupported());
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -822,6 +830,7 @@ function PromptComposer({
   const voiceSupported = transcriptionAvailable && recordingSupported;
   const voiceRecording = voiceState === "recording";
   const voiceTranscribing = voiceState === "transcribing";
+  const previewAttachment = attachments.find((attachment) => attachment.id === previewAttachmentId) ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -886,6 +895,7 @@ function PromptComposer({
     const submittedAttachments = attachments;
     setPrompt("");
     setAttachments([]);
+    setPreviewAttachmentId(null);
     try {
       await onSendPrompt(
         trimmed,
@@ -1116,9 +1126,7 @@ function PromptComposer({
     }
   }
 
-  async function onImageFilesSelected(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  async function addImageFiles(files: File[]) {
     if (!files.length) return;
     if (!imagePromptSupported) {
       setAttachmentError(`${agentName} does not support image attachments.`);
@@ -1131,6 +1139,45 @@ function PromptComposer({
     } catch (error) {
       setAttachmentError(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function onImageFilesSelected(event: ChangeEvent<HTMLInputElement>) {
+    const files = filesFromList(event.target.files);
+    event.target.value = "";
+    await addImageFiles(files);
+  }
+
+  function onPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = filesFromClipboard(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void addImageFiles(files);
+  }
+
+  function onDragEnter(event: ReactDragEvent<HTMLFormElement>) {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    setDraggingImages(true);
+  }
+
+  function onDragOver(event: ReactDragEvent<HTMLFormElement>) {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = imagePromptSupported && !disabled && !busy ? "copy" : "none";
+    setDraggingImages(true);
+  }
+
+  function onDragLeave(event: ReactDragEvent<HTMLFormElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setDraggingImages(false);
+  }
+
+  function onDrop(event: ReactDragEvent<HTMLFormElement>) {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    setDraggingImages(false);
+    if (disabled || busy) return;
+    void addImageFiles(filesFromList(event.dataTransfer.files));
   }
 
   const status = continuityReason
@@ -1175,7 +1222,14 @@ function PromptComposer({
           ) : null}
         </div>
       ) : null}
-      <form className="composer" onSubmit={onSubmit}>
+      <form
+        className={`composer ${draggingImages ? "dragging-images" : ""}`}
+        onDragEnter={onDragEnter}
+        onDragLeave={onDragLeave}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onSubmit={onSubmit}
+      >
         <input
           accept={SUPPORTED_IMAGE_MIME_TYPES.join(",")}
           className="visually-hidden"
@@ -1191,6 +1245,7 @@ function PromptComposer({
           onCompositionEnd={() => setComposing(false)}
           onCompositionStart={() => setComposing(true)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={
             continuityReason
               ? restoreRequired
@@ -1345,11 +1400,21 @@ function PromptComposer({
           <div className="composer-attachments">
             {attachments.map((attachment) => (
               <div className="composer-attachment" key={attachment.id}>
-                <img alt={attachment.name ?? "Attached image"} src={imageDataUrl(attachment)} />
+                <Button
+                  aria-label={`Preview image attachment ${attachment.name ?? attachment.mimeType}`}
+                  className="composer-attachment-preview"
+                  onPress={() => setPreviewAttachmentId(attachment.id)}
+                  type="button"
+                >
+                  <img alt={attachment.name ?? "Attached image"} src={imageDataUrl(attachment)} />
+                </Button>
                 <span>{attachment.name ?? attachment.mimeType}</span>
                 <Button
                   className="secondary small"
-                  onPress={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                  onPress={() => {
+                    setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+                    setPreviewAttachmentId((current) => (current === attachment.id ? null : current));
+                  }}
                   type="button"
                 >
                   Remove
@@ -1396,8 +1461,49 @@ function PromptComposer({
           </Button>
         </div>
       </form>
+      {previewAttachment ? (
+        <div className="modal-backdrop composer-image-backdrop" onClick={() => setPreviewAttachmentId(null)}>
+          <div
+            aria-label="Image attachment preview"
+            aria-modal="true"
+            className="composer-image-preview"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Attachment</p>
+                <h2>{previewAttachment.name ?? previewAttachment.mimeType}</h2>
+              </div>
+              <Button className="secondary small" onPress={() => setPreviewAttachmentId(null)} type="button">
+                Close
+              </Button>
+            </div>
+            <div className="composer-image-preview-body">
+              <img alt={previewAttachment.name ?? "Attached image"} src={imageDataUrl(previewAttachment)} />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function filesFromList(files: FileList | null) {
+  return Array.from(files ?? []);
+}
+
+function filesFromClipboard(data: DataTransfer) {
+  const files = filesFromList(data.files);
+  if (files.length > 0) return files;
+  return Array.from(data.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+}
+
+function hasDraggedFiles(data: DataTransfer) {
+  return Array.from(data.types).includes("Files");
 }
 
 function readImageAttachment(file: File): Promise<ImageAttachment> {
