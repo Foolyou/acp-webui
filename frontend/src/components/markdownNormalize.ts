@@ -1,7 +1,10 @@
-const textFenceInfos = ["text", "txt"];
+const textFenceInfos = ["text", "txt", "plaintext"];
 const fenceLinePattern = /^([ \t]{0,3})(`{3,}|~{3,})(.*)$/;
 
 export function normalizeMarkdownContent(content: string) {
+  const wholeTextFence = unwrapWholeTextFence(content);
+  if (wholeTextFence !== null) return wholeTextFence;
+
   const output: string[] = [];
   let openFence: { markerChar: string; markerLength: number } | null = null;
 
@@ -55,4 +58,36 @@ export function normalizeMarkdownContent(content: string) {
   }
 
   return output.join("\n");
+}
+
+function unwrapWholeTextFence(content: string) {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim() !== "");
+  if (firstContentIndex === -1) return null;
+
+  const opening = lines[firstContentIndex].match(fenceLinePattern);
+  if (!opening) return null;
+  const [, , marker, info] = opening;
+  const infoText = info.trim().toLowerCase();
+  if (!textFenceInfos.includes(infoText)) return null;
+
+  const markerChar = marker[0];
+  const markerLength = marker.length;
+  let closingIndex = -1;
+  for (let index = firstContentIndex + 1; index < lines.length; index++) {
+    const closing = lines[index].match(fenceLinePattern);
+    if (!closing) continue;
+    const [, , closingMarker, suffix] = closing;
+    if (closingMarker[0] === markerChar && closingMarker.length >= markerLength && suffix.trim() === "") {
+      closingIndex = index;
+      break;
+    }
+  }
+
+  if (closingIndex === -1) return null;
+  if (lines.slice(0, firstContentIndex).some((line) => line.trim() !== "")) return null;
+  if (lines.slice(closingIndex + 1).some((line) => line.trim() !== "")) return null;
+
+  return lines.slice(firstContentIndex + 1, closingIndex).join("\n");
 }
