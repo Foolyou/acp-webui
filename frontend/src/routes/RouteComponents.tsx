@@ -1,11 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useAppContext } from "../app/context";
-import { resolveWorkspaceAgentId, workspaceSessionsRouteTarget } from "../app/workspaceAgentNavigation";
+import { workspaceSessionsRouteTarget } from "../app/workspaceAgentNavigation";
 import { LoadingPanel, PageHeader } from "../components/common";
 import { AgentsStatusPane } from "../features/agents/AgentsStatusPane";
-import { CreatingSessionPane } from "../features/sessions/CreatingSessionPane";
 import { InboxPane } from "../features/sessions/InboxPane";
+import { NewSessionComposePane } from "../features/sessions/NewSessionComposePane";
 import { SessionPane } from "../features/sessions/SessionPane";
 import { SessionsPane } from "../features/sessions/SessionsPane";
 import { WorkspaceForm } from "../features/workspaces/WorkspaceForm";
@@ -84,7 +84,7 @@ export function WorkspaceSessionsRoute() {
   const { workspaceId } = workspaceSessionsRoute.useParams();
   const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { createSession, loadSessionList, setCurrentWorkspace } = actions;
+  const { loadSessionList, setCurrentWorkspace } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
 
   useEffect(() => {
@@ -96,9 +96,6 @@ export function WorkspaceSessionsRoute() {
     <SessionsPane
       agents={state.agents}
       loading={state.sessionsLoading}
-      onCreate={(agentId, permissionMode, launchControlValues) =>
-        createSession(workspaceId, agentId, permissionMode, launchControlValues)
-      }
       onSelectAgent={(agentId) =>
         void navigate(
           agentId
@@ -123,7 +120,7 @@ export function WorkspaceAgentSessionsRoute() {
   const { agentId, workspaceId } = workspaceAgentSessionsRoute.useParams();
   const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { createSession, loadSessionList, setCurrentWorkspaceAgent } = actions;
+  const { loadSessionList, setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
 
   useEffect(() => {
@@ -135,9 +132,6 @@ export function WorkspaceAgentSessionsRoute() {
     <SessionsPane
       agents={state.agents}
       loading={state.sessionsLoading}
-      onCreate={(_selectedAgentId, permissionMode, launchControlValues) =>
-        createSession(workspaceId, agentId, permissionMode, launchControlValues)
-      }
       onSelectAgent={(selectedAgentId) =>
         void navigate(
           selectedAgentId
@@ -160,36 +154,23 @@ export function WorkspaceAgentSessionsRoute() {
 
 export function NewSessionRoute() {
   const { workspaceId } = newSessionRoute.useParams();
-  const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { setCurrentWorkspaceAgent } = actions;
+  const { setCurrentWorkspace } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
-  const agent = state.agents.find((item) => item.id === state.creatingSessionAgentId) ?? null;
 
   useEffect(() => {
-    const agentId = resolveWorkspaceAgentId(workspaceId, state.agents);
-    if (!agentId) return;
-    setCurrentWorkspaceAgent(workspaceId, agentId);
-    void navigate({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions/new",
-      params: { workspaceId, agentId },
-      replace: true
-    });
-  }, [navigate, setCurrentWorkspaceAgent, state.agents, workspaceId]);
+    setCurrentWorkspace(workspaceId);
+  }, [setCurrentWorkspace, workspaceId]);
 
   return (
-    <CreatingSessionPane
-      agent={agent}
-      creating={state.creatingSessionWorkspaceId === workspaceId}
-      permissionMode={state.creatingSessionPermissionMode}
-      onRetry={() =>
-        actions.createSession(
-          workspaceId,
-          state.creatingSessionAgentId ?? undefined,
-          state.creatingSessionPermissionMode ?? undefined
-        )
+    <NewSessionComposePane
+      agents={state.agents}
+      busy={state.busy || state.creatingSessionWorkspaceId === workspaceId}
+      onCreate={(agentId, permissionMode, launchControlValues, initialPrompt) =>
+        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt)
       }
       workspace={workspace}
+      workspaceId={workspaceId}
     />
   );
 }
@@ -197,21 +178,23 @@ export function NewSessionRoute() {
 export function NewWorkspaceAgentSessionRoute() {
   const { agentId, workspaceId } = workspaceAgentNewSessionRoute.useParams();
   const { actions, state } = useAppContext();
-  const { createSession, setCurrentWorkspaceAgent } = actions;
+  const { setCurrentWorkspaceAgent } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
-  const agent = state.agents.find((item) => item.id === agentId) ?? null;
 
   useEffect(() => {
     setCurrentWorkspaceAgent(workspaceId, agentId);
   }, [agentId, setCurrentWorkspaceAgent, workspaceId]);
 
   return (
-    <CreatingSessionPane
-      agent={agent}
-      creating={state.creatingSessionWorkspaceId === workspaceId}
-      permissionMode={state.creatingSessionPermissionMode}
-      onRetry={() => createSession(workspaceId, agentId, state.creatingSessionPermissionMode ?? undefined)}
+    <NewSessionComposePane
+      agents={state.agents}
+      busy={state.busy || state.creatingSessionWorkspaceId === workspaceId}
+      onCreate={(_agentId, permissionMode, launchControlValues, initialPrompt) =>
+        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt)
+      }
+      scopedAgentId={agentId}
       workspace={workspace}
+      workspaceId={workspaceId}
     />
   );
 }

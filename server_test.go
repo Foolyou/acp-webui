@@ -663,6 +663,58 @@ func TestHandleCreateSessionResponseIncludesWorkspaceAgentRouteContext(t *testin
 	}
 }
 
+func TestHandleCreateSessionStartsInitialPromptTurn(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	runtime := newReadySessionListRuntime(t, storage, false)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"codex","permissionMode":"manual","initialPrompt":"Plan the fix"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequest(t, decoder, runtime, nativePathString(workspace.Path), "created-initial-prompt-session")
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail SessionDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Session.Status != statusRunning {
+		t.Fatalf("session status = %q, want %q", detail.Session.Status, statusRunning)
+	}
+	if detail.ActiveTurn == nil {
+		t.Fatal("active turn is nil")
+	}
+	if len(detail.Messages) != 1 || detail.Messages[0].Content != "Plan the fix" {
+		t.Fatalf("messages = %#v, want initial prompt", detail.Messages)
+	}
+	respondToPromptRequest(t, decoder, runtime, "created-initial-prompt-session", "Plan the fix")
+}
+
 func TestHandleCreateSessionPublishesScopedListChangedEvent(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)
@@ -992,6 +1044,15 @@ type newSessionRequest struct {
 	} `json:"params"`
 }
 
+type promptRequest struct {
+	ID     int64  `json:"id"`
+	Method string `json:"method"`
+	Params struct {
+		SessionID string                `json:"sessionId"`
+		Prompt    []MessageContentBlock `json:"prompt"`
+	} `json:"params"`
+}
+
 func respondToNewSessionRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, sessionID string) {
 	t.Helper()
 	requestCh := make(chan struct {
@@ -1023,6 +1084,54 @@ func respondToNewSessionRequest(t *testing.T, decoder *json.Decoder, runtime *Ag
 		t.Fatalf("cwd = %q, want %q", request.Params.CWD, wantCWD)
 	}
 	data, err := json.Marshal(map[string]any{"sessionId": sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strconv.FormatInt(request.ID, 10)
+	runtime.mu.Lock()
+	ch := runtime.pending[key]
+	delete(runtime.pending, key)
+	runtime.mu.Unlock()
+	if ch == nil {
+		t.Fatalf("pending request %s not found", key)
+	}
+	ch <- rpcResponse{Result: data}
+}
+
+func respondToPromptRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantSessionID string, wantPrompt string) {
+	t.Helper()
+	requestCh := make(chan struct {
+		request promptRequest
+		err     error
+	}, 1)
+	go func() {
+		var request promptRequest
+		err := decoder.Decode(&request)
+		requestCh <- struct {
+			request promptRequest
+			err     error
+		}{request: request, err: err}
+	}()
+	var request promptRequest
+	select {
+	case result := <-requestCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		request = result.request
+	case <-time.After(sessionListTestTimeout):
+		t.Fatal("timed out waiting for session/prompt request")
+	}
+	if request.Method != "session/prompt" {
+		t.Fatalf("method = %q, want session/prompt", request.Method)
+	}
+	if request.Params.SessionID != wantSessionID {
+		t.Fatalf("sessionId = %q, want %q", request.Params.SessionID, wantSessionID)
+	}
+	if len(request.Params.Prompt) != 1 || request.Params.Prompt[0].Text != wantPrompt {
+		t.Fatalf("prompt = %#v, want %q", request.Params.Prompt, wantPrompt)
+	}
+	data, err := json.Marshal(map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

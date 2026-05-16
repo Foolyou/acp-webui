@@ -2,12 +2,6 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "react-aria-components";
 import {
-  normalizeLaunchControlValues,
-  readLastSessionProfile,
-  resolveLastSessionProfile,
-  writeLastSessionProfile
-} from "../../app/lastSessionProfile";
-import {
   filterCockpitSessions,
   pendingApprovalSessionCount,
   sessionStatusFilterOptions,
@@ -15,21 +9,14 @@ import {
 } from "../../app/sessionCockpit";
 import { isAvailableWorkspaceAgent } from "../../app/workspaceAgentNavigation";
 import { PageHeader } from "../../components/common";
-import type { AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
+import type { AgentRuntimeStatus, SessionListItem, Workspace } from "../../types";
 import { formatRelativeTime } from "../../utils/format";
-import {
-  fallbackPermissionModes,
-  isYoloSession,
-  permissionModeClass,
-  permissionModeLabel
-} from "../../utils/permissionMode";
+import { isYoloSession, permissionModeClass, permissionModeLabel } from "../../utils/permissionMode";
 import { sessionStatusLabel } from "../../utils/sessionStatus";
-import { canLaunchPermissionMode, resolveActiveCreateModeId } from "./sessionCreateMode";
 
 export function SessionsPane({
   agents,
   loading,
-  onCreate,
   onSelectAgent,
   selectedAgentId,
   sessions,
@@ -37,13 +24,11 @@ export function SessionsPane({
 }: {
   agents: AgentRuntimeStatus[];
   loading: boolean;
-  onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
   onSelectAgent?: (agentId: string | null) => void;
   selectedAgentId?: string | null;
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
-  const [createOpen, setCreateOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>("all");
   const [agentFilter, setAgentFilter] = useState<string | null>(selectedAgentId ?? null);
   useEffect(() => {
@@ -54,7 +39,6 @@ export function SessionsPane({
     [agentFilter, sessions, statusFilter]
   );
   const pendingCount = pendingApprovalSessionCount(sessions);
-  const showCreate = sessions.length === 0 || createOpen;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
 
   return (
@@ -68,10 +52,14 @@ export function SessionsPane({
               {pendingCount} pending approval
             </Button>
           ) : null}
-          {sessions.length > 0 ? (
-            <Button className="primary small" onPress={() => setCreateOpen((open) => !open)}>
+          {workspace ? (
+            <Link
+              className="primary small"
+              params={{ workspaceId: workspace.id }}
+              to="/workspaces/$workspaceId/sessions/new"
+            >
               New session
-            </Button>
+            </Link>
           ) : null}
         </div>
       </div>
@@ -85,18 +73,9 @@ export function SessionsPane({
         onSelectStatus={setStatusFilter}
         statusFilter={statusFilter}
       />
-      {showCreate ? (
-        <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
-          {sessions.length === 0 ? <p className="empty">{emptySessionsText(selectedAgent?.title)}</p> : null}
-          <AgentCreateControls
-            agents={agents}
-            onCreate={onCreate}
-            scopedAgentId={selectedAgentId ?? null}
-            size={sessions.length > 0 ? "small" : undefined}
-          />
-        </div>
-      ) : null}
-      {sessions.length === 0 ? null : cockpitSessions.length === 0 ? (
+      {sessions.length === 0 ? (
+        <p className="empty">{emptySessionsText(selectedAgent?.title)}</p>
+      ) : cockpitSessions.length === 0 ? (
         <p className="empty">No sessions match these filters.</p>
       ) : (
         <div className="item-list">
@@ -170,186 +149,6 @@ function CockpitFilters({
       </label>
     </div>
   );
-}
-
-function AgentCreateControls({
-  agents,
-  onCreate,
-  scopedAgentId,
-  size
-}: {
-  agents: AgentRuntimeStatus[];
-  onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
-  scopedAgentId?: string | null;
-  size?: "small";
-}) {
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(scopedAgentId ?? null);
-  const [selectedModeId, setSelectedModeId] = useState<PermissionModeId | null>(null);
-  const [controlValues, setControlValues] = useState<Record<string, Record<string, string>>>({});
-  const [lastProfile] = useState(() => readLastSessionProfile());
-  const createAgents = useMemo(
-    () => (scopedAgentId ? agents.filter((agent) => agent.id === scopedAgentId) : agents),
-    [agents, scopedAgentId]
-  );
-  const resolvedLastProfile = useMemo(() => {
-    const profile = resolveLastSessionProfile(createAgents, lastProfile);
-    if (scopedAgentId && profile?.agent.id !== scopedAgentId) return null;
-    return profile;
-  }, [createAgents, lastProfile, scopedAgentId]);
-  const activeAgentId = scopedAgentId ?? selectedAgentId;
-  const selectedAgent = createAgents.find((agent) => agent.id === activeAgentId) ?? null;
-  const activeModeId = resolveActiveCreateModeId(selectedAgent, selectedModeId);
-
-  function selectedValues(agent: AgentRuntimeStatus) {
-    return normalizeLaunchControlValues(agent, controlValues[agent.id] ?? {});
-  }
-
-  function selectAgent(agent: AgentRuntimeStatus) {
-    setSelectedAgentId(agent.id);
-    setSelectedModeId(resolveActiveCreateModeId(agent, null));
-    setControlValues((current) => ({
-      ...current,
-      [agent.id]: {
-        ...normalizeLaunchControlValues(agent, current[agent.id] ?? {})
-      }
-    }));
-  }
-
-  function createWithProfile(agent: AgentRuntimeStatus, permissionMode: PermissionModeId, values: Record<string, string>) {
-    const launchControlValues = { ...normalizeLaunchControlValues(agent, values), permission: permissionMode };
-    writeLastSessionProfile({ agentId: agent.id, permissionMode, launchControlValues });
-    onCreate(agent.id, permissionMode, launchControlValues);
-  }
-
-  return (
-    <div className={`agent-create-flow ${size ?? ""}`}>
-      <div className={`agent-create-controls ${size ?? ""}`}>
-        {resolvedLastProfile ? (
-          <Button
-            className="agent-choice last-profile"
-            onPress={() =>
-              createWithProfile(
-                resolvedLastProfile.agent,
-                resolvedLastProfile.permissionMode,
-                resolvedLastProfile.launchControlValues
-              )
-            }
-          >
-            <strong>Last profile</strong>
-            <span>
-              {resolvedLastProfile.agent.title} / {resolvedLastProfile.modeLabel}
-            </span>
-          </Button>
-        ) : null}
-        {createAgents.map((agent) => (
-          <Button
-            className={`agent-choice ${activeAgentId === agent.id ? "selected" : ""} ${agent.status.state}`}
-            key={agent.id}
-            onPress={() => selectAgent(agent)}
-          >
-            <strong>{agent.title}</strong>
-            <span>{agentStatusText(agent)}</span>
-          </Button>
-        ))}
-      </div>
-      {selectedAgent ? (
-        <AgentCreateDetail
-          agent={selectedAgent}
-          controlValues={selectedValues(selectedAgent)}
-          onChangeControl={(controlId, value) =>
-            setControlValues((current) => ({
-              ...current,
-              [selectedAgent.id]: {
-                ...(current[selectedAgent.id] ?? {}),
-                [controlId]: value
-              }
-            }))
-          }
-          onConfirm={(permissionMode) => createWithProfile(selectedAgent, permissionMode, selectedValues(selectedAgent))}
-          onSelectMode={setSelectedModeId}
-          selectedModeId={activeModeId}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function AgentCreateDetail({
-  agent,
-  controlValues,
-  onChangeControl,
-  onConfirm,
-  onSelectMode,
-  selectedModeId
-}: {
-  agent: AgentRuntimeStatus;
-  controlValues: Record<string, string>;
-  onChangeControl: (controlId: string, value: string) => void;
-  onConfirm: (permissionMode: PermissionModeId) => void;
-  onSelectMode: (permissionMode: PermissionModeId) => void;
-  selectedModeId: PermissionModeId | null;
-}) {
-  const modes = fallbackPermissionModes(agent);
-  const controls = (agent.launchControls ?? []).filter((control) => control.id !== "permission");
-  const selectedMode = modes.find((mode) => mode.id === selectedModeId) ?? modes[0] ?? null;
-  const selectedLaunchable = selectedMode ? canLaunchPermissionMode(agent, selectedMode) : false;
-
-  return (
-    <div className={`agent-create-detail ${agent.status.state}`}>
-      <div className="agent-create-detail-head">
-        <div>
-          <strong>{agent.title}</strong>
-          <span>{agentStatusText(agent)}</span>
-        </div>
-        <span className={`badge ${agent.status.state}`}>{agent.status.state}</span>
-      </div>
-      {agent.status.message ? <p className="muted">{agent.status.message}</p> : null}
-      {controls.length ? (
-        <div className="launch-control-options">
-          {controls.map((control) => (
-            <label key={control.id} title={control.description ?? control.label}>
-              <span>{control.label}</span>
-              <select
-                disabled={!agent.enabled}
-                onChange={(event) => onChangeControl(control.id, event.target.value)}
-                value={controlValues[control.id] ?? control.defaultValue}
-              >
-                {control.options.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ))}
-        </div>
-      ) : null}
-      <label className="permission-mode-select-field">
-        <span>Permission mode</span>
-        <select
-          disabled={!agent.enabled || !modes.some((mode) => canLaunchPermissionMode(agent, mode))}
-          onChange={(event) => onSelectMode(event.target.value as PermissionModeId)}
-          value={selectedMode?.id ?? ""}
-        >
-          {modes.map((mode) => (
-            <option disabled={!canLaunchPermissionMode(agent, mode)} key={mode.id} value={mode.id}>
-              {mode.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <Button className="primary" isDisabled={!selectedMode || !selectedLaunchable} onPress={() => selectedMode && onConfirm(selectedMode.id)}>
-        Create session
-      </Button>
-    </div>
-  );
-}
-
-function agentStatusText(agent: AgentRuntimeStatus) {
-  if (!agent.enabled) return "Disabled";
-  if (agent.status.state === "idle") return "Start session";
-  if (agent.status.state === "ready") return "New session";
-  return agent.status.message ?? agent.status.state;
 }
 
 function SessionListRow({ item }: { item: SessionListItem }) {

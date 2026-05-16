@@ -110,16 +110,20 @@ export const api = {
     workspaceId: string,
     agentId?: string,
     permissionMode?: PermissionModeId,
-    launchControlValues?: Record<string, string>
+    launchControlValues?: Record<string, string>,
+    initialPrompt?: string,
+    contentBlocks?: MessageContentBlock[]
   ) =>
-    request<SessionDetail>(`/api/workspaces/${workspaceId}/sessions`, {
+    request<SessionDetail>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
       method: "POST",
       body:
-        agentId || permissionMode || launchControlValues
+        agentId || permissionMode || launchControlValues || initialPrompt || contentBlocks?.length
           ? JSON.stringify({
               ...(agentId ? { agentId } : {}),
               ...(permissionMode ? { permissionMode } : {}),
-              ...(launchControlValues ? { launchControlValues } : {})
+              ...(launchControlValues ? { launchControlValues } : {}),
+              ...(initialPrompt ? { initialPrompt } : {}),
+              ...(contentBlocks?.length ? { contentBlocks } : {})
             })
           : undefined
     }),

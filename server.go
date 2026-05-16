@@ -495,9 +495,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		AgentID             string            `json:"agentId"`
-		PermissionMode      string            `json:"permissionMode"`
-		LaunchControlValues map[string]string `json:"launchControlValues"`
+		AgentID             string                `json:"agentId"`
+		PermissionMode      string                `json:"permissionMode"`
+		LaunchControlValues map[string]string     `json:"launchControlValues"`
+		InitialPrompt       string                `json:"initialPrompt"`
+		ContentBlocks       []MessageContentBlock `json:"contentBlocks"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := decodeJSON(r, &payload); err != nil {
@@ -520,9 +522,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, badRequest(err.Error()))
 		return
 	}
+	blocks, err := promptBlocksFromRequest(payload.InitialPrompt, payload.ContentBlocks)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	runtime, err := s.agents.runtimeForLaunchProfile(r.Context(), agentID, profile, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
+		return
+	}
+	if len(blocks) > 0 && hasImageBlocks(blocks) && !runtime.promptCapabilities().Image {
+		writeError(w, conflict("This agent does not support image prompt attachments."))
 		return
 	}
 	outcome, err := runtime.NewSession(r.Context(), nativePathString(workspace.Path))
@@ -537,6 +548,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime.RegisterSession(outcome.SessionID, session.ID)
+	if len(blocks) > 0 {
+		if _, _, _, _, err := s.submitPromptBlocks(r.Context(), runtime, session, outcome.SessionID, blocks); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	detail, err := s.sessionDetail(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, err)
@@ -778,46 +795,50 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict("This agent does not support image prompt attachments."))
 		return
 	}
-	prompt := textFallbackFromBlocks(blocks)
-	pending, _ := s.storage.PendingPermissionForSession(r.Context(), sessionID)
-	if pending != nil {
-		writeError(w, conflict("Resolve the pending approval before sending another prompt."))
+	message, queued, queuedPrompts, active, err := s.submitPromptBlocks(r.Context(), runtime, session, *agentSessionID, blocks)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
-	existingActiveTurn, _ := s.storage.ActiveTurnForSession(r.Context(), sessionID)
+	writeJSON(w, http.StatusOK, map[string]any{"message": message, "queuedPrompt": queued, "queuedPrompts": nonNilSlice(queuedPrompts), "activeTurn": active})
+}
+
+func (s *Server) submitPromptBlocks(ctx context.Context, runtime *AgentRuntime, session Session, agentSessionID string, blocks []MessageContentBlock) (Message, *QueuedPrompt, []QueuedPrompt, *ActiveTurn, error) {
+	prompt := textFallbackFromBlocks(blocks)
+	pending, _ := s.storage.PendingPermissionForSession(ctx, session.ID)
+	if pending != nil {
+		return Message{}, nil, nil, nil, conflict("Resolve the pending approval before sending another prompt.")
+	}
+	existingActiveTurn, _ := s.storage.ActiveTurnForSession(ctx, session.ID)
 	shouldQueue := existingActiveTurn != nil
 	messageStatus := statusIdle
 	if shouldQueue {
 		messageStatus = "queued"
 	}
-	message, err := s.storage.CreateMessage(r.Context(), sessionID, roleUser, prompt, blocks, messageStatus)
+	message, err := s.storage.CreateMessage(ctx, session.ID, roleUser, prompt, blocks, messageStatus)
 	if err != nil {
-		writeError(w, err)
-		return
+		return Message{}, nil, nil, nil, err
 	}
 	s.events.Publish(map[string]any{"type": "timeline_item_upsert", "item": messageTimelineItem(message)})
 	if shouldQueue {
-		queued, err := s.storage.CreateQueuedPrompt(r.Context(), sessionID, message.ID, prompt, blocks)
+		queued, err := s.storage.CreateQueuedPrompt(ctx, session.ID, message.ID, prompt, blocks)
 		if err != nil {
-			writeError(w, err)
-			return
+			return Message{}, nil, nil, nil, err
 		}
-		queuedPrompts, _ := s.storage.ListQueuedPrompts(r.Context(), sessionID)
-		s.events.Publish(map[string]any{"type": "queued_prompts_updated", "sessionId": sessionID, "queuedPrompts": nonNilSlice(queuedPrompts)})
-		active, _ := s.storage.ActiveTurnForSession(r.Context(), sessionID)
-		writeJSON(w, http.StatusOK, map[string]any{"message": message, "queuedPrompt": queued, "queuedPrompts": nonNilSlice(queuedPrompts), "activeTurn": active})
-		return
+		queuedPrompts, _ := s.storage.ListQueuedPrompts(ctx, session.ID)
+		s.events.Publish(map[string]any{"type": "queued_prompts_updated", "sessionId": session.ID, "queuedPrompts": nonNilSlice(queuedPrompts)})
+		active, _ := s.storage.ActiveTurnForSession(ctx, session.ID)
+		return message, &queued, queuedPrompts, active, nil
 	}
-	active, err := s.storage.StartActiveTurn(r.Context(), sessionID)
+	active, err := s.storage.StartActiveTurn(ctx, session.ID)
 	if err != nil {
-		writeError(w, err)
-		return
+		return Message{}, nil, nil, nil, err
 	}
-	s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusRunning})
-	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": statusRunning, "activeTurn": active})
-	go s.runPromptTurn(context.Background(), runtime, sessionID, *agentSessionID, blocks)
-	queuedPrompts, _ := s.storage.ListQueuedPrompts(r.Context(), sessionID)
-	writeJSON(w, http.StatusOK, map[string]any{"message": message, "queuedPrompt": nil, "queuedPrompts": nonNilSlice(queuedPrompts), "activeTurn": active})
+	s.events.Publish(map[string]any{"type": "session_status", "sessionId": session.ID, "status": statusRunning})
+	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": session.ID, "status": statusRunning, "activeTurn": active})
+	go s.runPromptTurn(context.Background(), runtime, session.ID, agentSessionID, blocks)
+	queuedPrompts, _ := s.storage.ListQueuedPrompts(ctx, session.ID)
+	return message, nil, queuedPrompts, active, nil
 }
 
 func (s *Server) runPromptTurn(ctx context.Context, runtime *AgentRuntime, sessionID, acpSessionID string, blocks []MessageContentBlock) {

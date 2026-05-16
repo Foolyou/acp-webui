@@ -2,6 +2,7 @@ import type { AgentRuntimeStatus, PermissionModeId } from "../types";
 import { fallbackPermissionModes } from "../utils/permissionMode";
 
 const storageKey = "lastSessionProfile";
+const workspaceStorageKey = "lastSessionProfilesByWorkspace";
 
 export type LastSessionProfile = {
   agentId: string;
@@ -36,6 +37,32 @@ export function writeLastSessionProfile(profile: LastSessionProfile, storage: St
   storage.setItem(storageKey, JSON.stringify(profile));
 }
 
+export function readLastWorkspaceSessionProfile(
+  workspaceId: string,
+  storage: Storage = localStorage
+): LastSessionProfile | null {
+  const profiles = readWorkspaceProfiles(storage);
+  return profiles[workspaceId] ?? readLastSessionProfile(storage);
+}
+
+export function writeLastWorkspaceSessionProfile(
+  workspaceId: string,
+  profile: LastSessionProfile,
+  storage: Storage = localStorage
+) {
+  const profiles = readWorkspaceProfiles(storage);
+  storage.setItem(
+    workspaceStorageKey,
+    JSON.stringify({
+      version: 1,
+      profiles: {
+        ...profiles,
+        [workspaceId]: profile
+      }
+    })
+  );
+}
+
 export function resolveLastSessionProfile(
   agents: AgentRuntimeStatus[],
   profile: LastSessionProfile | null
@@ -66,4 +93,32 @@ export function normalizeLaunchControlValues(agent: AgentRuntimeStatus, values: 
 
 export function isLaunchable(agent: AgentRuntimeStatus, state: string) {
   return agent.enabled && state !== "starting" && state !== "disabled";
+}
+
+function readWorkspaceProfiles(storage: Storage): Record<string, LastSessionProfile> {
+  try {
+    const raw = storage.getItem(workspaceStorageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { profiles?: Record<string, Partial<LastSessionProfile>> };
+    const profiles = parsed.profiles ?? {};
+    return Object.fromEntries(
+      Object.entries(profiles).flatMap(([workspaceId, profile]) => {
+        if (!profile.agentId || !profile.permissionMode || typeof profile.launchControlValues !== "object") {
+          return [];
+        }
+        return [
+          [
+            workspaceId,
+            {
+              agentId: profile.agentId,
+              permissionMode: profile.permissionMode,
+              launchControlValues: profile.launchControlValues ?? {}
+            }
+          ]
+        ];
+      })
+    );
+  } catch {
+    return {};
+  }
 }

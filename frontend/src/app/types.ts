@@ -45,7 +45,9 @@ export type AppActions = {
     workspaceId: string,
     agentId?: string,
     permissionMode?: PermissionModeId,
-    launchControlValues?: Record<string, string>
+    launchControlValues?: Record<string, string>,
+    initialPrompt?: string,
+    contentBlocks?: MessageContentBlock[]
   ) => Promise<void>;
   createWorkspace: (path: string) => Promise<void>;
   updateWorkspace: (workspaceId: string, update: { name?: string; path?: string }) => Promise<void>;

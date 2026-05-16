@@ -110,7 +110,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent({ id: "agent-codex", title: "Codex" })]}
         loading={false}
-        onCreate={vi.fn()}
         onSelectAgent={vi.fn()}
         selectedAgentId="agent-codex"
         sessions={[]}
@@ -128,7 +127,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent()]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-default"
         sessions={[
           sessionItem({
@@ -157,7 +155,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent({ id: "agent-codex", title: "Codex" })]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-codex"
         sessions={[
           sessionItem({
@@ -190,7 +187,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent()]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-default"
         sessions={[
           sessionItem({
@@ -215,7 +211,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent()]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-default"
         sessions={[
           sessionItem({
@@ -242,7 +237,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent()]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-default"
         sessions={[
           sessionItem({
@@ -279,7 +273,7 @@ describe("SessionsPane", () => {
     expect(html).not.toContain("active-state-badge idle");
   });
 
-  test("scopes create choices to the selected agent and ignores a last profile for another agent", async () => {
+  test("links new session to the workspace compose route", async () => {
     localStorage.setItem(
       "lastSessionProfile",
       JSON.stringify({
@@ -295,7 +289,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent(), agent({ id: "agent-other", title: "Other Agent" })]}
         loading={false}
-        onCreate={vi.fn()}
         selectedAgentId="agent-default"
         sessions={[]}
         workspace={workspace()}
@@ -303,6 +296,10 @@ describe("SessionsPane", () => {
     );
 
     expect(html).not.toContain("Last profile");
+    expect(mocks.links).toContainEqual({
+      to: "/workspaces/$workspaceId/sessions/new",
+      params: { workspaceId: "workspace-a" }
+    });
   });
 
   test("shows cockpit filters and compact session card fields", async () => {
@@ -312,7 +309,6 @@ describe("SessionsPane", () => {
       <SessionsPane
         agents={[agent({ id: "agent-codex", title: "Codex" }), agent({ id: "agent-claude", title: "Claude" })]}
         loading={false}
-        onCreate={vi.fn()}
         onSelectAgent={vi.fn()}
         selectedAgentId={null}
         sessions={[
@@ -351,29 +347,6 @@ describe("SessionsPane", () => {
     expect(html).toContain("1 review items");
     expect(html).not.toContain("Approve");
     expect(html).not.toContain("Reject");
-  });
-
-  test("creates with the selected agent when create controls are scoped", async () => {
-    const onCreate = vi.fn();
-    const { SessionsPane } = await import("./SessionsPane");
-
-    renderToStaticMarkup(
-      <SessionsPane
-        agents={[agent(), agent({ id: "agent-other", title: "Other Agent" })]}
-        loading={false}
-        onCreate={onCreate}
-        selectedAgentId="agent-default"
-        sessions={[]}
-        workspace={workspace()}
-      />
-    );
-
-    const createButton = mocks.buttons.find((button) => button.label.includes("Create session"));
-    expect(createButton).toBeDefined();
-
-    createButton?.onPress?.();
-
-    expect(onCreate).toHaveBeenCalledWith("agent-default", "manual", { permission: "manual" });
   });
 
   test("ignores stale non-launchable permission mode for the scoped agent", async () => {

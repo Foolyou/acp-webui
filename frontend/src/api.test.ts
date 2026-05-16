@@ -36,4 +36,33 @@ describe("api", () => {
       body: expect.any(FormData)
     });
   });
+
+  test("creates sessions with optional initial prompt and content blocks", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ session: { id: "session-a" }, workspace: { id: "workspace/a" } })
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await api.createSession(
+      "workspace/a",
+      "codex",
+      "manual",
+      { model: "fast", permission: "manual" },
+      "Plan the fix",
+      [{ type: "image", mimeType: "image/png", data: "abcd" }]
+    );
+
+    expect(fetch).toHaveBeenCalledWith("/api/workspaces/workspace%2Fa/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" },
+      body: JSON.stringify({
+        agentId: "codex",
+        permissionMode: "manual",
+        launchControlValues: { model: "fast", permission: "manual" },
+        initialPrompt: "Plan the fix",
+        contentBlocks: [{ type: "image", mimeType: "image/png", data: "abcd" }]
+      })
+    });
+  });
 });

@@ -1,6 +1,29 @@
 import { describe, expect, test } from "vitest";
 import type { AgentRuntimeStatus } from "../types";
-import { normalizeLaunchControlValues, resolveLastSessionProfile } from "./lastSessionProfile";
+import {
+  normalizeLaunchControlValues,
+  readLastWorkspaceSessionProfile,
+  resolveLastSessionProfile,
+  writeLastWorkspaceSessionProfile
+} from "./lastSessionProfile";
+
+function createStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    }
+  };
+}
 
 function agent(overrides: Partial<AgentRuntimeStatus> = {}): AgentRuntimeStatus {
   return {
@@ -73,5 +96,48 @@ describe("last session profile helpers", () => {
 
   test("normalizes stale launch control values to defaults", () => {
     expect(normalizeLaunchControlValues(agent(), { model: "removed" })).toEqual({ model: "fast" });
+  });
+
+  test("falls back to the legacy global profile when a workspace profile is missing", () => {
+    const storage = createStorage();
+    storage.setItem(
+      "lastSessionProfile",
+      JSON.stringify({
+        agentId: "codex",
+        permissionMode: "manual",
+        launchControlValues: { model: "pro" }
+      })
+    );
+
+    expect(readLastWorkspaceSessionProfile("workspace-a", storage)).toEqual({
+      agentId: "codex",
+      permissionMode: "manual",
+      launchControlValues: { model: "pro" }
+    });
+  });
+
+  test("reads and writes profiles without replacing other workspaces", () => {
+    const storage = createStorage();
+    writeLastWorkspaceSessionProfile(
+      "workspace-a",
+      { agentId: "codex", permissionMode: "manual", launchControlValues: { model: "fast" } },
+      storage
+    );
+    writeLastWorkspaceSessionProfile(
+      "workspace-b",
+      { agentId: "claude", permissionMode: "full_auto", launchControlValues: { model: "pro" } },
+      storage
+    );
+
+    expect(readLastWorkspaceSessionProfile("workspace-a", storage)).toEqual({
+      agentId: "codex",
+      permissionMode: "manual",
+      launchControlValues: { model: "fast" }
+    });
+    expect(readLastWorkspaceSessionProfile("workspace-b", storage)).toEqual({
+      agentId: "claude",
+      permissionMode: "full_auto",
+      launchControlValues: { model: "pro" }
+    });
   });
 });

@@ -524,6 +524,30 @@ pre {
   border: 0;
 }
 
+.new-session-compose {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.initial-prompt-field {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.initial-prompt-field span {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.initial-prompt-field textarea {
+  min-height: 9rem;
+  resize: vertical;
+}
+
 .agent-option-summary {
   display: flex;
   flex-wrap: wrap;

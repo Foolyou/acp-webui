@@ -10,6 +10,7 @@ import {
   updateSessionListStatus
 } from "./app/sessionList";
 import { liveAssistantAfterSessionReconcile } from "./app/liveAssistant";
+import { writeLastWorkspaceSessionProfile } from "./app/lastSessionProfile";
 import { canApplySessionListLoad } from "./app/sessionListLoad";
 import {
   beginScopedSessionListRefresh,
@@ -663,7 +664,9 @@ export function App() {
     workspaceId: string,
     agentId?: string,
     permissionMode?: PermissionModeId,
-    launchControlValues?: Record<string, string>
+    launchControlValues?: Record<string, string>,
+    initialPrompt?: string,
+    contentBlocks?: MessageContentBlock[]
   ) => {
     setState((current) => ({
       ...current,
@@ -674,7 +677,12 @@ export function App() {
     }));
     await router.navigate(createSessionCreatingRouteTarget(workspaceId, agentId));
     try {
-      const detail = await api.createSession(workspaceId, agentId, permissionMode, launchControlValues);
+      const detail = await api.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt, contentBlocks);
+      writeLastWorkspaceSessionProfile(detail.workspace.id, {
+        agentId: detail.session.agentId,
+        permissionMode: detail.session.permissionMode,
+        launchControlValues: launchControlValues ?? { permission: detail.session.permissionMode }
+      });
       localStorage.setItem("currentWorkspaceId", detail.workspace.id);
       localStorage.setItem("currentSessionId", detail.session.id);
       setState((current) => ({
