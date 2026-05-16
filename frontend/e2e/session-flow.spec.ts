@@ -899,6 +899,38 @@ test("dictates prompt draft text without auto-submitting", async ({ page }) => {
   await expect(composer).toHaveValue("$imagegen\n\nTemplate prompt");
 });
 
+test("adds pasted and dropped image attachments and previews them before sending", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+
+  const fixture = await mockComposerSession(page);
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+
+  const composer = page.locator(".composer textarea");
+  await composer.fill("Inspect these screenshots");
+  await pasteImageIntoComposer(page, "pasted-pixel.png");
+  await expect(page.locator(".composer-attachment", { hasText: "pasted-pixel.png" })).toBeVisible();
+
+  await page.locator(".composer-attachment", { hasText: "pasted-pixel.png" }).getByRole("button", { name: /Preview/ }).click();
+  const previewDialog = page.getByRole("dialog", { name: "Image attachment preview" });
+  await expect(previewDialog.getByRole("heading", { name: "pasted-pixel.png" })).toBeVisible();
+  await expect(previewDialog.getByRole("img", { name: "pasted-pixel.png" })).toBeVisible();
+  await previewDialog.getByRole("button", { name: "Close" }).click();
+  await expect(composer).toHaveValue("Inspect these screenshots");
+  await expect(page.locator(".composer-attachment", { hasText: "pasted-pixel.png" })).toBeVisible();
+
+  await dropImageOnComposer(page, "dropped-pixel.png");
+  await expect(page.locator(".composer-attachment", { hasText: "dropped-pixel.png" })).toBeVisible();
+  await composer.fill("Inspect these screenshots closely");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => fixture.promptRequests.length).toBe(1);
+  expect(fixture.promptRequests[0].prompt).toBe("Inspect these screenshots closely");
+  expect(fixture.promptRequests[0].contentBlocks).toMatchObject([
+    { type: "image", mimeType: "image/png", name: "pasted-pixel.png" },
+    { type: "image", mimeType: "image/png", name: "dropped-pixel.png" }
+  ]);
+});
+
 test("keeps text composer usable when voice input is unsupported", async ({ page }) => {
   await mockConnectedWebSocket(page);
 
@@ -1888,90 +1920,27 @@ async function mockConnectedWebSocket(page: Page) {
   });
 }
 
-async function mockSpeechRecognition(page: Page) {
-  await page.addInitScript(() => {
-    type MockResultEvent = {
-      resultIndex: number;
-      results: Array<{ 0: { transcript: string }; isFinal: boolean; length: number }>;
-    };
-    type MockErrorEvent = {
-      error: string;
-      message?: string;
-    };
-    type MockRecognition = {
-      onstart: ((event: Event) => void) | null;
-      onresult: ((event: MockResultEvent) => void) | null;
-      onend: ((event: Event) => void) | null;
-      onerror: ((event: MockErrorEvent) => void) | null;
-    };
-    type VoiceWindow = Window &
-      typeof globalThis & {
-        __mockSpeechRecognitions?: MockRecognition[];
-        __emitSpeechEnd?: () => void;
-        __emitSpeechError?: (error: string) => void;
-        __emitSpeechTranscript?: (transcript: string) => void;
-      };
-    const voiceWindow = window as VoiceWindow;
+const onePixelPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lxL+0wAAAABJRU5ErkJggg==";
 
-    function latestRecognition() {
-      const recognition = voiceWindow.__mockSpeechRecognitions?.at(-1);
-      if (!recognition) {
-        throw new Error("No speech recognition instance was started");
-      }
-      return recognition;
-    }
-
-    class MockSpeechRecognition {
-      continuous = false;
-      interimResults = false;
-      maxAlternatives = 1;
-      onstart: ((event: Event) => void) | null = null;
-      onresult: ((event: MockResultEvent) => void) | null = null;
-      onend: ((event: Event) => void) | null = null;
-      onerror: ((event: MockErrorEvent) => void) | null = null;
-
-      constructor() {
-        voiceWindow.__mockSpeechRecognitions = voiceWindow.__mockSpeechRecognitions ?? [];
-        voiceWindow.__mockSpeechRecognitions.push(this);
-      }
-
-      start() {
-        this.onstart?.(new Event("start"));
-      }
-
-      stop() {
-        this.onend?.(new Event("end"));
-      }
-
-      abort() {
-        this.onend?.(new Event("end"));
-      }
-    }
-
-    voiceWindow.__emitSpeechTranscript = (transcript: string) => {
-      latestRecognition().onresult?.({
-        resultIndex: 0,
-        results: [{ 0: { transcript }, isFinal: true, length: 1 }]
-      });
-    };
-    voiceWindow.__emitSpeechError = (error: string) => {
-      latestRecognition().onerror?.({ error });
-      latestRecognition().onend?.(new Event("end"));
-    };
-    voiceWindow.__emitSpeechEnd = () => {
-      latestRecognition().onend?.(new Event("end"));
-    };
-
-    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: MockSpeechRecognition });
-    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: MockSpeechRecognition });
-  });
+async function pasteImageIntoComposer(page: Page, name: string) {
+  await page.locator(".composer textarea").evaluate((node, payload) => {
+    const bytes = Uint8Array.from(atob(payload.data), (char) => char.charCodeAt(0));
+    const file = new File([bytes], payload.fileName, { type: "image/png" });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    node.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+  }, { fileName: name, data: onePixelPngBase64 });
 }
 
-async function mockUnsupportedSpeechRecognition(page: Page) {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: undefined });
-    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: undefined });
-  });
+async function dropImageOnComposer(page: Page, name: string) {
+  await page.locator(".composer").evaluate((node, payload) => {
+    const bytes = Uint8Array.from(atob(payload.data), (char) => char.charCodeAt(0));
+    const file = new File([bytes], payload.fileName, { type: "image/png" });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    node.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, { fileName: name, data: onePixelPngBase64 });
 }
 
 async function mockAudioRecording(page: Page) {
@@ -2040,27 +2009,6 @@ async function setMockAudioGetUserMediaError(page: Page, error: string | null) {
       audioWindow.__mockAudio.getUserMediaError = value;
     }
   }, error);
-}
-
-async function emitSpeechTranscript(page: Page, transcript: string) {
-  await page.evaluate((value) => {
-    const voiceWindow = window as typeof window & { __emitSpeechTranscript?: (transcript: string) => void };
-    voiceWindow.__emitSpeechTranscript?.(value);
-  }, transcript);
-}
-
-async function emitSpeechError(page: Page, error: string) {
-  await page.evaluate((value) => {
-    const voiceWindow = window as typeof window & { __emitSpeechError?: (error: string) => void };
-    voiceWindow.__emitSpeechError?.(value);
-  }, error);
-}
-
-async function emitSpeechEnd(page: Page) {
-  await page.evaluate(() => {
-    const voiceWindow = window as typeof window & { __emitSpeechEnd?: () => void };
-    voiceWindow.__emitSpeechEnd?.();
-  });
 }
 
 function buildLongTimeline(sessionId: string): TimelineItem[] {
