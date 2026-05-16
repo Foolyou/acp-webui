@@ -298,6 +298,7 @@ export function WorkspaceAgentSessionDetailRoute() {
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}
+      transcriptionAvailable={state.transcription.available}
     />
   );
 }

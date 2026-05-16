@@ -10,6 +10,7 @@ import type {
   SessionDetail,
   SessionListItem,
   SocketState,
+  TranscriptionCapability,
   Workspace
 } from "../types";
 import { readWorkspaceAgentNavigation } from "./workspaceAgentNavigation";
@@ -21,6 +22,7 @@ export type UiState = {
   initialized: boolean;
   workspaces: Workspace[];
   inbox: InboxItem[];
+  transcription: TranscriptionCapability;
   sessions: SessionListItem[];
   sessionsLoading: boolean;
   currentWorkspaceId: string | null;
@@ -74,6 +76,7 @@ export const initialState: UiState = {
   initialized: false,
   workspaces: [],
   inbox: [],
+  transcription: { available: false, maxAudioBytes: 0 },
   sessions: [],
   sessionsLoading: false,
   currentWorkspaceId: localStorage.getItem("currentWorkspaceId"),

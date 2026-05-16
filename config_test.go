@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestConfigWorkDirOverrideChangesDefaultDatabase(t *testing.T) {
@@ -17,6 +18,72 @@ func TestConfigWorkDirOverrideChangesDefaultDatabase(t *testing.T) {
 	}
 	if config.DatabaseURL != want {
 		t.Fatalf("DatabaseURL = %q, want %q", config.DatabaseURL, want)
+	}
+}
+
+func TestTranscriptionConfigDefaultsToDisabled(t *testing.T) {
+	config, err := parseConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TranscriptionProvider != "" {
+		t.Fatalf("TranscriptionProvider = %q, want disabled", config.TranscriptionProvider)
+	}
+	if config.TranscriptionAvailable() {
+		t.Fatal("transcription should be unavailable without provider configuration")
+	}
+	if config.TranscriptionMaxAudioBytes != 25*1024*1024 {
+		t.Fatalf("TranscriptionMaxAudioBytes = %d, want 25 MiB", config.TranscriptionMaxAudioBytes)
+	}
+	if config.TranscriptionTimeout != 60*time.Second {
+		t.Fatalf("TranscriptionTimeout = %s, want 60s", config.TranscriptionTimeout)
+	}
+}
+
+func TestTranscriptionConfigParsesOpenAICompatibleProvider(t *testing.T) {
+	config, err := parseConfig([]string{
+		"--transcription-provider", "openai-compatible",
+		"--transcription-base-url", "http://127.0.0.1:7322/v1",
+		"--transcription-api-key", "secret",
+		"--transcription-model", "Systran/faster-distil-whisper-large-v3",
+		"--transcription-language", "zh",
+		"--transcription-timeout-seconds", "12",
+		"--transcription-max-audio-mb", "7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.TranscriptionAvailable() {
+		t.Fatal("transcription should be available when provider and base URL are configured")
+	}
+	if config.TranscriptionProvider != "openai-compatible" || config.TranscriptionBaseURL != "http://127.0.0.1:7322/v1" {
+		t.Fatalf("transcription provider config = %#v", config)
+	}
+	if config.TranscriptionAPIKey != "secret" {
+		t.Fatalf("TranscriptionAPIKey = %q", config.TranscriptionAPIKey)
+	}
+	if config.TranscriptionModel != "Systran/faster-distil-whisper-large-v3" || config.TranscriptionLanguage != "zh" {
+		t.Fatalf("transcription model/language = %q/%q", config.TranscriptionModel, config.TranscriptionLanguage)
+	}
+	if config.TranscriptionTimeout != 12*time.Second {
+		t.Fatalf("TranscriptionTimeout = %s, want 12s", config.TranscriptionTimeout)
+	}
+	if config.TranscriptionMaxAudioBytes != 7*1024*1024 {
+		t.Fatalf("TranscriptionMaxAudioBytes = %d, want 7 MiB", config.TranscriptionMaxAudioBytes)
+	}
+}
+
+func TestTranscriptionConfigRejectsInvalidValues(t *testing.T) {
+	cases := [][]string{
+		{"--transcription-provider", "openai-compatible"},
+		{"--transcription-provider", "unknown", "--transcription-base-url", "http://127.0.0.1:7322/v1"},
+		{"--transcription-provider", "openai-compatible", "--transcription-base-url", "http://127.0.0.1:7322/v1", "--transcription-timeout-seconds", "0"},
+		{"--transcription-provider", "openai-compatible", "--transcription-base-url", "http://127.0.0.1:7322/v1", "--transcription-max-audio-mb", "0"},
+	}
+	for _, args := range cases {
+		if _, err := parseConfig(args); err == nil {
+			t.Fatalf("parseConfig(%v) succeeded, want error", args)
+		}
 	}
 }
 

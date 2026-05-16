@@ -365,9 +365,15 @@ type SkillSummary struct {
 }
 
 type AppData struct {
-	Codex  ConnectionStatus     `json:"codex"`
-	Agents []AgentRuntimeStatus `json:"agents"`
-	Inbox  []InboxItem          `json:"inbox"`
+	Codex         ConnectionStatus        `json:"codex"`
+	Agents        []AgentRuntimeStatus    `json:"agents"`
+	Inbox         []InboxItem             `json:"inbox"`
+	Transcription TranscriptionCapability `json:"transcription"`
+}
+
+type TranscriptionCapability struct {
+	Available     bool  `json:"available"`
+	MaxAudioBytes int64 `json:"maxAudioBytes"`
 }
 
 func stringPtr(value string) *string {

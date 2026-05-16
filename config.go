@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -18,21 +19,28 @@ const (
 )
 
 type Config struct {
-	BindHost           string
-	BindPort           int
-	WorkDir            string
-	DatabaseURL        string
-	CodexACPCommand    string
-	CodexACPArgs       []string
-	ClaudeACPEnabled   bool
-	ClaudeACPCommand   string
-	ClaudeACPArgs      []string
-	OpenCodeACPEnabled bool
-	OpenCodeACPCommand string
-	OpenCodeACPArgs    []string
-	FrontendDist       string
-	PairingToken       string
-	DisableAuth        bool
+	BindHost                   string
+	BindPort                   int
+	WorkDir                    string
+	DatabaseURL                string
+	CodexACPCommand            string
+	CodexACPArgs               []string
+	ClaudeACPEnabled           bool
+	ClaudeACPCommand           string
+	ClaudeACPArgs              []string
+	OpenCodeACPEnabled         bool
+	OpenCodeACPCommand         string
+	OpenCodeACPArgs            []string
+	FrontendDist               string
+	PairingToken               string
+	DisableAuth                bool
+	TranscriptionProvider      string
+	TranscriptionBaseURL       string
+	TranscriptionAPIKey        string
+	TranscriptionModel         string
+	TranscriptionLanguage      string
+	TranscriptionTimeout       time.Duration
+	TranscriptionMaxAudioBytes int64
 }
 
 type AgentConfig struct {
@@ -101,6 +109,28 @@ func parseConfig(args []string) (Config, error) {
 	if err != nil || bindPort <= 0 || bindPort > 65535 {
 		return Config{}, fmt.Errorf("--bind-port must be a valid TCP port")
 	}
+	transcriptionTimeoutSeconds, err := strconv.Atoi(defaulted(first(raw, "transcription-timeout-seconds", env("ACP_WEBUI_TRANSCRIPTION_TIMEOUT_SECONDS")), "60"))
+	if err != nil || transcriptionTimeoutSeconds <= 0 {
+		return Config{}, fmt.Errorf("--transcription-timeout-seconds must be at least 1")
+	}
+	transcriptionMaxAudioMB, err := strconv.Atoi(defaulted(first(raw, "transcription-max-audio-mb", env("ACP_WEBUI_TRANSCRIPTION_MAX_AUDIO_MB")), "25"))
+	if err != nil || transcriptionMaxAudioMB <= 0 {
+		return Config{}, fmt.Errorf("--transcription-max-audio-mb must be at least 1")
+	}
+	transcriptionProvider := strings.TrimSpace(first(raw, "transcription-provider", env("ACP_WEBUI_TRANSCRIPTION_PROVIDER")))
+	transcriptionBaseURL := strings.TrimSpace(first(raw, "transcription-base-url", env("ACP_WEBUI_TRANSCRIPTION_BASE_URL")))
+	transcriptionAPIKey := first(raw, "transcription-api-key", env("ACP_WEBUI_TRANSCRIPTION_API_KEY"))
+	transcriptionModel := defaulted(first(raw, "transcription-model", env("ACP_WEBUI_TRANSCRIPTION_MODEL")), "Systran/faster-distil-whisper-large-v3")
+	transcriptionLanguage := strings.TrimSpace(first(raw, "transcription-language", env("ACP_WEBUI_TRANSCRIPTION_LANGUAGE")))
+	if transcriptionProvider != "" && transcriptionProvider != "openai-compatible" {
+		return Config{}, fmt.Errorf("--transcription-provider must be openai-compatible")
+	}
+	if transcriptionProvider != "" && transcriptionBaseURL == "" {
+		return Config{}, fmt.Errorf("--transcription-base-url is required when transcription is enabled")
+	}
+	if transcriptionProvider == "" && (transcriptionBaseURL != "" || transcriptionAPIKey != "" || transcriptionLanguage != "" || hasKey(raw, "transcription-model")) {
+		return Config{}, fmt.Errorf("--transcription-provider is required when transcription options are configured")
+	}
 
 	claudeArgs := append([]string{}, raw["claude-acp-arg"]...)
 	if len(claudeArgs) == 0 {
@@ -112,21 +142,28 @@ func parseConfig(args []string) (Config, error) {
 	}
 
 	return Config{
-		BindHost:           defaulted(first(raw, "bind-host", env("ACP_WEBUI_BIND_HOST")), "127.0.0.1"),
-		BindPort:           bindPort,
-		WorkDir:            workDir,
-		DatabaseURL:        databaseURL,
-		CodexACPCommand:    defaulted(first(raw, "codex-acp-command", env("ACP_WEBUI_CODEX_ACP_COMMAND")), "codex-acp"),
-		CodexACPArgs:       append([]string{}, raw["codex-acp-arg"]...),
-		ClaudeACPEnabled:   boolValue(first(raw, "claude-acp-enabled", env("ACP_WEBUI_CLAUDE_ACP_ENABLED")), true),
-		ClaudeACPCommand:   defaulted(first(raw, "claude-acp-command", env("ACP_WEBUI_CLAUDE_ACP_COMMAND")), "npx"),
-		ClaudeACPArgs:      claudeArgs,
-		OpenCodeACPEnabled: boolValue(first(raw, "opencode-acp-enabled", env("ACP_WEBUI_OPENCODE_ACP_ENABLED")), false),
-		OpenCodeACPCommand: defaulted(first(raw, "opencode-acp-command", env("ACP_WEBUI_OPENCODE_ACP_COMMAND")), "opencode"),
-		OpenCodeACPArgs:    opencodeArgs,
-		FrontendDist:       defaulted(first(raw, "frontend-dist", env("ACP_WEBUI_FRONTEND_DIST")), defaultFrontendDist),
-		PairingToken:       first(raw, "pairing-token", env("ACP_WEBUI_PAIRING_TOKEN")),
-		DisableAuth:        boolValue(first(raw, "disable-auth", env("ACP_WEBUI_DISABLE_AUTH")), false),
+		BindHost:                   defaulted(first(raw, "bind-host", env("ACP_WEBUI_BIND_HOST")), "127.0.0.1"),
+		BindPort:                   bindPort,
+		WorkDir:                    workDir,
+		DatabaseURL:                databaseURL,
+		CodexACPCommand:            defaulted(first(raw, "codex-acp-command", env("ACP_WEBUI_CODEX_ACP_COMMAND")), "codex-acp"),
+		CodexACPArgs:               append([]string{}, raw["codex-acp-arg"]...),
+		ClaudeACPEnabled:           boolValue(first(raw, "claude-acp-enabled", env("ACP_WEBUI_CLAUDE_ACP_ENABLED")), true),
+		ClaudeACPCommand:           defaulted(first(raw, "claude-acp-command", env("ACP_WEBUI_CLAUDE_ACP_COMMAND")), "npx"),
+		ClaudeACPArgs:              claudeArgs,
+		OpenCodeACPEnabled:         boolValue(first(raw, "opencode-acp-enabled", env("ACP_WEBUI_OPENCODE_ACP_ENABLED")), false),
+		OpenCodeACPCommand:         defaulted(first(raw, "opencode-acp-command", env("ACP_WEBUI_OPENCODE_ACP_COMMAND")), "opencode"),
+		OpenCodeACPArgs:            opencodeArgs,
+		FrontendDist:               defaulted(first(raw, "frontend-dist", env("ACP_WEBUI_FRONTEND_DIST")), defaultFrontendDist),
+		PairingToken:               first(raw, "pairing-token", env("ACP_WEBUI_PAIRING_TOKEN")),
+		DisableAuth:                boolValue(first(raw, "disable-auth", env("ACP_WEBUI_DISABLE_AUTH")), false),
+		TranscriptionProvider:      transcriptionProvider,
+		TranscriptionBaseURL:       transcriptionBaseURL,
+		TranscriptionAPIKey:        transcriptionAPIKey,
+		TranscriptionModel:         transcriptionModel,
+		TranscriptionLanguage:      transcriptionLanguage,
+		TranscriptionTimeout:       time.Duration(transcriptionTimeoutSeconds) * time.Second,
+		TranscriptionMaxAudioBytes: int64(transcriptionMaxAudioMB) * 1024 * 1024,
 	}, nil
 }
 
@@ -137,6 +174,15 @@ func takesValue(name string) bool {
 	default:
 		return true
 	}
+}
+
+func hasKey(raw map[string][]string, key string) bool {
+	_, ok := raw[key]
+	return ok
+}
+
+func (c Config) TranscriptionAvailable() bool {
+	return c.TranscriptionProvider == "openai-compatible" && strings.TrimSpace(c.TranscriptionBaseURL) != ""
 }
 
 func first(raw map[string][]string, key string, fallback string) string {

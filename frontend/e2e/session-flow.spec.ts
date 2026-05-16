@@ -824,7 +824,7 @@ test("shows mobile skill suggestions for symbol keyboard triggers", async ({ pag
 
 test("dictates prompt draft text without auto-submitting", async ({ page }) => {
   await mockConnectedWebSocket(page);
-  await mockSpeechRecognition(page);
+  await mockAudioRecording(page);
 
   const fixture = await mockComposerSession(page, {
     skills: [{ name: "imagegen", description: "Generate images" }],
@@ -863,12 +863,12 @@ test("dictates prompt draft text without auto-submitting", async ({ page }) => {
   await expect(page.locator(".composer-attachment", { hasText: "voice-pixel.png" })).toBeVisible();
 
   await page.getByRole("button", { name: "Start voice input" }).click();
-  await expect(page.getByRole("button", { name: "Stop voice input" })).toBeVisible();
-  await emitSpeechTranscript(page, "the diff");
+  await expect(page.getByRole("button", { name: "Finish voice input" })).toBeVisible();
+  await page.getByRole("button", { name: "Finish voice input" }).click();
   await expect(composer).toHaveValue("Review the diff");
   expect(fixture.promptRequests).toHaveLength(0);
+  expect(fixture.transcriptionRequests).toHaveLength(1);
 
-  await page.getByRole("button", { name: "Stop voice input" }).click();
   await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
   await composer.focus();
   await page.keyboard.press("Control+Enter");
@@ -901,9 +901,8 @@ test("dictates prompt draft text without auto-submitting", async ({ page }) => {
 
 test("keeps text composer usable when voice input is unsupported", async ({ page }) => {
   await mockConnectedWebSocket(page);
-  await mockUnsupportedSpeechRecognition(page);
 
-  const fixture = await mockComposerSession(page);
+  const fixture = await mockComposerSession(page, { transcriptionAvailable: false });
   await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
 
   await expect(page.getByRole("button", { name: /voice input/i })).toHaveCount(0);
@@ -917,7 +916,7 @@ test("keeps text composer usable when voice input is unsupported", async ({ page
 
 test("shows recoverable voice errors while preserving drafts and queued prompts", async ({ page }) => {
   await mockConnectedWebSocket(page);
-  await mockSpeechRecognition(page);
+  await mockAudioRecording(page);
 
   const queuedPrompt: QueuedPrompt = {
     id: "queued-voice-prompt",
@@ -937,19 +936,22 @@ test("shows recoverable voice errors while preserving drafts and queued prompts"
   await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
   const composer = page.getByPlaceholder("Queue a follow-up for Codex...");
   await composer.fill("keep this draft");
+  await setMockAudioGetUserMediaError(page, "NotAllowedError");
   await page.getByRole("button", { name: "Start voice input" }).click();
-  await emitSpeechError(page, "not-allowed");
 
   await expect(page.getByText("Microphone access was denied. Check browser permissions and try again.")).toBeVisible();
   await expect(composer).toHaveValue("keep this draft");
   await expect(page.getByRole("button", { name: "Start voice input" })).toBeVisible();
 
+  await setMockAudioGetUserMediaError(page, null);
+  fixture.setTranscriptionResponse({ status: 502, error: "provider unavailable" });
   await page.getByRole("button", { name: "Start voice input" }).click();
-  await emitSpeechEnd(page);
-  await expect(page.getByText("Voice input stopped unexpectedly. Try again.")).toBeVisible();
+  await page.getByRole("button", { name: "Finish voice input" }).click();
+  await expect(page.getByText("provider unavailable")).toBeVisible();
   await composer.fill("queued voice draft");
+  fixture.setTranscriptionResponse({ status: 200, text: "with transcript" });
   await page.getByRole("button", { name: "Start voice input" }).click();
-  await emitSpeechTranscript(page, "with transcript");
+  await page.getByRole("button", { name: "Finish voice input" }).click();
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect.poll(() => fixture.promptRequests.length).toBe(1);
@@ -1691,6 +1693,8 @@ type ComposerFixtureOptions = {
   sessionStatus?: string;
   skills?: SkillSummary[];
   templates?: PromptTemplate[];
+  transcriptionAvailable?: boolean;
+  transcriptionText?: string;
 };
 
 async function mockComposerSession(page: Page, options: ComposerFixtureOptions = {}) {
@@ -1749,6 +1753,8 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
   };
   const templates = options.templates ?? [];
   const promptRequests: Array<{ prompt: string; contentBlocks?: MessageContentBlock[] }> = [];
+  const transcriptionRequests: Array<{ contentType: string | null }> = [];
+  let transcriptionResponse = { status: 200, text: options.transcriptionText ?? "the diff", error: "" };
 
   await page.route("**/api/auth/status", async (route) => {
     await route.fulfill({
@@ -1780,7 +1786,8 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
             ]
           }
         ],
-        inbox: []
+        inbox: [],
+        transcription: { available: options.transcriptionAvailable ?? true, maxAudioBytes: 26214400 }
       })
     });
   });
@@ -1801,6 +1808,22 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
   });
   await page.route("**/api/prompt-templates/*/use", async (route) => {
     await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(templates[0] ?? null) });
+  });
+  await page.route("**/api/audio/transcriptions", async (route) => {
+    transcriptionRequests.push({ contentType: route.request().headers()["content-type"] ?? null });
+    if (transcriptionResponse.status >= 400) {
+      await route.fulfill({
+        contentType: "application/json",
+        status: transcriptionResponse.status,
+        body: JSON.stringify({ error: transcriptionResponse.error })
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      status: transcriptionResponse.status,
+      body: JSON.stringify({ text: transcriptionResponse.text })
+    });
   });
   await page.route(`**/api/sessions/${session.id}/prompt`, async (route) => {
     const body = route.request().postDataJSON() as { prompt: string; contentBlocks?: MessageContentBlock[] };
@@ -1828,7 +1851,16 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
     await route.fulfill({ contentType: "application/json", status: 200, body: JSON.stringify(detail) });
   });
 
-  return { detail, promptRequests, session, workspace };
+  return {
+    detail,
+    promptRequests,
+    session,
+    setTranscriptionResponse(next: { status: number; text?: string; error?: string }) {
+      transcriptionResponse = { status: next.status, text: next.text ?? "", error: next.error ?? "" };
+    },
+    transcriptionRequests,
+    workspace
+  };
 }
 
 async function mockConnectedWebSocket(page: Page) {
@@ -1940,6 +1972,74 @@ async function mockUnsupportedSpeechRecognition(page: Page) {
     Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: undefined });
     Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: undefined });
   });
+}
+
+async function mockAudioRecording(page: Page) {
+  await page.addInitScript(() => {
+    type MockAudioState = {
+      getUserMediaError: string | null;
+      chunks: string[];
+    };
+    const audioWindow = window as typeof window & { __mockAudio?: MockAudioState };
+    audioWindow.__mockAudio = { getUserMediaError: null, chunks: ["audio bytes"] };
+
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          const state = audioWindow.__mockAudio;
+          if (state?.getUserMediaError) {
+            throw new DOMException("Denied", state.getUserMediaError);
+          }
+          return {
+            getTracks: () => [{ stop: () => {} }]
+          } as unknown as MediaStream;
+        }
+      }
+    });
+
+    class MockMediaRecorder {
+      static isTypeSupported(type: string) {
+        return type === "audio/webm";
+      }
+
+      mimeType: string;
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onstop: (() => void) | null = null;
+      state: "inactive" | "recording" = "inactive";
+
+      constructor(_stream: MediaStream, options?: MediaRecorderOptions) {
+        this.mimeType = options?.mimeType ?? "audio/webm";
+      }
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        for (const chunk of audioWindow.__mockAudio?.chunks ?? []) {
+          this.ondataavailable?.({ data: new Blob([chunk], { type: this.mimeType }) });
+        }
+        this.onstop?.();
+      }
+    }
+
+    Object.defineProperty(window, "MediaRecorder", {
+      configurable: true,
+      value: MockMediaRecorder as unknown as typeof MediaRecorder
+    });
+  });
+}
+
+async function setMockAudioGetUserMediaError(page: Page, error: string | null) {
+  await page.evaluate((value) => {
+    const audioWindow = window as typeof window & { __mockAudio?: { getUserMediaError: string | null } };
+    if (audioWindow.__mockAudio) {
+      audioWindow.__mockAudio.getUserMediaError = value;
+    }
+  }, error);
 }
 
 async function emitSpeechTranscript(page: Page, transcript: string) {

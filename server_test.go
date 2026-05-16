@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -107,6 +110,134 @@ func TestServerAllowsForwardedHTTPSOrigin(t *testing.T) {
 	}
 }
 
+func TestAppStateIncludesDisplaySafeTranscriptionAvailability(t *testing.T) {
+	server := newServer(Config{
+		DisableAuth:                true,
+		BindHost:                   "127.0.0.1",
+		BindPort:                   7635,
+		TranscriptionProvider:      "openai-compatible",
+		TranscriptionBaseURL:       "http://127.0.0.1:7322/v1",
+		TranscriptionAPIKey:        "secret",
+		TranscriptionModel:         "large-v3",
+		TranscriptionMaxAudioBytes: 25 * 1024 * 1024,
+		TranscriptionTimeout:       60 * time.Second,
+	}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/app-state", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "secret") || strings.Contains(body, "7322") {
+		t.Fatalf("app state leaked provider details: %s", body)
+	}
+	var data AppData
+	if err := json.Unmarshal([]byte(body), &data); err != nil {
+		t.Fatal(err)
+	}
+	if !data.Transcription.Available || data.Transcription.MaxAudioBytes != 25*1024*1024 {
+		t.Fatalf("transcription capability = %#v", data.Transcription)
+	}
+}
+
+func TestHandleAudioTranscriptionCallsConfiguredProvider(t *testing.T) {
+	server := newServer(Config{
+		DisableAuth:                true,
+		TranscriptionProvider:      "openai-compatible",
+		TranscriptionBaseURL:       "http://127.0.0.1:7322/v1",
+		TranscriptionMaxAudioBytes: 1024,
+	}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	fake := &fakeTranscriptionProvider{text: "你好"}
+	server.transcriptionProvider = fake
+
+	recorder := httptest.NewRecorder()
+	request := multipartAudioRequest(t, "audio/webm", []byte("audio bytes"))
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Text != "你好" {
+		t.Fatalf("text = %q", response.Text)
+	}
+	if fake.request.MimeType != "audio/webm" || string(fake.request.Data) != "audio bytes" {
+		t.Fatalf("provider request = %#v", fake.request)
+	}
+}
+
+func TestHandleAudioTranscriptionRejectsInvalidRequests(t *testing.T) {
+	cases := []struct {
+		name     string
+		config   Config
+		request  *http.Request
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "unconfigured",
+			config:   Config{DisableAuth: true},
+			request:  multipartAudioRequest(t, "audio/webm", []byte("audio bytes")),
+			wantCode: http.StatusServiceUnavailable,
+			wantBody: "Audio transcription is not configured",
+		},
+		{
+			name:     "unsupported mime",
+			config:   Config{DisableAuth: true, TranscriptionProvider: "openai-compatible", TranscriptionBaseURL: "http://127.0.0.1:7322/v1", TranscriptionMaxAudioBytes: 1024},
+			request:  multipartAudioRequest(t, "text/plain", []byte("audio bytes")),
+			wantCode: http.StatusBadRequest,
+			wantBody: "Unsupported audio type",
+		},
+		{
+			name:     "empty audio",
+			config:   Config{DisableAuth: true, TranscriptionProvider: "openai-compatible", TranscriptionBaseURL: "http://127.0.0.1:7322/v1", TranscriptionMaxAudioBytes: 1024},
+			request:  multipartAudioRequest(t, "audio/webm", nil),
+			wantCode: http.StatusBadRequest,
+			wantBody: "Audio file is required",
+		},
+		{
+			name:     "too large",
+			config:   Config{DisableAuth: true, TranscriptionProvider: "openai-compatible", TranscriptionBaseURL: "http://127.0.0.1:7322/v1", TranscriptionMaxAudioBytes: 3},
+			request:  multipartAudioRequest(t, "audio/webm", []byte("audio bytes")),
+			wantCode: http.StatusBadRequest,
+			wantBody: "Audio files must be 3 bytes or smaller",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newServer(tc.config, testStorage(t), &AgentRuntimeManager{}, newAuthService(tc.config), newEventHub())
+			server.transcriptionProvider = &fakeTranscriptionProvider{text: "unused"}
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, tc.request)
+			if recorder.Code != tc.wantCode || !strings.Contains(recorder.Body.String(), tc.wantBody) {
+				t.Fatalf("status/body = %d %s, want %d containing %q", recorder.Code, recorder.Body.String(), tc.wantCode, tc.wantBody)
+			}
+		})
+	}
+}
+
+func TestHandleAudioTranscriptionReturnsProviderFailure(t *testing.T) {
+	config := Config{
+		DisableAuth:                true,
+		TranscriptionProvider:      "openai-compatible",
+		TranscriptionBaseURL:       "http://127.0.0.1:7322/v1",
+		TranscriptionMaxAudioBytes: 1024,
+	}
+	server := newServer(config, testStorage(t), &AgentRuntimeManager{}, newAuthService(config), newEventHub())
+	server.transcriptionProvider = &fakeTranscriptionProvider{err: errors.New("provider unavailable")}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, multipartAudioRequest(t, "audio/webm", []byte("audio bytes")))
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "provider unavailable") {
+		t.Fatalf("status/body = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestWebSocketRejectsDisallowedOrigin(t *testing.T) {
 	server := newServer(Config{DisableAuth: true}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
 	httpServer := httptest.NewServer(server)
@@ -123,6 +254,42 @@ func TestWebSocketRejectsDisallowedOrigin(t *testing.T) {
 	if response == nil || response.StatusCode != http.StatusForbidden {
 		t.Fatalf("websocket response = %#v, err = %v", response, err)
 	}
+}
+
+type fakeTranscriptionProvider struct {
+	text    string
+	err     error
+	request TranscriptionRequest
+}
+
+func (f *fakeTranscriptionProvider) Transcribe(ctx context.Context, request TranscriptionRequest) (TranscriptionResult, error) {
+	f.request = request
+	if f.err != nil {
+		return TranscriptionResult{}, f.err
+	}
+	return TranscriptionResult{Text: f.text}, nil
+}
+
+func multipartAudioRequest(t *testing.T, mimeType string, data []byte) *http.Request {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreatePart(map[string][]string{
+		"Content-Disposition": {`form-data; name="file"; filename="recording.webm"`},
+		"Content-Type":        {mimeType},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/audio/transcriptions", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
 }
 
 func TestPermissionOptionMustBelongToRequest(t *testing.T) {

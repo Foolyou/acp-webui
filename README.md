@@ -138,6 +138,36 @@ go run . -- \
   --codex-acp-arg @zed-industries/codex-acp
 ```
 
+## Audio Transcription Provider
+
+Mic input uses server-side audio transcription when a provider is configured.
+The browser records audio, ACP Web UI sends it to the configured provider, and
+the returned text is inserted into the prompt composer. Dictation never submits
+a prompt automatically.
+
+ACP Web UI supports OpenAI-compatible transcription endpoints. For an externally
+managed local faster-whisper example, see
+`deploy/transcription/faster-whisper-server`. That compose example binds the
+provider to `127.0.0.1:7322` and uses a Docker-managed model cache volume. ACP
+Web UI does not install, start, stop, supervise, require, or update that service.
+
+Configure ACP Web UI with generic provider settings:
+
+```bash
+ACP_WEBUI_TRANSCRIPTION_PROVIDER=openai-compatible
+ACP_WEBUI_TRANSCRIPTION_BASE_URL=http://127.0.0.1:7322/v1
+ACP_WEBUI_TRANSCRIPTION_MODEL=Systran/faster-distil-whisper-large-v3
+ACP_WEBUI_TRANSCRIPTION_LANGUAGE=zh
+ACP_WEBUI_TRANSCRIPTION_MAX_AUDIO_MB=25
+ACP_WEBUI_TRANSCRIPTION_TIMEOUT_SECONDS=60
+```
+
+If the provider requires a token:
+
+```bash
+ACP_WEBUI_TRANSCRIPTION_API_KEY=<provider-token>
+```
+
 On Linux, start or restart both development servers on loopback:
 
 ```bash

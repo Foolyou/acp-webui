@@ -338,6 +338,12 @@ export type AppData = {
   codex: ConnectionStatus;
   agents: AgentRuntimeStatus[];
   inbox: InboxItem[];
+  transcription: TranscriptionCapability;
+};
+
+export type TranscriptionCapability = {
+  available: boolean;
+  maxAudioBytes: number;
 };
 
 export type SkillSummary = {

@@ -33,12 +33,7 @@ import {
   permissionModeDescription,
   permissionModeLabel
 } from "../../utils/permissionMode";
-import {
-  createSpeechRecognitionAdapter,
-  insertVoiceTranscript,
-  speechRecognitionSupported,
-  type SpeechRecognitionAdapter
-} from "../../utils/speechRecognition";
+import { insertVoiceTranscript } from "../../utils/speechRecognition";
 import { sessionStatusLabel } from "../../utils/sessionStatus";
 
 const SCROLL_BOTTOM_PROXIMITY_PX = 24;
@@ -51,6 +46,8 @@ type ImageAttachment = Extract<MessageContentBlock, { type: "image" }> & {
   size: number;
 };
 
+type VoiceState = "idle" | "recording" | "transcribing";
+
 export function SessionPane({
   agentStatus,
   busy,
@@ -61,7 +58,8 @@ export function SessionPane({
   onRestoreSession,
   onSetSessionConfigOption,
   onStopSession,
-  onSendPrompt
+  onSendPrompt,
+  transcriptionAvailable
 }: {
   agentStatus: AgentRuntimeStatus | null;
   busy: boolean;
@@ -73,6 +71,7 @@ export function SessionPane({
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
   onStopSession: () => Promise<void>;
   onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
+  transcriptionAvailable: boolean;
 }) {
   const waitingApproval =
     Boolean(currentSession.pendingPermission) || currentSession.session.status === "waiting_approval";
@@ -388,6 +387,7 @@ export function SessionPane({
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
         workspaceId={currentSession.workspace.id}
+        transcriptionAvailable={transcriptionAvailable}
       />
     </section>
   );
@@ -766,7 +766,8 @@ function PromptComposer({
   stoppingTurn,
   onStopSession,
   waitingApproval,
-  workspaceId
+  workspaceId,
+  transcriptionAvailable
 }: {
   agentName: string;
   agentId: string;
@@ -788,14 +789,15 @@ function PromptComposer({
   onStopSession: () => Promise<void>;
   waitingApproval: boolean;
   workspaceId: string;
+  transcriptionAvailable: boolean;
 }) {
   const [prompt, setPrompt] = useState("");
   const [composing, setComposing] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [voiceSupported] = useState(() => speechRecognitionSupported());
-  const [voiceListening, setVoiceListening] = useState(false);
+  const [recordingSupported] = useState(() => audioRecordingSupported());
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
@@ -808,7 +810,14 @@ function PromptComposer({
   const [editingTemplateTitle, setEditingTemplateTitle] = useState("");
   const [editingTemplateBody, setEditingTemplateBody] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const voiceAdapterRef = useRef<SpeechRecognitionAdapter | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const transcribeOnStopRef = useRef(false);
+  const voiceActiveRef = useRef(true);
+  const voiceSupported = transcriptionAvailable && recordingSupported;
+  const voiceRecording = voiceState === "recording";
+  const voiceTranscribing = voiceState === "transcribing";
 
   useEffect(() => {
     let cancelled = false;
@@ -826,47 +835,17 @@ function PromptComposer({
   }, []);
 
   useEffect(() => {
-    let active = true;
-    const adapter = createSpeechRecognitionAdapter({
-      onEvent(event) {
-        if (!active) return;
-        switch (event.type) {
-          case "listening":
-            setVoiceListening(true);
-            setVoiceError(null);
-            break;
-          case "transcript":
-            setPrompt((current) => insertVoiceTranscript(current, event.transcript));
-            setVoiceError(null);
-            break;
-          case "end":
-            setVoiceListening(false);
-            if (event.reason === "unexpected") {
-              setVoiceError("Voice input stopped unexpectedly. Try again.");
-            }
-            break;
-          case "error":
-            setVoiceListening(false);
-            setVoiceError(event.message);
-            break;
-        }
-      }
-    });
-    voiceAdapterRef.current = adapter;
-
     return () => {
-      active = false;
-      adapter.destroy();
-      if (voiceAdapterRef.current === adapter) {
-        voiceAdapterRef.current = null;
-      }
+      voiceActiveRef.current = false;
+      stopVoiceRecording(false);
+      stopMediaStream(mediaStreamRef.current);
     };
   }, []);
 
   useEffect(() => {
-    if (!voiceListening || (!disabled && !busy)) return;
-    voiceAdapterRef.current?.stop();
-  }, [busy, disabled, voiceListening]);
+    if (!voiceRecording || (!disabled && !busy)) return;
+    stopVoiceRecording(false);
+  }, [busy, disabled, voiceRecording]);
 
   useEffect(() => {
     if (!templatesOpen) return;
@@ -919,9 +898,8 @@ function PromptComposer({
       setAttachments(submittedAttachments);
       throw error;
     }
-    if (voiceListening) {
-      voiceAdapterRef.current?.stop();
-      setVoiceListening(false);
+    if (voiceRecording) {
+      stopVoiceRecording(false);
     }
     setAttachmentError(null);
   }
@@ -946,18 +924,108 @@ function PromptComposer({
     }
   }
 
-  function toggleVoiceInput() {
-    if (!voiceSupported || disabled || busy) return;
-    if (voiceListening) {
-      voiceAdapterRef.current?.stop();
+  async function startVoiceRecording() {
+    if (!voiceSupported || disabled || busy || voiceRecording || voiceTranscribing) return;
+    setVoiceError(null);
+    audioChunksRef.current = [];
+    transcribeOnStopRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!voiceActiveRef.current) {
+        stopMediaStream(stream);
+        return;
+      }
+      const mimeType = preferredAudioMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onerror = () => {
+        setVoiceError("Voice input failed. Try again.");
+        stopVoiceRecording(false);
+      };
+      recorder.onstop = () => {
+        void finishVoiceRecording(recorder);
+      };
+      recorder.start();
+      setVoiceState("recording");
+    } catch (error) {
+      setVoiceState("idle");
+      setVoiceError(recordingErrorMessage(error));
+    }
+  }
+
+  function stopVoiceRecording(transcribe: boolean) {
+    transcribeOnStopRef.current = transcribe;
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      setVoiceState("idle");
       return;
     }
-    setVoiceError(null);
-    setVoiceListening(true);
-    const started = voiceAdapterRef.current?.start() ?? false;
-    if (!started) {
-      setVoiceListening(false);
+    if (recorder.state === "inactive") {
+      void finishVoiceRecording(recorder);
+      return;
     }
+    recorder.stop();
+  }
+
+  async function finishVoiceRecording(recorder: MediaRecorder) {
+    const shouldTranscribe = transcribeOnStopRef.current;
+    transcribeOnStopRef.current = false;
+    mediaRecorderRef.current = null;
+    const stream = mediaStreamRef.current;
+    mediaStreamRef.current = null;
+    stopMediaStream(stream);
+
+    const chunks = audioChunksRef.current;
+    audioChunksRef.current = [];
+    if (!shouldTranscribe) {
+      if (voiceActiveRef.current) setVoiceState("idle");
+      return;
+    }
+    if (chunks.length === 0) {
+      if (voiceActiveRef.current) {
+        setVoiceState("idle");
+        setVoiceError("No audio was recorded. Try again.");
+      }
+      return;
+    }
+
+    const mimeType = recorder.mimeType || chunks[0]?.type || "audio/webm";
+    const audio = new Blob(chunks, { type: mimeType });
+    if (audio.size === 0) {
+      if (voiceActiveRef.current) {
+        setVoiceState("idle");
+        setVoiceError("No audio was recorded. Try again.");
+      }
+      return;
+    }
+
+    if (voiceActiveRef.current) setVoiceState("transcribing");
+    try {
+      const response = await api.transcribeAudio(audio, recordingFileName(mimeType));
+      if (!voiceActiveRef.current) return;
+      setPrompt((current) => insertVoiceTranscript(current, response.text));
+      setVoiceError(null);
+    } catch (error) {
+      if (!voiceActiveRef.current) return;
+      setVoiceError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (voiceActiveRef.current) setVoiceState("idle");
+    }
+  }
+
+  function toggleVoiceInput() {
+    if (!voiceSupported || disabled || busy) return;
+    if (voiceRecording) {
+      stopVoiceRecording(true);
+      return;
+    }
+    void startVoiceRecording();
   }
 
   const skillMatch = /[$＄￥]([\w:-]*)$/u.exec(prompt);
@@ -1292,14 +1360,16 @@ function PromptComposer({
           <span className="shortcut-hint">Ctrl Enter</span>
           {voiceSupported ? (
             <Button
-              aria-label={voiceListening ? "Stop voice input" : "Start voice input"}
-              aria-pressed={voiceListening}
-              className={`secondary voice-control ${voiceListening ? "listening" : ""}`}
-              isDisabled={disabled || busy}
+              aria-label={
+                voiceTranscribing ? "Transcribing voice input" : voiceRecording ? "Finish voice input" : "Start voice input"
+              }
+              aria-pressed={voiceRecording}
+              className={`secondary voice-control ${voiceRecording ? "listening" : ""}`}
+              isDisabled={disabled || busy || voiceTranscribing}
               onPress={toggleVoiceInput}
               type="button"
             >
-              {voiceListening ? "On" : "Mic"}
+              {voiceTranscribing ? "..." : voiceRecording ? "On" : "Mic"}
             </Button>
           ) : null}
           <Button
@@ -1358,6 +1428,46 @@ function readImageAttachment(file: File): Promise<ImageAttachment> {
 
 function imageDataUrl(block: Extract<MessageContentBlock, { type: "image" }>) {
   return `data:${block.mimeType};base64,${block.data}`;
+}
+
+function audioRecordingSupported(target: unknown = globalThis) {
+  const candidate = target as Partial<Window & typeof globalThis> | undefined;
+  return Boolean(candidate?.MediaRecorder && candidate.navigator?.mediaDevices?.getUserMedia);
+}
+
+function preferredAudioMimeType(target: unknown = globalThis) {
+  const candidate = target as Partial<Window & typeof globalThis> | undefined;
+  const recorder = candidate?.MediaRecorder;
+  if (!recorder?.isTypeSupported) return "";
+  for (const mimeType of ["audio/webm", "audio/ogg", "audio/mp4"]) {
+    if (recorder.isTypeSupported(mimeType)) return mimeType;
+  }
+  return "";
+}
+
+function recordingFileName(mimeType: string) {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("mp4")) return "recording.mp4";
+  if (normalized.includes("ogg")) return "recording.ogg";
+  if (normalized.includes("mpeg")) return "recording.mp3";
+  if (normalized.includes("wav")) return "recording.wav";
+  return "recording.webm";
+}
+
+function stopMediaStream(stream: MediaStream | null) {
+  for (const track of stream?.getTracks() ?? []) {
+    track.stop();
+  }
+}
+
+function recordingErrorMessage(error: unknown) {
+  if (error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "SecurityError")) {
+    return "Microphone access was denied. Check browser permissions and try again.";
+  }
+  if (error instanceof DOMException && error.name === "NotFoundError") {
+    return "No microphone was found for voice input.";
+  }
+  return error instanceof Error ? error.message : "Voice input failed. Try again.";
 }
 
 function MessageBubble({ live = false, message }: { live?: boolean; message: ChatMessage }) {

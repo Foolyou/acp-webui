@@ -19,12 +19,13 @@ import (
 )
 
 type Server struct {
-	config  Config
-	storage *Storage
-	agents  *AgentRuntimeManager
-	auth    *AuthService
-	events  *EventHub
-	mux     *http.ServeMux
+	config                Config
+	storage               *Storage
+	agents                *AgentRuntimeManager
+	auth                  *AuthService
+	events                *EventHub
+	transcriptionProvider TranscriptionProvider
+	mux                   *http.ServeMux
 }
 
 const (
@@ -43,7 +44,7 @@ var supportedPromptImageMimeTypes = map[string]struct{}{
 }
 
 func newServer(config Config, storage *Storage, agents *AgentRuntimeManager, auth *AuthService, events *EventHub) *Server {
-	server := &Server{config: config, storage: storage, agents: agents, auth: auth, events: events, mux: http.NewServeMux()}
+	server := &Server{config: config, storage: storage, agents: agents, auth: auth, events: events, transcriptionProvider: newTranscriptionProvider(config), mux: http.NewServeMux()}
 	server.routes()
 	return server
 }
@@ -52,6 +53,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	s.mux.HandleFunc("POST /api/auth/pair", s.handlePair)
 	s.mux.HandleFunc("GET /api/app-state", s.handleAppState)
+	s.mux.HandleFunc("POST /api/audio/transcriptions", s.handleAudioTranscription)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
 	s.mux.HandleFunc("GET /api/inbox", s.handleInbox)
 	s.mux.HandleFunc("GET /api/workspaces", s.handleWorkspaces)
@@ -259,7 +261,65 @@ func (s *Server) handleAppState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, AppData{Codex: s.agents.codexStatus(), Agents: s.agents.statuses(), Inbox: nonNilSlice(inbox)})
+	writeJSON(w, http.StatusOK, AppData{Codex: s.agents.codexStatus(), Agents: s.agents.statuses(), Inbox: nonNilSlice(inbox), Transcription: s.transcriptionCapability()})
+}
+
+func (s *Server) transcriptionCapability() TranscriptionCapability {
+	maxBytes := s.config.TranscriptionMaxAudioBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultTranscriptionMaxAudioBytes
+	}
+	return TranscriptionCapability{Available: s.config.TranscriptionAvailable(), MaxAudioBytes: maxBytes}
+}
+
+func (s *Server) handleAudioTranscription(w http.ResponseWriter, r *http.Request) {
+	if !s.config.TranscriptionAvailable() || s.transcriptionProvider == nil {
+		writeError(w, unavailable("Audio transcription is not configured"))
+		return
+	}
+	maxBytes := s.config.TranscriptionMaxAudioBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultTranscriptionMaxAudioBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1024*1024)
+	if err := r.ParseMultipartForm(maxBytes + 1024*1024); err != nil {
+		writeError(w, badRequest("Invalid audio transcription request"))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, badRequest("Audio file is required"))
+		return
+	}
+	defer file.Close()
+	mimeType := header.Header.Get("Content-Type")
+	if !supportedTranscriptionAudioType(mimeType) {
+		writeError(w, badRequest(fmt.Sprintf("Unsupported audio type `%s`.", mimeType)))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		writeError(w, badRequest("Failed to read audio file"))
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, badRequest("Audio file is required"))
+		return
+	}
+	if int64(len(data)) > maxBytes {
+		writeError(w, badRequest(fmt.Sprintf("Audio files must be %d bytes or smaller.", maxBytes)))
+		return
+	}
+	result, err := s.transcriptionProvider.Transcribe(r.Context(), TranscriptionRequest{
+		MimeType: mimeType,
+		FileName: header.Filename,
+		Data:     data,
+	})
+	if err != nil {
+		writeError(w, appError{Status: http.StatusBadGateway, Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": result.Text})
 }
 
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {

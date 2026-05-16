@@ -162,6 +162,7 @@ function baseState(): UiState {
     initialized: true,
     workspaces: [],
     inbox: [],
+    transcription: { available: false, maxAudioBytes: 0 },
     sessions: [],
     sessionsLoading: false,
     currentWorkspaceId: null,

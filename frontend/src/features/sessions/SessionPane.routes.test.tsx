@@ -82,6 +82,7 @@ describe("SessionPane route links", () => {
         onSendPrompt={vi.fn()}
         onSetSessionConfigOption={vi.fn()}
         onStopSession={vi.fn()}
+        transcriptionAvailable={false}
       />
     );
 

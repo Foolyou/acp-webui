@@ -50,6 +50,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "x-acp-webui-request": "1"
+    },
+    body: form
+  });
+
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const body = (await response.json()) as { error?: string };
+      message = body.error ?? message;
+    } catch {
+      // Keep the HTTP status text when the body is not JSON.
+    }
+    if (response.status === 401) {
+      throw new UnauthorizedError(message);
+    }
+    throw new Error(message);
+  }
+
+  return (await response.json()) as T;
+}
+
 export const api = {
   authStatus: () => request<AuthStatus>("/api/auth/status"),
   pair: (token: string) =>
@@ -58,6 +84,11 @@ export const api = {
       body: JSON.stringify({ token })
     }),
   appState: () => request<AppData>("/api/app-state"),
+  transcribeAudio: (audio: Blob, fileName = "recording.webm") => {
+    const form = new FormData();
+    form.append("file", audio, fileName);
+    return requestForm<{ text: string }>("/api/audio/transcriptions", form);
+  },
   workspaces: () => request<Workspace[]>("/api/workspaces"),
   createWorkspace: (path: string) =>
     request<Workspace>("/api/workspaces", {
