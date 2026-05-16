@@ -7,4 +7,6 @@
 /.worktrees/
 /.venv/
 *.log
-.claude/settings.local.json
+/AGENTS.md
+/.claude/
+/.codex/
