@@ -4,6 +4,7 @@
 /frontend/dist/
 /frontend/node_modules/
 /frontend/test-results/
+/.worktrees/
 /.venv/
 *.log
 .claude/settings.local.json
