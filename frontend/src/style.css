@@ -1158,6 +1158,15 @@ pre {
   font-weight: 700;
 }
 
+.active-state-badge.running {
+  color: var(--color-accent);
+}
+
+.active-state-badge.stopping,
+.active-state-badge.waiting-approval {
+  color: var(--color-warning);
+}
+
 .permission-mode-badge {
   border: 0;
 }
