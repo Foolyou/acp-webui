@@ -46,6 +46,9 @@ func main() {
 	if repaired, err := storage.repairRestoredRunningSessionsOnStartup(ctx); err == nil && repaired > 0 {
 		log.Printf("reset %d restored sessions stuck in running state", repaired)
 	}
+	if repaired, err := storage.repairQueuedPromptsForTerminalSessions(ctx); err == nil && repaired > 0 {
+		log.Printf("cleared %d queued prompts from terminal sessions", repaired)
+	}
 
 	events := newEventHub()
 	agents := newAgentRuntimeManager(config, storage, events)

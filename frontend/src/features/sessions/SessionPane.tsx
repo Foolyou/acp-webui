@@ -17,6 +17,7 @@ import {
   defaultPromptTemplateTitle,
   formatActiveTurnElapsed,
   insertPromptTemplateBody,
+  promptComposerStatus,
   promptComposerImageSupported,
   renderableMessageBlocks
 } from "./sessionPaneHelpers";
@@ -1180,17 +1181,15 @@ function PromptComposer({
     void addImageFiles(filesFromList(event.dataTransfer.files));
   }
 
-  const status = continuityReason
-    ? continuityReason
-    : waitingApproval
-      ? "Waiting for approval"
-      : stoppingTurn
-        ? `Stopping ${agentName}${elapsedLabel ? ` after ${elapsedLabel}` : "..."}`
-      : running
-        ? `${agentName} is working${elapsedLabel ? ` for ${elapsedLabel}` : "..."}`
-        : agentConnection && agentConnection.state !== "ready"
-          ? agentConnection.message ?? `${agentName} is ${agentConnection.state}`
-          : null;
+  const status = promptComposerStatus({
+    agentConnection,
+    agentName,
+    continuityReason: continuityReason ?? null,
+    elapsedLabel,
+    running,
+    stoppingTurn,
+    waitingApproval
+  });
 
   return (
     <div className="composer-wrap">

@@ -610,6 +610,42 @@ func TestHandleCreateSessionPublishesScopedListChangedEvent(t *testing.T) {
 	}
 }
 
+func TestRunPromptTurnClearsQueuedPromptsAfterFailure(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "failed-turn-acp-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.StartActiveTurn(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued after active turn", []MessageContentBlock{textBlock("queued after active turn")}, "queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued after active turn", []MessageContentBlock{textBlock("queued after active turn")}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex", Enabled: false}, permissionManual, storage, newEventHub())
+	server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), runtime.events)
+
+	server.runPromptTurn(ctx, runtime, session.ID, acpSessionID, []MessageContentBlock{textBlock("active prompt")})
+
+	queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued prompts after failed turn = %#v, want none", queued)
+	}
+}
+
 func TestImportedNativeSessionListAndDetailIncludeRouteContext(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)

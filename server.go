@@ -701,6 +701,8 @@ func (s *Server) runPromptTurn(ctx context.Context, runtime *AgentRuntime, sessi
 	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": nextStatus, "activeTurn": nil})
 	if err == nil {
 		s.drainQueuedPrompts(ctx, runtime, sessionID, acpSessionID)
+	} else {
+		s.failQueuedPromptBacklog(ctx, sessionID)
 	}
 }
 
@@ -731,9 +733,18 @@ func (s *Server) drainQueuedPrompts(ctx context.Context, runtime *AgentRuntime, 
 		s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": nextStatus})
 		s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": nextStatus, "activeTurn": nil})
 		if err != nil {
+			s.failQueuedPromptBacklog(ctx, sessionID)
 			return
 		}
 	}
+}
+
+func (s *Server) failQueuedPromptBacklog(ctx context.Context, sessionID string) {
+	if err := s.storage.MarkQueuedPromptsFailed(ctx, sessionID); err != nil {
+		return
+	}
+	queued, _ := s.storage.ListQueuedPrompts(ctx, sessionID)
+	s.events.Publish(map[string]any{"type": "queued_prompts_updated", "sessionId": sessionID, "queuedPrompts": nonNilSlice(queued)})
 }
 
 func promptBlocksFromRequest(prompt string, contentBlocks []MessageContentBlock) ([]MessageContentBlock, error) {

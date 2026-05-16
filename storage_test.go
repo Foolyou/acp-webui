@@ -932,6 +932,52 @@ func TestStorageRepairsOnlyRestoredRunningSessionsWithoutPendingApproval(t *test
 	}
 }
 
+func TestStorageRepairsQueuedPromptsForTerminalSessions(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "terminal-queued"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, "queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.UpdateSessionStatus(ctx, session.ID, statusFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := storage.repairQueuedPromptsForTerminalSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued prompts = %#v, want none", queued)
+	}
+	messages, err := storage.ListMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Status != statusFailed {
+		t.Fatalf("message status = %#v, want failed", messages)
+	}
+}
+
 func TestStorageBuildsSessionDetailTimeline(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

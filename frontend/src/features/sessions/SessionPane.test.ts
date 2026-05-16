@@ -3,6 +3,7 @@ import {
   defaultPromptTemplateTitle,
   formatActiveTurnElapsed,
   insertPromptTemplateBody,
+  promptComposerStatus,
   promptComposerImageSupported,
   renderableMessageBlocks
 } from "./sessionPaneHelpers";
@@ -87,5 +88,26 @@ describe("promptComposerImageSupported", () => {
         }
       )
     ).toBe(true);
+  });
+});
+
+describe("promptComposerStatus", () => {
+  test("does not show an idle runtime message for a continuable restored session", () => {
+    expect(
+      promptComposerStatus({
+        agentName: "Codex",
+        agentConnection: {
+          state: "idle",
+          message: "Codex runtime has not started",
+          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          sessionCapabilities: { loadSession: false, resumeSession: false, listSessions: false, closeSession: false }
+        },
+        continuityReason: null,
+        waitingApproval: false,
+        stoppingTurn: false,
+        running: false,
+        elapsedLabel: null
+      })
+    ).toBeNull();
   });
 });

@@ -266,6 +266,51 @@ func (s *Storage) repairRestoredRunningSessionsOnStartup(ctx context.Context) (i
 	return result.RowsAffected()
 }
 
+func (s *Storage) repairQueuedPromptsForTerminalSessions(ctx context.Context) (int64, error) {
+	now := nowString()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var queuedCount int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM queued_prompts
+		JOIN sessions ON sessions.id = queued_prompts.session_id
+		WHERE queued_prompts.status = ?
+		  AND sessions.status IN (?, ?)`, queuedPromptQueued, statusFailed, statusStopped).Scan(&queuedCount); err != nil {
+		return 0, err
+	}
+	if queuedCount == 0 {
+		return 0, tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE id IN (
+			SELECT queued_prompts.message_id
+			FROM queued_prompts
+			JOIN sessions ON sessions.id = queued_prompts.session_id
+			WHERE queued_prompts.status = ?
+			  AND sessions.status IN (?, ?)
+		)`, statusFailed, queuedPromptQueued, statusFailed, statusStopped); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE queued_prompts
+		SET status = ?, submitted_at = ?
+		WHERE status = ?
+		  AND session_id IN (
+			SELECT id
+			FROM sessions
+			WHERE status IN (?, ?)
+		  )`, queuedPromptFailed, now, queuedPromptQueued, statusFailed, statusStopped); err != nil {
+		return 0, err
+	}
+	return queuedCount, tx.Commit()
+}
+
 func (s *Storage) CreateWorkspace(ctx context.Context, path string, name *string) (Workspace, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -831,6 +876,32 @@ func (s *Storage) MarkQueuedPromptSubmitted(ctx context.Context, id string) erro
 	now := nowString()
 	_, err := s.db.ExecContext(ctx, `UPDATE queued_prompts SET status = ?, submitted_at = ? WHERE id = ?`, queuedPromptSubmitted, now, id)
 	return err
+}
+
+func (s *Storage) MarkQueuedPromptsFailed(ctx context.Context, sessionID string) error {
+	now := nowString()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE id IN (
+			SELECT message_id
+			FROM queued_prompts
+			WHERE session_id = ? AND status = ?
+		)`, statusFailed, sessionID, queuedPromptQueued); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE queued_prompts
+		SET status = ?, submitted_at = ?
+		WHERE session_id = ? AND status = ?`, queuedPromptFailed, now, sessionID, queuedPromptQueued); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func scanQueuedPrompt(scanner interface{ Scan(dest ...any) error }) (QueuedPrompt, error) {

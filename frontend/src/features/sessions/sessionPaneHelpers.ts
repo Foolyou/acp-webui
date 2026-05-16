@@ -35,6 +35,33 @@ export function promptComposerImageSupported(
   return options.continuable === true && options.fallbackConnection?.promptCapabilities?.image === true;
 }
 
+export function promptComposerStatus({
+  agentConnection,
+  agentName,
+  continuityReason,
+  elapsedLabel,
+  running,
+  stoppingTurn,
+  waitingApproval
+}: {
+  agentConnection: AgentRuntimeStatus["status"] | null;
+  agentName: string;
+  continuityReason: string | null;
+  elapsedLabel: string | null;
+  running: boolean;
+  stoppingTurn: boolean;
+  waitingApproval: boolean;
+}) {
+  if (continuityReason) return continuityReason;
+  if (waitingApproval) return "Waiting for approval";
+  if (stoppingTurn) return `Stopping ${agentName}${elapsedLabel ? ` after ${elapsedLabel}` : "..."}`;
+  if (running) return `${agentName} is working${elapsedLabel ? ` for ${elapsedLabel}` : "..."}`;
+  if (agentConnection && agentConnection.state !== "ready" && agentConnection.state !== "idle") {
+    return agentConnection.message ?? `${agentName} is ${agentConnection.state}`;
+  }
+  return null;
+}
+
 export function renderableMessageBlocks(message: Pick<ChatMessage, "content" | "contentBlocks">) {
   const blocks = message.contentBlocks?.length
     ? message.contentBlocks
