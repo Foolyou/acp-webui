@@ -53,6 +53,36 @@ func TestAgentRuntimeFlushesAssistantChunksBeforeToolCalls(t *testing.T) {
 	assertTimelineItem(t, detail.Timeline[2], "message", "After tool.")
 }
 
+func TestAgentRuntimeNewAssistantBufferDoesNotAppendToPreviousMessage(t *testing.T) {
+	ctx := context.Background()
+	storage, session := testRuntimeSession(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	runtime.RegisterSession("acp-session", session.ID)
+
+	runtime.beginAssistantBuffer("acp-session")
+	runtime.handleSessionUpdate(sessionUpdate(t, "acp-session", map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"content":       map[string]any{"type": "text", "text": "First answer"},
+	}))
+
+	runtime.beginAssistantBuffer("acp-session")
+	runtime.handleSessionUpdate(sessionUpdate(t, "acp-session", map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"content":       map[string]any{"type": "text", "text": "Second answer"},
+	}))
+
+	messages, err := storage.ListMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want two assistant messages", messages)
+	}
+	if messages[0].Content != "First answer" || messages[1].Content != "Second answer" {
+		t.Fatalf("messages = %#v, want separate assistant answers", messages)
+	}
+}
+
 func TestAgentRuntimeReplaysEmptyRestoreHistoryInOrder(t *testing.T) {
 	ctx := context.Background()
 	storage, session := testRuntimeSession(t)

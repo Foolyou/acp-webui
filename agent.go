@@ -917,6 +917,7 @@ func (r *AgentRuntime) Prompt(ctx context.Context, localSessionID, acpSessionID 
 func (r *AgentRuntime) beginAssistantBuffer(bufferID string) {
 	r.mu.Lock()
 	r.assistant[bufferID] = ""
+	delete(r.assistantIDs, bufferID)
 	r.mu.Unlock()
 }
 
