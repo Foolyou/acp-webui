@@ -236,6 +236,49 @@ describe("SessionsPane", () => {
     expect(html).not.toContain("undefined session");
   });
 
+  test("shows compact active-state badges for active sessions but not idle sessions", async () => {
+    const { SessionsPane } = await import("./SessionsPane");
+
+    const html = renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent()]}
+        loading={false}
+        onCreate={vi.fn()}
+        selectedAgentId="agent-default"
+        sessions={[
+          sessionItem({
+            session: { ...sessionItem().session, id: "session-running", status: "running" },
+            activeTurn: { startedAt: "2026-04-30T00:00:00Z", status: "running" }
+          }),
+          sessionItem({
+            session: { ...sessionItem().session, id: "session-stopping", status: "stopping" },
+            activeTurn: { startedAt: "2026-04-30T00:00:00Z", status: "stopping" }
+          }),
+          sessionItem({
+            session: { ...sessionItem().session, id: "session-approval", status: "waiting_approval" },
+            pendingPermission: {
+              id: "permission-a",
+              title: "Run command",
+              kind: "tool",
+              createdAt: "2026-04-30T00:00:00Z"
+            }
+          }),
+          sessionItem({ session: { ...sessionItem().session, id: "session-idle", status: "idle" } })
+        ]}
+        workspace={workspace()}
+      />
+    );
+
+    expect(html).toContain("active-state-badge running");
+    expect(html).toContain("Running");
+    expect(html).toContain("active-state-badge stopping");
+    expect(html).toContain("Stopping");
+    expect(html).toContain("active-state-badge waiting-approval");
+    expect(html).toContain("Waiting approval");
+    expect(html).toContain("Approval: Run command");
+    expect(html).not.toContain("active-state-badge idle");
+  });
+
   test("scopes create choices to the selected agent and ignores a last profile for another agent", async () => {
     localStorage.setItem(
       "lastSessionProfile",

@@ -305,6 +305,7 @@ function agentStatusText(agent: AgentRuntimeStatus) {
 function SessionListRow({ item }: { item: SessionListItem }) {
   const title = sessionRowTitle(item);
   const nativeMetadata = sessionNativeMetadata(item);
+  const activeState = sessionActiveState(item);
 
   return (
     <Link
@@ -326,6 +327,7 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       ) : null}
       <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
+        {activeState ? <strong className={`active-state-badge ${activeState.className}`}>{activeState.label}</strong> : null}
         {item.session.permissionMode !== "manual" ? (
           <strong className={`permission-mode-badge ${permissionModeClass(item.session.permissionMode)}`}>
             {permissionModeLabel(item.session.permissionMode)}
@@ -343,6 +345,19 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       </span>
     </Link>
   );
+}
+
+function sessionActiveState(item: SessionListItem) {
+  if (item.pendingPermission || item.session.status === "waiting_approval") {
+    return { className: "waiting-approval", label: "Waiting approval" };
+  }
+  if (item.session.status === "stopping" || item.activeTurn?.status === "stopping") {
+    return { className: "stopping", label: "Stopping" };
+  }
+  if (item.session.status === "running" || item.activeTurn?.status === "running") {
+    return { className: "running", label: "Running" };
+  }
+  return null;
 }
 
 function cleanTitle(value?: string | null) {
