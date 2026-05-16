@@ -11,14 +11,29 @@ type FullscreenElement = HTMLElement & {
   webkitRequestFullscreen?: () => Promise<void> | void;
 };
 
+export type FullscreenDocumentLike = {
+  fullscreenElement?: unknown;
+  fullscreenEnabled?: boolean;
+  exitFullscreen?: () => Promise<void> | void;
+  webkitExitFullscreen?: () => Promise<void> | void;
+  webkitFullscreenElement?: unknown;
+  webkitFullscreenEnabled?: boolean;
+};
+
+export type FullscreenElementLike = {
+  requestFullscreen?: () => Promise<void> | void;
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
 export function FullscreenButton() {
   const [active, setActive] = useState(false);
   const [available, setAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
     const syncFullscreenState = () => {
-      setActive(Boolean(fullscreenElement()));
-      setAvailable(isFullscreenAvailable());
+      const state = fullscreenControlState(fullscreenDocument(), fullscreenRoot());
+      setActive(state.active);
+      setAvailable(state.available);
     };
 
     syncFullscreenState();
@@ -35,20 +50,15 @@ export function FullscreenButton() {
     };
   }, []);
 
-  const toggleFullscreen = useCallback(async () => {
+  const handleToggleFullscreen = useCallback(async () => {
     if (!available) {
       return;
     }
 
     try {
-      if (!fullscreenElement()) {
-        await requestFullscreen(document.documentElement);
-        return;
-      }
-
-      await exitFullscreen();
+      await toggleFullscreen(fullscreenDocument(), fullscreenRoot());
     } catch {
-      setActive(Boolean(fullscreenElement()));
+      setActive(fullscreenControlState(fullscreenDocument(), fullscreenRoot()).active);
     }
   }, [available]);
 
@@ -65,7 +75,7 @@ export function FullscreenButton() {
       data-tooltip={label}
       isDisabled={available !== true}
       onPress={() => {
-        void toggleFullscreen();
+        void handleToggleFullscreen();
       }}
     >
       <span aria-hidden="true" className="fullscreen-corner top-left" />
@@ -81,25 +91,44 @@ function fullscreenDocument() {
   return document as FullscreenDocument;
 }
 
-function fullscreenElement() {
-  const doc = fullscreenDocument();
-  return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+function fullscreenRoot() {
+  return document.documentElement as FullscreenElement;
 }
 
-function isFullscreenAvailable() {
-  const doc = fullscreenDocument();
-  const root = document.documentElement as FullscreenElement;
-  return Boolean((document.fullscreenEnabled || doc.webkitFullscreenEnabled) && (root.requestFullscreen || root.webkitRequestFullscreen));
+export function fullscreenControlState(doc: FullscreenDocumentLike, root: FullscreenElementLike) {
+  const active = Boolean(fullscreenElement(doc));
+  const available = isFullscreenAvailable(doc, root);
+  return {
+    active,
+    available,
+    label: active ? "Exit fullscreen" : "Enter fullscreen"
+  };
 }
 
-function requestFullscreen(element: HTMLElement) {
-  const target = element as FullscreenElement;
-  const request = target.requestFullscreen ?? target.webkitRequestFullscreen;
-  return request?.call(target);
+export function toggleFullscreen(doc: FullscreenDocumentLike, root: FullscreenElementLike) {
+  if (!isFullscreenAvailable(doc, root)) {
+    return undefined;
+  }
+  if (!fullscreenElement(doc)) {
+    return requestFullscreen(root);
+  }
+  return exitFullscreen(doc);
 }
 
-function exitFullscreen() {
-  const doc = fullscreenDocument();
-  const exit = document.exitFullscreen ?? doc.webkitExitFullscreen;
-  return exit?.call(document);
+function fullscreenElement(doc: FullscreenDocumentLike) {
+  return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+function isFullscreenAvailable(doc: FullscreenDocumentLike, root: FullscreenElementLike) {
+  return Boolean((doc.fullscreenEnabled || doc.webkitFullscreenEnabled) && (root.requestFullscreen || root.webkitRequestFullscreen));
+}
+
+function requestFullscreen(root: FullscreenElementLike) {
+  const request = root.requestFullscreen ?? root.webkitRequestFullscreen;
+  return request?.call(root);
+}
+
+function exitFullscreen(doc: FullscreenDocumentLike) {
+  const exit = doc.exitFullscreen ?? doc.webkitExitFullscreen;
+  return exit?.call(doc);
 }
