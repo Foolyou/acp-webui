@@ -24,8 +24,15 @@ export function defaultPromptTemplateTitle(body: string) {
   return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
 }
 
-export function promptComposerImageSupported(agentConnection: AgentRuntimeStatus["status"] | null) {
-  return agentConnection?.promptCapabilities?.image === true;
+export function promptComposerImageSupported(
+  agentConnection: AgentRuntimeStatus["status"] | null,
+  options: {
+    continuable?: boolean;
+    fallbackConnection?: AgentRuntimeStatus["status"] | null;
+  } = {}
+) {
+  if (agentConnection?.promptCapabilities?.image === true) return true;
+  return options.continuable === true && options.fallbackConnection?.promptCapabilities?.image === true;
 }
 
 export function renderableMessageBlocks(message: Pick<ChatMessage, "content" | "contentBlocks">) {

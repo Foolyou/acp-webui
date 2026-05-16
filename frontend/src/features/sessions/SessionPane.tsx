@@ -83,6 +83,10 @@ export function SessionPane({
   const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
   const agentReady = continuity.continuable || !agentConnection || agentConnection.state === "ready";
   const canSend = continuity.continuable && agentReady;
+  const imagePromptSupported = promptComposerImageSupported(agentConnection, {
+    continuable: continuity.continuable,
+    fallbackConnection: agentStatus?.status ?? null
+  });
   const canRestore = continuity.restorable && !continuity.restoring;
   const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
@@ -372,7 +376,7 @@ export function SessionPane({
         agentId={currentSession.session.agentId}
         agentConnection={agentConnection}
         disabled={!canSend}
-        imagePromptSupported={promptComposerImageSupported(agentConnection)}
+        imagePromptSupported={imagePromptSupported}
         running={running}
         continuityReason={continuity.continuable ? null : continuityReason}
         onRestoreSession={() => onRestoreSession(currentSession.session.id)}

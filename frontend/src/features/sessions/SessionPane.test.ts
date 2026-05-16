@@ -68,4 +68,24 @@ describe("promptComposerImageSupported", () => {
       })
     ).toBe(true);
   });
+
+  test("uses discovered agent image support for continuable sessions when the mode runtime is idle", () => {
+    expect(
+      promptComposerImageSupported(
+        {
+          state: "idle",
+          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          sessionCapabilities: { loadSession: false, resumeSession: false, listSessions: false, closeSession: false }
+        },
+        {
+          continuable: true,
+          fallbackConnection: {
+            state: "ready",
+            promptCapabilities: { image: true, audio: false, embeddedContext: true },
+            sessionCapabilities: { loadSession: true, resumeSession: false, listSessions: true, closeSession: true }
+          }
+        }
+      )
+    ).toBe(true);
+  });
 });
