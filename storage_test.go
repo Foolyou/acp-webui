@@ -8,9 +8,34 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"acp-webui/migrations"
 )
+
+func TestNowStringIsMonotonicWhenClockDoesNotAdvance(t *testing.T) {
+	nowStringMu.Lock()
+	originalClock := nowStringClock
+	originalLast := lastNowStringTime
+	fixed := time.Date(2026, 5, 16, 7, 30, 0, 0, time.UTC)
+	nowStringClock = func() time.Time { return fixed }
+	lastNowStringTime = time.Time{}
+	nowStringMu.Unlock()
+	t.Cleanup(func() {
+		nowStringMu.Lock()
+		nowStringClock = originalClock
+		lastNowStringTime = originalLast
+		nowStringMu.Unlock()
+	})
+
+	first := nowString()
+	second := nowString()
+	third := nowString()
+
+	if !(first < second && second < third) {
+		t.Fatalf("timestamps are not monotonic: %q, %q, %q", first, second, third)
+	}
+}
 
 func testStorage(t *testing.T) *Storage {
 	t.Helper()

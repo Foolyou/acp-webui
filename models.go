@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -380,8 +381,21 @@ func stringPtr(value string) *string {
 	return &value
 }
 
+var (
+	nowStringMu       sync.Mutex
+	nowStringClock    = func() time.Time { return time.Now().UTC() }
+	lastNowStringTime time.Time
+)
+
 func nowString() string {
-	return time.Now().UTC().Format(time.RFC3339Nano)
+	nowStringMu.Lock()
+	defer nowStringMu.Unlock()
+	now := nowStringClock().UTC()
+	if !now.After(lastNowStringTime) {
+		now = lastNowStringTime.Add(time.Nanosecond)
+	}
+	lastNowStringTime = now
+	return now.Format("2006-01-02T15:04:05.000000000Z")
 }
 
 func textBlock(text string) MessageContentBlock {
