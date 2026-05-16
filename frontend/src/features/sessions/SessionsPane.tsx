@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "react-aria-components";
 import {
   normalizeLaunchControlValues,
@@ -7,6 +7,12 @@ import {
   resolveLastSessionProfile,
   writeLastSessionProfile
 } from "../../app/lastSessionProfile";
+import {
+  filterCockpitSessions,
+  pendingApprovalSessionCount,
+  sessionStatusFilterOptions,
+  type SessionStatusFilter
+} from "../../app/sessionCockpit";
 import { isAvailableWorkspaceAgent } from "../../app/workspaceAgentNavigation";
 import { PageHeader } from "../../components/common";
 import type { AgentRuntimeStatus, PermissionModeId, SessionListItem, Workspace } from "../../types";
@@ -32,12 +38,22 @@ export function SessionsPane({
   agents: AgentRuntimeStatus[];
   loading: boolean;
   onCreate: (agentId: string, permissionMode: PermissionModeId, launchControlValues?: Record<string, string>) => void;
-  onSelectAgent?: (agentId: string) => void;
+  onSelectAgent?: (agentId: string | null) => void;
   selectedAgentId?: string | null;
   sessions: SessionListItem[];
   workspace: Workspace | null;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>("all");
+  const [agentFilter, setAgentFilter] = useState<string | null>(selectedAgentId ?? null);
+  useEffect(() => {
+    setAgentFilter(selectedAgentId ?? null);
+  }, [selectedAgentId]);
+  const cockpitSessions = useMemo(
+    () => filterCockpitSessions(sessions, statusFilter, agentFilter),
+    [agentFilter, sessions, statusFilter]
+  );
+  const pendingCount = pendingApprovalSessionCount(sessions);
   const showCreate = sessions.length === 0 || createOpen;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
 
@@ -46,7 +62,12 @@ export function SessionsPane({
       <div className="section-head">
         <PageHeader eyebrow="Sessions" title={workspace?.name ?? "Sessions"} />
         <div className="section-actions">
-          <span className="badge">{loading ? "Loading" : `${sessions.length} sessions`}</span>
+          <span className="badge">{loading ? "Loading" : `${cockpitSessions.length} of ${sessions.length} sessions`}</span>
+          {pendingCount ? (
+            <Button className="secondary small pending-shortcut" onPress={() => setStatusFilter("pending_approval")}>
+              {pendingCount} pending approval
+            </Button>
+          ) : null}
           {sessions.length > 0 ? (
             <Button className="primary small" onPress={() => setCreateOpen((open) => !open)}>
               New session
@@ -54,9 +75,16 @@ export function SessionsPane({
           ) : null}
         </div>
       </div>
-      {onSelectAgent ? (
-        <AgentSessionSwitcher agents={agents} onSelectAgent={onSelectAgent} selectedAgentId={selectedAgentId ?? null} />
-      ) : null}
+      <CockpitFilters
+        agents={agents}
+        agentFilter={agentFilter}
+        onSelectAgent={(agentId) => {
+          setAgentFilter(agentId);
+          onSelectAgent?.(agentId);
+        }}
+        onSelectStatus={setStatusFilter}
+        statusFilter={statusFilter}
+      />
       {showCreate ? (
         <div className={`session-create-panel ${sessions.length > 0 ? "compact" : ""}`}>
           {sessions.length === 0 ? <p className="empty">{emptySessionsText(selectedAgent?.title)}</p> : null}
@@ -68,11 +96,11 @@ export function SessionsPane({
           />
         </div>
       ) : null}
-      {sessions.length === 0 ? (
-        null
+      {sessions.length === 0 ? null : cockpitSessions.length === 0 ? (
+        <p className="empty">No sessions match these filters.</p>
       ) : (
         <div className="item-list">
-          {sessions.map((item) => (
+          {cockpitSessions.map((item) => (
             <SessionListRow item={item} key={item.session.id} />
           ))}
         </div>
@@ -86,39 +114,61 @@ function emptySessionsText(selectedAgentTitle?: string) {
   return `No sessions for ${selectedAgentTitle} in this workspace.`;
 }
 
-function AgentSessionSwitcher({
+function CockpitFilters({
   agents,
+  agentFilter,
   onSelectAgent,
-  selectedAgentId
+  onSelectStatus,
+  statusFilter
 }: {
   agents: AgentRuntimeStatus[];
-  onSelectAgent: (agentId: string) => void;
-  selectedAgentId: string | null;
+  agentFilter: string | null;
+  onSelectAgent: (agentId: string | null) => void;
+  onSelectStatus: (statusFilter: SessionStatusFilter) => void;
+  statusFilter: SessionStatusFilter;
 }) {
-  if (!agents.length) return null;
-
   return (
-    <label className="agent-session-switcher">
-      <span>Agent</span>
-      <select
-        aria-label="Selected agent"
-        onChange={(event) => {
-          const agentId = event.target.value;
-          const nextAgent = agents.find((agent) => agent.id === agentId);
-          if (!nextAgent || !isAvailableWorkspaceAgent(nextAgent) || agentId === selectedAgentId) return;
-          onSelectAgent(agentId);
-        }}
-        value={selectedAgentId ?? ""}
-      >
-        {!selectedAgentId ? <option value="">Select agent</option> : null}
-        {agents.map((agent) => (
-          <option disabled={!isAvailableWorkspaceAgent(agent)} key={agent.id} value={agent.id}>
-            {agent.title}
-            {isAvailableWorkspaceAgent(agent) ? "" : " (unavailable)"}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="cockpit-filters">
+      <label className="agent-session-switcher">
+        <span>Status</span>
+        <select
+          aria-label="Status filter"
+          onChange={(event) => onSelectStatus(event.target.value as SessionStatusFilter)}
+          value={statusFilter}
+        >
+          {sessionStatusFilterOptions.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="agent-session-switcher">
+        <span>Agent</span>
+        <select
+          aria-label="Agent filter"
+          onChange={(event) => {
+            const agentId = event.target.value || null;
+            if (!agentId) {
+              onSelectAgent(null);
+              return;
+            }
+            const nextAgent = agents.find((agent) => agent.id === agentId);
+            if (!nextAgent || !isAvailableWorkspaceAgent(nextAgent) || agentId === agentFilter) return;
+            onSelectAgent(agentId);
+          }}
+          value={agentFilter ?? ""}
+        >
+          <option value="">All agents</option>
+          {agents.map((agent) => (
+            <option disabled={!isAvailableWorkspaceAgent(agent)} key={agent.id} value={agent.id}>
+              {agent.title}
+              {isAvailableWorkspaceAgent(agent) ? "" : " (unavailable)"}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   );
 }
 
@@ -309,13 +359,19 @@ function SessionListRow({ item }: { item: SessionListItem }) {
 
   return (
     <Link
-      className="list-item session-row"
-      params={{ workspaceId: item.workspace.id, agentId: item.session.agentId, sessionId: item.session.id }}
-      to="/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId"
+      className={`list-item session-card ${item.pendingPermission ? "needs-approval" : ""}`}
+      params={{ workspaceId: item.workspace.id, sessionId: item.session.id }}
+      to="/workspaces/$workspaceId/sessions/$sessionId"
     >
-      <span className="item-title">{title}</span>
-      <span>
-        {item.session.agentName} · {sessionStatusLabel(item.session.status)} · {formatRelativeTime(item.lastActivityAt)}
+      <span className="session-card-head">
+        <strong className="item-title">{title}</strong>
+        {activeState ? <strong className={`active-state-badge ${activeState.className}`}>{activeState.label}</strong> : null}
+      </span>
+      <span className="session-card-meta">
+        <strong>{item.session.agentName}</strong>
+        <span>{permissionModeLabel(item.session.permissionMode)}</span>
+        <span>{sessionStatusLabel(item.session.status)}</span>
+        <span>{formatRelativeTime(item.lastActivityAt)}</span>
         <span className="visually-hidden"> {item.session.status}</span>
       </span>
       {nativeMetadata ? <span className="model-summary">{nativeMetadata}</span> : null}
@@ -325,18 +381,15 @@ function SessionListRow({ item }: { item: SessionListItem }) {
       {item.launchControlSummary?.length ? (
         <span className="model-summary">{item.launchControlSummary.map((item) => item.valueLabel).join(" / ")}</span>
       ) : null}
-      <span className="item-path">{item.workspace.path}</span>
       <span className="session-badges">
-        {activeState ? <strong className={`active-state-badge ${activeState.className}`}>{activeState.label}</strong> : null}
-        {item.session.permissionMode !== "manual" ? (
-          <strong className={`permission-mode-badge ${permissionModeClass(item.session.permissionMode)}`}>
-            {permissionModeLabel(item.session.permissionMode)}
-          </strong>
-        ) : null}
+        <strong className={`permission-mode-badge ${permissionModeClass(item.session.permissionMode)}`}>
+          {permissionModeLabel(item.session.permissionMode)}
+        </strong>
         {isYoloSession(item.session) ? <strong className="permission-mode-warning">No approvals / no sandbox</strong> : null}
         <ContinuityBadge item={item} />
+        {item.queuedPromptCount ? <strong>{item.queuedPromptCount} queued</strong> : null}
         {item.pendingPermission ? (
-          <strong>
+          <strong className="pending-approval-badge">
             Approval: {item.pendingPermission.title}
             {item.queuedApprovalCount ? ` (${item.queuedApprovalCount} queued)` : ""}
           </strong>

@@ -21,27 +21,27 @@ export function WorkbenchNav({ onNavigate }: { onNavigate: () => void }) {
           activeProps={{ className: "active" }}
           className="nav-link"
           onClick={onNavigate}
-          to="/agents"
+          to="/workspaces"
         >
-          Agents <span>{state.agents.length}</span>
+          Workspaces <span>{state.workspaces.length}</span>
         </Link>
         <Link
           activeOptions={{ exact: true }}
           activeProps={{ className: "active" }}
           className="nav-link"
           onClick={onNavigate}
-          to="/workspaces"
+          to="/settings"
         >
-          Workspaces <span>{state.workspaces.length}</span>
+          Settings <span>{state.agents.length}</span>
         </Link>
       </div>
       <div className="nav-section">
         <div className="nav-section-heading">
           <span>Workspace shortcuts</span>
-          <small>Jump straight into a workspace session list.</small>
+          <small>Open a workspace cockpit.</small>
         </div>
         {state.workspaces.slice(0, 6).map((workspace) => {
-          const target = workspaceSessionsRouteTarget(workspace.id, state.agents);
+          const target = workspaceSessionsRouteTarget(workspace.id);
           return (
             <Link
               activeOptions={{ exact: true }}

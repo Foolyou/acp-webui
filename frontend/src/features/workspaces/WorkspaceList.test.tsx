@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { AgentRuntimeStatus, Workspace } from "../../types";
+import type { AgentRuntimeStatus, InboxItem, SessionListItem, Workspace } from "../../types";
 
 const mocks = vi.hoisted(() => ({
-  link: vi.fn()
+  link: vi.fn(({ children, className }: { children: string; className?: string }) => (
+    <a className={className}>{children}</a>
+  ))
 }));
 
 function createStorage(): Storage {
@@ -56,6 +58,56 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   };
 }
 
+function sessionItem(overrides: Partial<SessionListItem> = {}): SessionListItem {
+  const baseWorkspace = workspace();
+  return {
+    session: {
+      id: "session-a",
+      workspaceId: baseWorkspace.id,
+      agentId: "agent-default",
+      agentName: "Agent",
+      permissionMode: "manual",
+      status: "idle",
+      createdAt: "2026-04-30T00:00:00Z",
+      updatedAt: "2026-04-30T00:00:00Z"
+    },
+    workspace: baseWorkspace,
+    lastActivityAt: "2026-04-30T00:00:00Z",
+    reviewArtifactCount: 0,
+    hasReviewArtifacts: false,
+    continuity: {
+      state: "live",
+      continuable: true,
+      restorable: false,
+      restoring: false
+    },
+    continuable: true,
+    ...overrides
+  };
+}
+
+function inboxItem(overrides: Partial<InboxItem> = {}): InboxItem {
+  const item = sessionItem({
+    session: { ...sessionItem().session, id: "session-approval", status: "waiting_approval" }
+  });
+  return {
+    session: item.session,
+    workspace: item.workspace,
+    permission: {
+      id: "permission-a",
+      sessionId: item.session.id,
+      acpSessionId: "acp-session",
+      title: "Run command",
+      kind: "tool",
+      status: "pending",
+      toolCall: {},
+      options: [],
+      createdAt: "2026-04-30T00:00:00Z"
+    },
+    ...overrides
+  };
+}
+
 const listActions = {
   busy: false,
   onDeleteWorkspace: vi.fn(),
@@ -67,10 +119,9 @@ describe("WorkspaceList", () => {
     vi.stubGlobal("localStorage", createStorage());
     localStorage.clear();
     mocks.link.mockReset();
-    mocks.link.mockReturnValue(null);
   });
 
-  test("links workspaces to remembered workspace-agent session routes", async () => {
+  test("links workspaces to canonical cockpit routes", async () => {
     localStorage.setItem(
       "workspaceAgentNavigation",
       JSON.stringify({
@@ -86,14 +137,14 @@ describe("WorkspaceList", () => {
 
     expect(mocks.link).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-        params: { workspaceId: "workspace-a", agentId: "agent-remembered" }
+        to: "/workspaces/$workspaceId/sessions",
+        params: { workspaceId: "workspace-a" }
       }),
       undefined
     );
   });
 
-  test("keeps workspace links on the safe legacy route when no agent resolves", async () => {
+  test("keeps workspace links on the canonical route when no agent resolves", async () => {
     const { WorkspaceList } = await import("./WorkspaceList");
 
     renderToStaticMarkup(
@@ -118,5 +169,28 @@ describe("WorkspaceList", () => {
 
     expect(html).toContain("Edit");
     expect(html).toContain("Delete");
+  });
+
+  test("summarizes workspace attention and recent activity", async () => {
+    const { WorkspaceList } = await import("./WorkspaceList");
+
+    const html = renderToStaticMarkup(
+      <WorkspaceList
+        agents={[agent()]}
+        inbox={[inboxItem()]}
+        sessions={[
+          sessionItem({ session: { ...sessionItem().session, id: "session-running", status: "running" } }),
+          sessionItem({ session: { ...sessionItem().session, id: "session-failed", status: "failed" } })
+        ]}
+        workspaces={[workspace()]}
+        {...listActions}
+      />
+    );
+
+    expect(html).toContain("1 pending approvals");
+    expect(html).toContain("1 running");
+    expect(html).toContain("1 failed");
+    expect(html).toContain("Recent");
+    expect(html).toContain("primary small workspace-open-link");
   });
 });

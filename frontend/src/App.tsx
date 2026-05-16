@@ -29,7 +29,6 @@ import {
   forgetWorkspaceAgent,
   readWorkspaceAgentNavigation,
   rememberWorkspaceAgent,
-  resolveWorkspaceAgentId,
   workspaceSessionsRouteTarget
 } from "./app/workspaceAgentNavigation";
 import { api, errorMessage, isUnauthorized } from "./api";
@@ -274,7 +273,7 @@ export function App() {
         sessions,
         workspaces,
         currentWorkspaceId,
-        currentAgentId: current.currentSession?.session.agentId ?? resolveWorkspaceAgentId(currentWorkspaceId, appState.agents),
+        currentAgentId: current.currentSession?.session.agentId ?? null,
         currentAgentIdByWorkspace: rememberedAgents,
         currentSession: current.currentSession,
         initialized: true,
@@ -352,7 +351,9 @@ export function App() {
       }
       const refreshToken = started.token;
       try {
-        const sessions = await api.workspaceAgentSessions(message.workspaceId, message.agentId);
+        const sessions = refreshToken.agentId
+          ? await api.workspaceAgentSessions(refreshToken.workspaceId, refreshToken.agentId)
+          : await api.workspaceSessions(refreshToken.workspaceId);
         setState((current) =>
           canApplyScopedSessionListRefresh(refreshToken, scopedRefreshRef.current, {
             currentWorkspaceId: current.currentWorkspaceId,
@@ -604,14 +605,14 @@ export function App() {
     async (path: string) => {
       await runBusy(async () => {
         const workspace = await api.createWorkspace(path);
-        const target = workspaceSessionsRouteTarget(workspace.id, state.agents);
+        const target = workspaceSessionsRouteTarget(workspace.id);
         localStorage.setItem("currentWorkspaceId", workspace.id);
         localStorage.removeItem("currentSessionId");
         setState((current) => ({
           ...current,
           workspaces: [workspace, ...current.workspaces.filter((item) => item.id !== workspace.id)],
           currentWorkspaceId: workspace.id,
-          currentAgentId: resolveWorkspaceAgentId(workspace.id, current.agents),
+          currentAgentId: null,
           currentSession: null
         }));
         await router.navigate(target);
@@ -928,8 +929,8 @@ export function App() {
       setState((current) => removeSessionFromState(current, deleted));
       localStorage.removeItem("currentSessionId");
       await router.navigate({
-        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-        params: { workspaceId: workspace.id, agentId: session.agentId }
+        to: "/workspaces/$workspaceId/sessions",
+        params: { workspaceId: workspace.id }
       });
     });
   }, [runBusy, state.currentSession?.session, state.currentSession?.workspace]);
@@ -960,7 +961,7 @@ export function App() {
     setState((current) => ({
       ...current,
       currentWorkspaceId: workspaceId,
-      currentAgentId: resolveWorkspaceAgentId(workspaceId, current.agents)
+      currentAgentId: null
     }));
   }, []);
 
@@ -972,7 +973,7 @@ export function App() {
     setState((current) => ({
       ...current,
       currentWorkspaceId: workspaceId,
-      currentAgentId: agentId ?? resolveWorkspaceAgentId(workspaceId, current.agents),
+      currentAgentId: agentId,
       currentAgentIdByWorkspace: navigation.currentAgentIdByWorkspace
     }));
   }, []);

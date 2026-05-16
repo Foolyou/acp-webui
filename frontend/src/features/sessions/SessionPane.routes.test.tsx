@@ -67,7 +67,7 @@ function sessionDetail(): SessionDetail {
 }
 
 describe("SessionPane route links", () => {
-  test("returns to the canonical workspace-agent session list route", async () => {
+  test("returns to the canonical workspace cockpit route", async () => {
     const { SessionPane } = await import("./SessionPane");
 
     renderToStaticMarkup(
@@ -89,10 +89,9 @@ describe("SessionPane route links", () => {
     );
 
     expect(mocks.links).toContainEqual({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+      to: "/workspaces/$workspaceId/sessions",
       params: {
-        workspaceId: "workspace-routed",
-        agentId: "agent-codex"
+        workspaceId: "workspace-routed"
       }
     });
   });

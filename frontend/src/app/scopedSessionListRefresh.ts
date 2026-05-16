@@ -13,7 +13,7 @@ export type ScopedSessionListRefreshState = {
 
 export type ScopedSessionListRefreshToken = {
   workspaceId: string;
-  agentId: string;
+  agentId: string | null;
   scopeVersion: number;
   requestGeneration: number;
 };
@@ -22,7 +22,7 @@ export function shouldRefreshScopedSessionList(event: RealtimeEvent, scope: Work
   return (
     event.type === "session_list_changed" &&
     event.workspaceId === scope.currentWorkspaceId &&
-    event.agentId === scope.currentAgentId
+    (scope.currentAgentId === null || event.agentId === scope.currentAgentId)
   );
 }
 
@@ -63,7 +63,7 @@ export function beginScopedSessionListRefresh(
     state: nextState,
     token: {
       workspaceId: event.workspaceId,
-      agentId: event.agentId,
+      agentId: state.scope.currentAgentId,
       scopeVersion: nextState.scopeVersion,
       requestGeneration: nextState.requestGeneration
     }

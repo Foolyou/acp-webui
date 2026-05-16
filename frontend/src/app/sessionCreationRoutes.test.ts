@@ -37,7 +37,7 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
 }
 
 describe("createSessionRouteTargets", () => {
-  test("uses canonical workspace-agent routes when an agent is provided", () => {
+  test("uses canonical cockpit detail route when an agent is provided", () => {
     const targets = createSessionRouteTargets("workspace-1", "agent-codex", detail());
 
     expect(targets.creating).toEqual({
@@ -45,8 +45,8 @@ describe("createSessionRouteTargets", () => {
       params: { workspaceId: "workspace-1", agentId: "agent-codex" }
     });
     expect(targets.detail).toEqual({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
-      params: { workspaceId: "workspace-1", agentId: "codex", sessionId: "session-1" },
+      to: "/workspaces/$workspaceId/sessions/$sessionId",
+      params: { workspaceId: "workspace-1", sessionId: "session-1" },
       replace: true
     });
   });
@@ -67,7 +67,7 @@ describe("createSessionRouteTargets", () => {
 });
 
 describe("createRestoredSessionDetailRouteTarget", () => {
-  test("uses the restored session's persisted workspace and agent", () => {
+  test("uses the restored session's persisted workspace", () => {
     expect(
       createRestoredSessionDetailRouteTarget(
         detail({
@@ -84,10 +84,9 @@ describe("createRestoredSessionDetailRouteTarget", () => {
         })
       )
     ).toEqual({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      to: "/workspaces/$workspaceId/sessions/$sessionId",
       params: {
         workspaceId: "workspace-returned",
-        agentId: "agent-returned",
         sessionId: "session-restored"
       },
       replace: true

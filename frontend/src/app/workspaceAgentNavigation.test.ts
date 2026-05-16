@@ -5,7 +5,8 @@ import {
   forgetWorkspaceAgent,
   readRememberedWorkspaceAgentId,
   rememberWorkspaceAgent,
-  resolveWorkspaceAgentId
+  resolveWorkspaceAgentId,
+  workspaceSessionsRouteTarget
 } from "./workspaceAgentNavigation";
 
 function storage(): Storage {
@@ -66,6 +67,16 @@ describe("workspace agent navigation helpers", () => {
     expect(resolveWorkspaceAgentId("workspace-a", [agent(), agent({ id: "claude", title: "Claude" })], store)).toBe(
       "claude"
     );
+  });
+
+  test("always targets the canonical workspace cockpit route", () => {
+    const store = storage();
+    rememberWorkspaceAgent("workspace-a", "claude", store);
+
+    expect(workspaceSessionsRouteTarget("workspace-a", [agent({ id: "claude" })], store)).toEqual({
+      to: "/workspaces/$workspaceId/sessions",
+      params: { workspaceId: "workspace-a" }
+    });
   });
 
   test("forgets a workspace agent without clearing other workspaces", () => {

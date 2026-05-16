@@ -52,4 +52,14 @@ describe("canApplySessionListLoad", () => {
 
     expect(canApplySessionListLoad(token, 2, currentScope)).toBe(true);
   });
+
+  test("applies the latest workspace cockpit load without requiring an agent scope", () => {
+    expect(
+      canApplySessionListLoad(
+        { generation: 2, workspaceId: "workspace-1" },
+        2,
+        { currentWorkspaceId: "workspace-1", currentAgentId: null }
+      )
+    ).toBe(true);
+  });
 });

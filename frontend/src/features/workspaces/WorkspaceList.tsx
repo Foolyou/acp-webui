@@ -1,20 +1,26 @@
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "react-aria-components";
+import { summarizeWorkspace, type WorkspaceSummary } from "../../app/workspaceSummary";
 import { workspaceSessionsRouteTarget } from "../../app/workspaceAgentNavigation";
-import type { AgentRuntimeStatus, Workspace } from "../../types";
+import type { AgentRuntimeStatus, InboxItem, SessionListItem, Workspace } from "../../types";
+import { formatRelativeTime } from "../../utils/format";
 
 export function WorkspaceList({
   agents,
   busy,
+  inbox = [],
   onDeleteWorkspace,
   onUpdateWorkspace,
+  sessions = [],
   workspaces
 }: {
   agents: AgentRuntimeStatus[];
   busy: boolean;
+  inbox?: InboxItem[];
   onDeleteWorkspace: (workspaceId: string) => Promise<void>;
   onUpdateWorkspace: (workspaceId: string, update: { name?: string; path?: string }) => Promise<void>;
+  sessions?: SessionListItem[];
   workspaces: Workspace[];
 }) {
   if (workspaces.length === 0) {
@@ -25,7 +31,18 @@ export function WorkspaceList({
     <div className="item-list">
       {workspaces.map((workspace) => {
         const target = workspaceSessionsRouteTarget(workspace.id, agents);
-        return <WorkspaceListItem busy={busy} key={workspace.id} onDeleteWorkspace={onDeleteWorkspace} onUpdateWorkspace={onUpdateWorkspace} target={target} workspace={workspace} />;
+        const summary = summarizeWorkspace(workspace, sessions, inbox);
+        return (
+          <WorkspaceListItem
+            busy={busy}
+            key={workspace.id}
+            onDeleteWorkspace={onDeleteWorkspace}
+            onUpdateWorkspace={onUpdateWorkspace}
+            summary={summary}
+            target={target}
+            workspace={workspace}
+          />
+        );
       })}
     </div>
   );
@@ -35,12 +52,14 @@ function WorkspaceListItem({
   busy,
   onDeleteWorkspace,
   onUpdateWorkspace,
+  summary,
   target,
   workspace
 }: {
   busy: boolean;
   onDeleteWorkspace: (workspaceId: string) => Promise<void>;
   onUpdateWorkspace: (workspaceId: string, update: { name?: string; path?: string }) => Promise<void>;
+  summary: WorkspaceSummary;
   target: ReturnType<typeof workspaceSessionsRouteTarget>;
   workspace: Workspace;
 }) {
@@ -67,6 +86,7 @@ function WorkspaceListItem({
       <div className="workspace-management-summary">
         <span className="item-title">{workspace.name}</span>
         <span className="item-path">{workspace.path}</span>
+        <WorkspaceSummaryBadges summary={summary} />
       </div>
       {editing ? (
         <div className="management-form">
@@ -89,7 +109,7 @@ function WorkspaceListItem({
         </div>
       ) : (
         <div className="section-actions">
-          <Link className="secondary small workspace-open-link" {...target}>
+          <Link className="primary small workspace-open-link" {...target}>
             Open
           </Link>
           <Button className="secondary small" isDisabled={busy} onPress={() => setEditing(true)}>
@@ -101,5 +121,26 @@ function WorkspaceListItem({
         </div>
       )}
     </div>
+  );
+}
+
+function WorkspaceSummaryBadges({ summary }: { summary: WorkspaceSummary }) {
+  const badges = [
+    summary.pendingApprovals ? `${summary.pendingApprovals} pending approvals` : null,
+    summary.running ? `${summary.running} running` : null,
+    summary.failed ? `${summary.failed} failed` : null,
+    summary.recentActivityAt ? `Recent ${formatRelativeTime(summary.recentActivityAt)}` : null
+  ].filter((badge): badge is string => Boolean(badge));
+
+  if (!badges.length) {
+    return <span className="workspace-summary-badges">No recent session activity</span>;
+  }
+
+  return (
+    <span className="workspace-summary-badges">
+      {badges.map((badge) => (
+        <strong key={badge}>{badge}</strong>
+      ))}
+    </span>
   );
 }

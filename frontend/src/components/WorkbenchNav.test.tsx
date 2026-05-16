@@ -123,7 +123,7 @@ describe("WorkbenchNav", () => {
     mocks.appContext = null;
   });
 
-  test("routes workspace shortcuts to remembered workspace-agent session routes", async () => {
+  test("routes workspace shortcuts to canonical cockpit routes", async () => {
     localStorage.setItem(
       "workspaceAgentNavigation",
       JSON.stringify({
@@ -141,14 +141,14 @@ describe("WorkbenchNav", () => {
 
     expect(mocks.link).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-        params: { workspaceId: "workspace-a", agentId: "agent-remembered" }
+        to: "/workspaces/$workspaceId/sessions",
+        params: { workspaceId: "workspace-a" }
       }),
       undefined
     );
   });
 
-  test("keeps workspace shortcuts on the safe legacy route when no agent resolves", async () => {
+  test("keeps workspace shortcuts on the canonical route when no agent resolves", async () => {
     setContext({
       agents: [agent({ enabled: false })],
       workspaces: [workspace()]
@@ -164,5 +164,21 @@ describe("WorkbenchNav", () => {
       }),
       undefined
     );
+  });
+
+  test("does not expose Agents as a primary navigation entry", async () => {
+    setContext({
+      agents: [agent()],
+      inbox: [],
+      workspaces: [workspace()]
+    });
+    const { WorkbenchNav } = await import("./WorkbenchNav");
+
+    renderToStaticMarkup(<WorkbenchNav onNavigate={vi.fn()} />);
+
+    expect(mocks.link).toHaveBeenCalledWith(expect.objectContaining({ to: "/workspaces" }), undefined);
+    expect(mocks.link).toHaveBeenCalledWith(expect.objectContaining({ to: "/inbox" }), undefined);
+    expect(mocks.link).toHaveBeenCalledWith(expect.objectContaining({ to: "/settings" }), undefined);
+    expect(mocks.link).not.toHaveBeenCalledWith(expect.objectContaining({ to: "/agents" }), undefined);
   });
 });

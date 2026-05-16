@@ -411,6 +411,12 @@ pre {
   text-transform: uppercase;
 }
 
+.cockpit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .agent-session-switcher select {
   min-width: min(100%, 13rem);
   max-width: 100%;
@@ -893,8 +899,21 @@ pre {
 
 .workspace-management-summary {
   display: grid;
-  gap: 0.15rem;
+  gap: 0.28rem;
   min-width: 0;
+}
+
+.workspace-summary-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+}
+
+.workspace-summary-badges strong {
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
 }
 
 .workspace-open-link {
@@ -1166,6 +1185,34 @@ pre {
   margin-top: 0.2rem;
 }
 
+.session-card {
+  gap: 0.32rem;
+}
+
+.session-card.needs-approval {
+  border-color: rgba(154, 118, 30, 0.45);
+  background: var(--color-warning-soft);
+}
+
+.session-card-head,
+.session-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.5rem;
+  min-width: 0;
+}
+
+.session-card-head {
+  justify-content: space-between;
+}
+
+.session-card-meta strong,
+.session-card-meta span {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
 .session-badges strong,
 .badge,
 .permission-mode-badge,
@@ -1190,6 +1237,10 @@ pre {
 .active-state-badge.stopping,
 .active-state-badge.waiting-approval {
   color: var(--color-warning);
+}
+
+.pending-approval-badge {
+  color: var(--color-warning) !important;
 }
 
 .permission-mode-badge {

@@ -8,6 +8,7 @@ import {
   InboxRoute,
   IndexRoute,
   NewSessionRoute,
+  SettingsRoute,
   SessionDetailRoute,
   WorkspaceAgentSessionDetailRoute,
   WorkspaceAgentSessionsRoute,
@@ -64,6 +65,12 @@ const agentsRoute = createRoute({
   component: AgentsRoute
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: SettingsRoute
+});
+
 const workspacesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workspaces",
@@ -110,6 +117,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   inboxRoute,
   agentsRoute,
+  settingsRoute,
   workspacesRoute,
   workspaceSessionsRoute,
   newSessionRoute,

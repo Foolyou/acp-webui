@@ -25,6 +25,15 @@ describe("shouldRefreshScopedSessionList", () => {
     ).toBe(true);
   });
 
+  test("refreshes any agent change for the current workspace cockpit scope", () => {
+    expect(
+      shouldRefreshScopedSessionList(event, {
+        currentWorkspaceId: "workspace-1",
+        currentAgentId: null
+      })
+    ).toBe(true);
+  });
+
   test("ignores session list changes for other workspaces", () => {
     expect(
       shouldRefreshScopedSessionList(event, {
@@ -57,6 +66,20 @@ describe("shouldRefreshScopedSessionList", () => {
 });
 
 describe("scoped session list refresh generation", () => {
+  test("creates a workspace cockpit refresh token when no agent filter is active", () => {
+    const state = createScopedSessionListRefreshState({
+      currentWorkspaceId: "workspace-1",
+      currentAgentId: null
+    });
+
+    const started = beginScopedSessionListRefresh(state, event);
+
+    expect(started.token).toMatchObject({
+      workspaceId: "workspace-1",
+      agentId: null
+    });
+  });
+
   test("allows only the latest matching refresh request to apply", () => {
     let state = createScopedSessionListRefreshState({
       currentWorkspaceId: "workspace-1",

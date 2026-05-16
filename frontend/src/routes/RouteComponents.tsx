@@ -26,7 +26,7 @@ export function IndexRoute() {
   useEffect(() => {
     if (!state.initialized) return;
     if (state.currentWorkspaceId) {
-      const target = workspaceSessionsRouteTarget(state.currentWorkspaceId, state.agents);
+      const target = workspaceSessionsRouteTarget(state.currentWorkspaceId);
       void navigate({
         ...target,
         replace: true
@@ -49,6 +49,14 @@ export function AgentsRoute() {
   return <AgentsStatusPane agents={state.agents} socketState={state.socketState} />;
 }
 
+export function SettingsRoute() {
+  return (
+    <div className="page-surface">
+      <PageHeader eyebrow="Settings" title="Settings" description="Controller settings are managed from this route." />
+    </div>
+  );
+}
+
 export function WorkspacesRoute() {
   const { actions, state } = useAppContext();
   return (
@@ -62,8 +70,10 @@ export function WorkspacesRoute() {
       <WorkspaceList
         agents={state.agents}
         busy={state.busy}
+        inbox={state.inbox}
         onDeleteWorkspace={actions.deleteWorkspace}
         onUpdateWorkspace={actions.updateWorkspace}
+        sessions={state.sessions}
         workspaces={state.workspaces}
       />
     </div>
@@ -74,23 +84,13 @@ export function WorkspaceSessionsRoute() {
   const { workspaceId } = workspaceSessionsRoute.useParams();
   const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { createSession, loadSessionList, setCurrentWorkspace, setCurrentWorkspaceAgent } = actions;
+  const { createSession, loadSessionList, setCurrentWorkspace } = actions;
   const workspace = state.workspaces.find((item) => item.id === workspaceId) ?? null;
-  const selectedAgentId = resolveWorkspaceAgentId(workspaceId, state.agents);
 
   useEffect(() => {
-    if (selectedAgentId) {
-      setCurrentWorkspaceAgent(workspaceId, selectedAgentId);
-      void navigate({
-        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-        params: { workspaceId, agentId: selectedAgentId },
-        replace: true
-      });
-      return;
-    }
     setCurrentWorkspace(workspaceId);
     void loadSessionList(workspaceId);
-  }, [loadSessionList, navigate, selectedAgentId, setCurrentWorkspace, setCurrentWorkspaceAgent, workspaceId]);
+  }, [loadSessionList, setCurrentWorkspace, workspaceId]);
 
   return (
     <SessionsPane
@@ -100,12 +100,19 @@ export function WorkspaceSessionsRoute() {
         createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
       onSelectAgent={(agentId) =>
-        void navigate({
-          to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-          params: { workspaceId, agentId }
-        })
+        void navigate(
+          agentId
+            ? {
+                to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+                params: { workspaceId, agentId }
+              }
+            : {
+                to: "/workspaces/$workspaceId/sessions",
+                params: { workspaceId }
+              }
+        )
       }
-      selectedAgentId={selectedAgentId}
+      selectedAgentId={null}
       sessions={state.sessions}
       workspace={workspace}
     />
@@ -121,7 +128,7 @@ export function WorkspaceAgentSessionsRoute() {
 
   useEffect(() => {
     setCurrentWorkspaceAgent(workspaceId, agentId);
-    void loadSessionList(workspaceId, agentId);
+    void loadSessionList(workspaceId);
   }, [agentId, loadSessionList, setCurrentWorkspaceAgent, workspaceId]);
 
   return (
@@ -132,10 +139,17 @@ export function WorkspaceAgentSessionsRoute() {
         createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
       onSelectAgent={(selectedAgentId) =>
-        void navigate({
-          to: "/workspaces/$workspaceId/agents/$agentId/sessions",
-          params: { workspaceId, agentId: selectedAgentId }
-        })
+        void navigate(
+          selectedAgentId
+            ? {
+                to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+                params: { workspaceId, agentId: selectedAgentId }
+              }
+            : {
+                to: "/workspaces/$workspaceId/sessions",
+                params: { workspaceId }
+              }
+        )
       }
       selectedAgentId={agentId}
       sessions={state.sessions}
@@ -204,9 +218,8 @@ export function NewWorkspaceAgentSessionRoute() {
 
 export function SessionDetailRoute() {
   const { sessionId, workspaceId } = sessionDetailRoute.useParams();
-  const navigate = useNavigate();
   const { actions, state } = useAppContext();
-  const { loadSession, setCurrentWorkspace, setCurrentWorkspaceAgent } = actions;
+  const { loadSession, setCurrentWorkspace } = actions;
 
   useEffect(() => {
     if (state.currentSession?.session.id !== sessionId) {
@@ -214,34 +227,37 @@ export function SessionDetailRoute() {
       void loadSession(sessionId);
       return;
     }
-    const actualWorkspaceId = state.currentSession.workspace.id;
-    const actualAgentId = state.currentSession.session.agentId;
-    setCurrentWorkspaceAgent(actualWorkspaceId, actualAgentId);
-    void navigate({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
-      params: {
-        workspaceId: actualWorkspaceId,
-        agentId: actualAgentId,
-        sessionId
-      },
-      replace: true
-    });
   }, [
     loadSession,
-    navigate,
     sessionId,
     setCurrentWorkspace,
-    setCurrentWorkspaceAgent,
-    state.currentSession?.session.agentId,
     state.currentSession?.session.id,
-    state.currentSession?.workspace.id,
     workspaceId
   ]);
 
   if (!state.currentSession || state.currentSession.session.id !== sessionId) {
     return <LoadingPanel text="Loading session" />;
   }
-  return <LoadingPanel text="Loading session" />;
+  const agentStatus =
+    state.agents.find((agent) => agent.id === state.currentSession?.session.agentId) ?? null;
+
+  return (
+    <SessionPane
+      agentStatus={agentStatus}
+      busy={state.busy}
+      currentSession={state.currentSession}
+      liveAssistant={state.liveAssistant}
+      onOpenDiffFallback={actions.openDiffFallback}
+      onOpenReviewArtifact={actions.openReviewArtifact}
+      onRestoreSession={actions.restoreSession}
+      onSendPrompt={actions.sendPrompt}
+      onSetSessionConfigOption={actions.setSessionConfigOption}
+      onStopSession={actions.cancelApproval}
+      onDeleteSession={actions.deleteCurrentSession}
+      onUpdateSessionTitle={actions.updateCurrentSessionTitle}
+      transcriptionAvailable={state.transcription.available}
+    />
+  );
 }
 
 export function WorkspaceAgentSessionDetailRoute() {

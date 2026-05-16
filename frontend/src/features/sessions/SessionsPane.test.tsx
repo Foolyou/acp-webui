@@ -150,7 +150,7 @@ describe("SessionsPane", () => {
     expect(html).not.toContain("item-title\">Workspace Alpha");
   });
 
-  test("links session rows to canonical workspace-agent detail routes", async () => {
+  test("links session cards to canonical workspace detail routes", async () => {
     const { SessionsPane } = await import("./SessionsPane");
 
     renderToStaticMarkup(
@@ -175,10 +175,9 @@ describe("SessionsPane", () => {
     );
 
     expect(mocks.links).toContainEqual({
-      to: "/workspaces/$workspaceId/agents/$agentId/sessions/$sessionId",
+      to: "/workspaces/$workspaceId/sessions/$sessionId",
       params: {
         workspaceId: "workspace-routed",
-        agentId: "agent-codex",
         sessionId: "session-imported"
       }
     });
@@ -276,6 +275,7 @@ describe("SessionsPane", () => {
     expect(html).toContain("active-state-badge waiting-approval");
     expect(html).toContain("Waiting approval");
     expect(html).toContain("Approval: Run command");
+    expect(html).toContain("Manual");
     expect(html).not.toContain("active-state-badge idle");
   });
 
@@ -302,9 +302,55 @@ describe("SessionsPane", () => {
       />
     );
 
-    expect(html).toContain("Default Agent");
-    expect(html).not.toContain("Other Agent");
     expect(html).not.toContain("Last profile");
+  });
+
+  test("shows cockpit filters and compact session card fields", async () => {
+    const { SessionsPane } = await import("./SessionsPane");
+
+    const html = renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent({ id: "agent-codex", title: "Codex" }), agent({ id: "agent-claude", title: "Claude" })]}
+        loading={false}
+        onCreate={vi.fn()}
+        onSelectAgent={vi.fn()}
+        selectedAgentId={null}
+        sessions={[
+          sessionItem({
+            session: {
+              ...sessionItem().session,
+              id: "session-card",
+              agentId: "agent-codex",
+              agentName: "Codex",
+              permissionMode: "full_auto",
+              status: "waiting_approval",
+              title: "Review plan"
+            },
+            pendingPermission: {
+              id: "permission-a",
+              title: "Run command",
+              kind: "tool",
+              createdAt: "2026-04-30T00:00:00Z"
+            },
+            queuedPromptCount: 2,
+            hasReviewArtifacts: true,
+            reviewArtifactCount: 1
+          })
+        ]}
+        workspace={workspace()}
+      />
+    );
+
+    expect(html).toContain("Status");
+    expect(html).toContain("All agents");
+    expect(html).toContain("Pending approval");
+    expect(html).toContain("Review plan");
+    expect(html).toContain("Codex");
+    expect(html).toContain("Full auto");
+    expect(html).toContain("2 queued");
+    expect(html).toContain("1 review items");
+    expect(html).not.toContain("Approve");
+    expect(html).not.toContain("Reject");
   });
 
   test("creates with the selected agent when create controls are scoped", async () => {
