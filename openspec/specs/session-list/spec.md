@@ -1,14 +1,14 @@
 # session-list Specification
 
 ## Purpose
-Define the mobile Sessions surface, including the backend session list projection, row metadata, navigation to Session Detail, realtime freshness, and loading or empty states.
+Define the mobile workspace cockpit session surface, including backend session list projections, card metadata, navigation to Session Detail, realtime freshness, filtering, and loading or empty states.
 ## Requirements
 ### Requirement: Backend provides session list projection
-The system SHALL provide persisted session list projections suitable for workspace-agent-scoped navigation.
+The system SHALL provide persisted session list projections suitable for workspace-scoped cockpit navigation and compatibility agent filtering.
 
 #### Scenario: Browser loads session list
-- **WHEN** the browser requests the session list for a workspace and agent
-- **THEN** the backend SHALL return persisted sessions for that workspace and agent ordered by most recent activity first
+- **WHEN** the browser requests the session list for a workspace
+- **THEN** the backend SHALL return persisted sessions for that workspace ordered by most recent activity first
 - **AND** each row SHALL include the session id, workspace id, workspace name, agent id, agent name, title when available, permission mode, current status, creation timestamp, last activity timestamp, native updated timestamp when available, continuity metadata, pending approval indicator, queued approval count, and review artifact availability
 
 #### Scenario: Session has non-manual permission mode
@@ -32,7 +32,7 @@ The system SHALL provide persisted session list projections suitable for workspa
 - **AND** it SHALL include a compact reason suitable for the browser to present in Session Detail
 
 ### Requirement: User can open session from Sessions list
-The system SHALL allow the user to navigate from a workspace-agent-scoped session list row to the corresponding Session Detail route.
+The system SHALL allow the user to navigate from a workspace-scoped session list row to the corresponding Session Detail route.
 
 #### Scenario: User selects a session
 - **WHEN** the user selects a session from the Sessions list
@@ -65,20 +65,20 @@ The system SHALL keep the visible Sessions list current as session status, appro
 - **THEN** the browser SHALL update the affected row to indicate review evidence is available
 
 ### Requirement: Sessions list supports empty and loading states
-The Sessions surface SHALL provide clear loading, creation, agent selection, and empty states aligned to the routed workbench.
+The Sessions surface SHALL provide clear loading, creation, filtering, and empty states aligned to the routed workspace cockpit.
 
-#### Scenario: No sessions exist for selected agent
-- **WHEN** the browser loads the Sessions list for a workspace and selected agent and no sessions exist for that scope
-- **THEN** the browser SHALL show an empty state for that selected agent
-- **AND** it SHALL provide a path to start a new session in that workspace with the selected agent
+#### Scenario: No sessions match active filters
+- **WHEN** the browser loads the Sessions list for a workspace and no sessions match the active filters
+- **THEN** the browser SHALL show an empty state for that workspace or filter scope
+- **AND** it SHALL provide a path to start a new session in that workspace
 
 #### Scenario: Sessions are loading
-- **WHEN** the browser is fetching the Sessions list for a workspace and agent
+- **WHEN** the browser is fetching the Sessions list for a workspace and active filters
 - **THEN** the browser SHALL show a non-blocking loading state that does not obscure existing application status indicators
 
 #### Scenario: Session is being created
 - **WHEN** the user starts creating a new session from the Sessions surface
-- **THEN** the browser SHALL transition to an optimistic chat creation state that identifies the selected agent
+- **THEN** the browser SHALL transition to an optimistic creation state scoped to the selected workspace and launch profile
 - **AND** the Sessions surface SHALL not add a permanent row until the backend returns a real session
 
 ### Requirement: Session list represents restoration state
@@ -160,36 +160,36 @@ The Sessions surface SHALL present session creation controls and session rows wi
 - **THEN** it SHALL keep available modes visually comparable and selectable where allowed
 - **AND** unavailable modes SHALL show readable status without breaking row or grid alignment
 
-### Requirement: Sessions surface is scoped by selected agent
-The Sessions surface SHALL render and operate on sessions for one selected agent within the current workspace.
+### Requirement: Sessions surface supports agent filtering
+The Sessions surface SHALL render all workspace sessions by default and SHALL allow the user to narrow the visible list by agent.
 
 #### Scenario: User views workspace sessions
 - **WHEN** the workspace Sessions surface is visible
-- **THEN** it SHALL show the selected agent as part of the session-list context
-- **AND** it SHALL list only sessions whose persisted workspace id and agent id match that context
+- **THEN** it SHALL show all sessions whose persisted workspace id matches that context
+- **AND** it SHALL show each session's owning agent on the session card
 
-#### Scenario: User changes selected agent
-- **WHEN** the user changes the selected agent
-- **THEN** the browser SHALL request the session list for the new workspace-agent scope
-- **AND** rows from the previously selected agent SHALL no longer be shown in the active list
+#### Scenario: User changes agent filter
+- **WHEN** the user changes the agent filter
+- **THEN** the browser SHALL narrow the visible workspace session list to matching sessions
+- **AND** rows from other agents SHALL remain reachable by changing the filter
 
 #### Scenario: Existing sessions belong to other agents
-- **WHEN** sessions exist for the workspace under agents other than the selected agent
-- **THEN** the active Sessions surface SHALL keep those sessions hidden
-- **AND** it SHALL make them reachable by switching to their owning agent
+- **WHEN** sessions exist for the workspace under multiple agents
+- **THEN** the default Sessions surface SHALL keep those sessions visible together
+- **AND** it SHALL make each agent subset reachable through the agent filter
 
 ### Requirement: Session list refreshes after native import
-The system SHALL keep the visible workspace-agent Sessions list current when native ACP sessions are imported or updated.
+The system SHALL keep the visible workspace Sessions list current when native ACP sessions are imported or updated.
 
 #### Scenario: Native sessions are imported for visible scope
-- **WHEN** the backend imports native sessions for the workspace and selected agent currently visible in the browser
+- **WHEN** the backend imports native sessions for the workspace currently visible in the browser
 - **THEN** the browser SHALL refresh or patch the visible session list
 - **AND** it SHALL show newly imported sessions without requiring a page reload
 
 #### Scenario: Native sessions are imported for another agent
-- **WHEN** the backend imports native sessions for a different agent than the one currently selected
-- **THEN** the browser SHALL keep the active list scoped to the selected agent
-- **AND** it SHALL NOT show the other agent's sessions until the user switches agents
+- **WHEN** the backend imports native sessions for an agent hidden by the current agent filter
+- **THEN** the browser SHALL preserve the active filter
+- **AND** it SHALL make the imported sessions visible when the user changes back to All agents or the matching agent filter
 
 ### Requirement: Session list highlights active sessions
 The Sessions list SHALL make actively running session rows visually distinguishable from idle session rows.
@@ -211,3 +211,56 @@ The Sessions list SHALL make actively running session rows visually distinguisha
 - **WHEN** a listed session is idle and has no active turn or pending permission
 - **THEN** the session row SHALL NOT show an active running-state indicator
 
+### Requirement: Workspace cockpit lists all workspace sessions by default
+The workspace cockpit SHALL list all sessions in the selected workspace across all configured agents by default.
+
+#### Scenario: Default cockpit filters
+- **WHEN** the user enters a workspace cockpit
+- **THEN** the status filter SHALL be All
+- **AND** the agent filter SHALL be All agents
+- **AND** sessions SHALL be sorted by latest activity descending
+
+#### Scenario: Pending approval shortcut
+- **WHEN** the workspace has sessions waiting for permission approval
+- **THEN** the cockpit SHALL show a pending approval session count
+- **AND** activating the attention shortcut SHALL apply the Pending approval status filter
+
+### Requirement: Workspace cockpit provides composable filters
+The workspace cockpit SHALL provide single-select status and agent filters that compose over the same workspace session list.
+
+#### Scenario: Status filter narrows sessions
+- **WHEN** the user selects Pending approval, Running, Failed, or View only / restore needed
+- **THEN** the cockpit SHALL show only sessions matching that status group
+- **AND** the agent filter SHALL continue to narrow the same result set
+
+#### Scenario: Agent filter narrows sessions
+- **WHEN** the user selects Codex, Claude, OpenCode, or Custom agents
+- **THEN** the cockpit SHALL show only sessions whose owning agent matches that group
+- **AND** agent selection SHALL NOT become separate primary navigation
+
+### Requirement: Session cards are compact control summaries
+Workspace cockpit session cards SHALL show compact, mobile-readable control summaries without exposing approval actions on the card.
+
+#### Scenario: Session card core fields
+- **WHEN** the cockpit renders a session card
+- **THEN** the card SHALL show owning agent, permission mode, current status, prompt-derived title or summary, and last activity time
+- **AND** permission mode SHALL be visible even for manual sessions
+
+#### Scenario: Session card secondary badges
+- **WHEN** a session has pending approval, queued prompts, review evidence, or view-only/restore state
+- **THEN** the card MAY show compact secondary badges for those states
+- **AND** pending approval SHALL be visually prominent
+- **AND** approve or reject actions SHALL require opening Session Detail
+
+### Requirement: Session cards expose secondary queue and review badges
+Workspace cockpit session cards SHALL treat queued prompt and review evidence availability as secondary status without making those states workspace attention.
+
+#### Scenario: Queued prompt badge
+- **WHEN** a session has queued follow-up prompts
+- **THEN** its workspace cockpit card MAY show the queued prompt count as secondary status
+- **AND** the queued prompt count SHALL NOT contribute to the pending approval attention count
+
+#### Scenario: Review evidence badge
+- **WHEN** a session has review artifacts
+- **THEN** its workspace cockpit card MAY show a lightweight review evidence badge
+- **AND** detailed inspection SHALL require opening Session Detail or the review viewer

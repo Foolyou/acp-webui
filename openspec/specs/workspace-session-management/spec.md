@@ -2,7 +2,6 @@
 
 ## Purpose
 Define authenticated management behavior for persisted workspace records and locally persisted session records.
-
 ## Requirements
 ### Requirement: Backend manages workspace records
 The system SHALL provide authenticated backend APIs to read, update, and delete persisted workspace records without changing existing workspace creation semantics.
@@ -110,3 +109,16 @@ The system SHALL keep visible workspace, Session Detail, and workspace-agent ses
 - **WHEN** a workspace is deleted while the browser is on a route scoped to that workspace
 - **THEN** the browser SHALL move to a valid Workspaces or replacement workspace route
 - **AND** it SHALL clear stale local selection for the deleted workspace
+
+### Requirement: Workspace list presents project cards with lightweight state
+The workspace list SHALL present workspaces as project entries and SHALL include lightweight state summaries that help the user choose where to continue work.
+
+#### Scenario: Workspace card summarizes attention
+- **WHEN** a workspace has sessions or inbox items represented in the browser projection
+- **THEN** its workspace card SHALL show available counts for pending approvals, running sessions, failed sessions, and recent activity
+- **AND** entering the workspace SHALL remain the primary action
+
+#### Scenario: Workspace management actions are secondary
+- **WHEN** the user views a workspace card
+- **THEN** create, edit, and delete management actions SHALL remain available
+- **AND** they SHALL NOT dominate the project-list presentation over opening the workspace

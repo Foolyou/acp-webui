@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Session cards expose secondary queue and review badges
-Workspace cockpit session cards MAY expose queued prompt and review evidence availability as secondary status without making those states workspace attention.
+Workspace cockpit session cards SHALL treat queued prompt and review evidence availability as secondary status without making those states workspace attention.
 
 #### Scenario: Queued prompt badge
 - **WHEN** a session has queued follow-up prompts
