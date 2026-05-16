@@ -40,3 +40,10 @@
 - Hard rule: never commit user-specific hardcoded paths, usernames, home directories, workspace names, local IP addresses, secrets, or machine-specific absolute paths anywhere in code, tests, scripts, specs, docs, or repository guidance.
 - Use configuration, environment variables, CLI arguments, temporary directories, fixtures, or neutral placeholders instead.
 - Keep examples generic, such as `<project-path>` or `custom-state`; do not use real home-directory paths or workspace paths copied from a developer machine.
+
+## Private Local and Network Information
+
+- Hard rule: never commit real local machine information, Tailscale information, or developer personal identifiers anywhere in code, tests, scripts, specs, docs, repository guidance, or generated artifacts.
+- Treat the following as sensitive even in tests and examples: local or LAN IP addresses, Tailscale IPs, MagicDNS names, tailnet names, hostnames, device names, usernames, email addresses, home-directory paths, workspace paths, cookies, pairing tokens, logs, screenshots, database files, and command output copied from a developer machine.
+- Use neutral placeholders and reserved example values instead, such as `127.0.0.1` for loopback-only examples, `192.0.2.10` for documentation-only IP examples, `acp-webui.tailnet.test` for Tailscale-style host examples, `<user>`, `<host>`, `<tailnet-name>`, and `<project-path>`.
+- Before committing, search staged changes for local paths, real IPs, Tailscale domains, usernames, email addresses, tokens, logs, screenshots, and database artifacts. If any were committed or pushed, stop and ask before rewriting history or force-pushing.
