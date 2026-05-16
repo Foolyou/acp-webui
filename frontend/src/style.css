@@ -943,11 +943,13 @@ pre {
 }
 
 .shell-controls {
-  display: grid;
+  display: flex;
   align-items: end;
+  gap: 0.45rem;
 }
 
-.fullscreen-toggle {
+.fullscreen-toggle,
+.notification-toggle {
   position: relative;
   display: grid;
   width: 2.5rem;
@@ -957,17 +959,20 @@ pre {
   place-items: center;
 }
 
-.fullscreen-toggle.active {
+.fullscreen-toggle.active,
+.notification-toggle.active {
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }
 
-.fullscreen-toggle[data-disabled] {
+.fullscreen-toggle[data-disabled],
+.notification-toggle[data-disabled] {
   opacity: 0.58;
 }
 
-.fullscreen-toggle::after {
+.fullscreen-toggle::after,
+.notification-toggle::after {
   position: absolute;
   right: 0;
   bottom: calc(100% + 0.4rem);
@@ -992,9 +997,40 @@ pre {
 }
 
 .fullscreen-toggle:hover::after,
-.fullscreen-toggle:focus-visible::after {
+.fullscreen-toggle:focus-visible::after,
+.notification-toggle:hover::after,
+.notification-toggle:focus-visible::after {
   transform: translateY(0);
   opacity: 1;
+}
+
+.notification-bell {
+  position: relative;
+  width: 0.82rem;
+  height: 0.9rem;
+  border: 2px solid currentColor;
+  border-bottom: 0;
+  border-radius: 999px 999px 0 0;
+}
+
+.notification-bell::after {
+  position: absolute;
+  right: -0.2rem;
+  bottom: -0.12rem;
+  left: -0.2rem;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
+.notification-clapper {
+  position: absolute;
+  bottom: 0.72rem;
+  width: 0.26rem;
+  height: 0.26rem;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .fullscreen-corner {
@@ -2351,7 +2387,8 @@ pre {
     min-height: 0;
   }
 
-  .fullscreen-toggle::after {
+  .fullscreen-toggle::after,
+  .notification-toggle::after {
     top: calc(100% + 0.4rem);
     right: 0;
     bottom: auto;

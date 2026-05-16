@@ -6,6 +6,7 @@ import { ApprovalSheet } from "../features/approvals/ApprovalSheet";
 import { ReviewOverlay } from "../features/reviews/ReviewOverlay";
 import { BrandBlock } from "./common";
 import { FullscreenButton } from "./FullscreenButton";
+import { NotificationButton } from "./NotificationButton";
 import { StatusDot } from "./status";
 import { WorkbenchNav } from "./WorkbenchNav";
 
@@ -22,6 +23,7 @@ export function WorkbenchShell() {
         <BrandBlock />
         <WorkbenchNav onNavigate={() => setMobileNavOpen(false)} />
         <div className="shell-controls">
+          <NotificationButton />
           <FullscreenButton />
         </div>
       </aside>
@@ -42,6 +44,7 @@ export function WorkbenchShell() {
               <StatusDot stateText={mobileStatus} />
               <span>{mobileStatus}</span>
             </div>
+            <NotificationButton />
             <FullscreenButton />
           </div>
         </header>

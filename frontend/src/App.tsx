@@ -45,6 +45,7 @@ import type {
   RealtimeEvent,
   SessionDetail
 } from "./types";
+import { notifyForRealtimeTransition } from "./utils/browserNotifications";
 import { fallbackPermissionModes } from "./utils/permissionMode";
 
 function clearSensitiveState(current: UiState, auth: AuthStatus | null): UiState {
@@ -186,6 +187,7 @@ export function App() {
   const [state, setState] = useState<UiState>(initialState);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const currentSessionIdRef = useRef<string | null>(null);
+  const notifiedTurnCompletionsRef = useRef(new Set<string>());
   const sessionListLoadGenerationRef = useRef(0);
   const scopedRefreshRef = useRef(createScopedSessionListRefreshState({
     currentWorkspaceId: initialState.currentWorkspaceId,
@@ -377,9 +379,8 @@ export function App() {
           void refreshScopedSessionList(message);
           return;
         }
-        setState((current) => ({
-          ...current,
-          ...applyRealtimeEvent(
+        setState((current) => {
+          const snapshot = applyRealtimeEvent(
             {
               currentSession: current.currentSession,
               inbox: current.inbox,
@@ -387,9 +388,19 @@ export function App() {
               error: current.error
             },
             message
-          ),
-          sessions: applySessionListRealtime(current.sessions, message, current.currentSession)
-        }));
+          );
+          notifyForRealtimeTransition(
+            current.currentSession,
+            snapshot.currentSession,
+            message,
+            notifiedTurnCompletionsRef.current
+          );
+          return {
+            ...current,
+            ...snapshot,
+            sessions: applySessionListRealtime(current.sessions, message, current.currentSession)
+          };
+        });
       });
 
       nextSocket.addEventListener("close", () => {
