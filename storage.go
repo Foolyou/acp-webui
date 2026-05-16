@@ -1461,6 +1461,10 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		SELECT s.id, s.workspace_id, s.agent_id, s.agent_name, s.permission_mode, s.launch_profile_id, s.launch_profile_key,
 		       s.title, s.native_title, s.native_updated_at, s.acp_session_id, s.external_session_id, s.status,
 		       s.import_source, s.imported_at, s.created_at, s.updated_at,
+		       CASE
+		           WHEN s.native_updated_at IS NOT NULL AND s.native_updated_at > s.updated_at THEN s.native_updated_at
+		           ELSE s.updated_at
+		       END AS last_activity_at,
 		       w.id, w.name, w.path, w.created_at
 		FROM sessions s JOIN workspaces w ON w.id = s.workspace_id`
 	args := []any{}
@@ -1476,23 +1480,26 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
-	query += ` ORDER BY s.updated_at DESC`
+	query += ` ORDER BY last_activity_at DESC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	type sessionListBase struct {
-		session   Session
-		workspace Workspace
+		session        Session
+		workspace      Workspace
+		lastActivityAt string
 	}
 	var bases []sessionListBase
 	for rows.Next() {
 		var session Session
 		var workspace Workspace
 		var title, nativeTitle, nativeUpdatedAt, acpID, externalID, importSource, importedAt sql.NullString
+		var lastActivityAt string
 		if err := rows.Scan(
 			&session.ID, &session.WorkspaceID, &session.AgentID, &session.AgentName, &session.PermissionMode, &session.LaunchProfileID, &session.LaunchProfileKey,
 			&title, &nativeTitle, &nativeUpdatedAt, &acpID, &externalID, &session.Status, &importSource, &importedAt, &session.CreatedAt, &session.UpdatedAt,
+			&lastActivityAt,
 			&workspace.ID, &workspace.Name, &workspace.Path, &workspace.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1520,7 +1527,7 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		if importedAt.Valid {
 			session.ImportedAt = &importedAt.String
 		}
-		bases = append(bases, sessionListBase{session: session, workspace: workspace})
+		bases = append(bases, sessionListBase{session: session, workspace: workspace, lastActivityAt: lastActivityAt})
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -1551,7 +1558,7 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		items = append(items, SessionListItem{
 			Session:              session,
 			Workspace:            workspace,
-			LastActivityAt:       session.UpdatedAt,
+			LastActivityAt:       base.lastActivityAt,
 			CurrentModel:         configState.CurrentModel,
 			LaunchControlSummary: s.launchControlSummary(ctx, session.ID),
 			QueuedPromptCount:    queuedCount,

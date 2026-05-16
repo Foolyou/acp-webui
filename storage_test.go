@@ -261,7 +261,7 @@ func TestStorageImportNativeSessionReportsMaterialProjectionChanges(t *testing.T
 	}
 }
 
-func TestStorageReimportPreservesLocalActivity(t *testing.T) {
+func TestStorageReimportPreservesLocalUpdatedAtAndProjectsNativeActivity(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
 	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
@@ -283,11 +283,15 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalUpdatedAt := imported.UpdatedAt
 	originalImportedAt := "2026-05-14T12:00:00Z"
-	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET imported_at = ?, import_source = ? WHERE id = ?`, originalImportedAt, "initial_import", imported.ID); err != nil {
+	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET imported_at = ?, import_source = ?, updated_at = ? WHERE id = ?`, originalImportedAt, "initial_import", originalImportedAt, imported.ID); err != nil {
 		t.Fatal(err)
 	}
+	imported, err = storage.GetSession(ctx, imported.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalUpdatedAt := imported.UpdatedAt
 	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
 	if err != nil {
 		t.Fatal(err)
@@ -337,8 +341,11 @@ func TestStorageReimportPreservesLocalActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].LastActivityAt != originalLastActivityAt {
-		t.Fatalf("last activity changed on reimport: %#v, want %s", items, originalLastActivityAt)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].LastActivityAt != laterNativeUpdated {
+		t.Fatalf("last activity = %s, want native updated at %s; original local activity was %s", items[0].LastActivityAt, laterNativeUpdated, originalLastActivityAt)
 	}
 }
 
@@ -511,8 +518,8 @@ func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(
 		if item.Session.ImportedAt == nil || *item.Session.ImportedAt != importedAt {
 			t.Fatalf("imported at = %#v, want %s", item.Session.ImportedAt, importedAt)
 		}
-		if item.LastActivityAt != localUpdatedAt {
-			t.Fatalf("last activity = %s, want local updated_at %s", item.LastActivityAt, localUpdatedAt)
+		if item.LastActivityAt != nativeUpdatedAt {
+			t.Fatalf("last activity = %s, want native updated_at %s", item.LastActivityAt, nativeUpdatedAt)
 		}
 		if item.CurrentModel == nil || item.CurrentModel.Value != modelValue || item.CurrentModel.Name == nil || *item.CurrentModel.Name != modelName {
 			t.Fatalf("current model = %#v", item.CurrentModel)
