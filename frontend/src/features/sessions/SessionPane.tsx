@@ -26,6 +26,8 @@ import type {
   ChatMessage,
   MessageContentBlock,
   PermissionModeId,
+  PermissionOption,
+  PermissionRequest,
   PromptTemplate,
   ReviewArtifactSummary,
   SessionDetail,
@@ -42,6 +44,7 @@ import {
 } from "../../utils/permissionMode";
 import { insertVoiceTranscript } from "../../utils/speechRecognition";
 import { sessionStatusLabel } from "../../utils/sessionStatus";
+import { toolSummary } from "../../utils/payload";
 
 const SCROLL_BOTTOM_PROXIMITY_PX = 24;
 const PROGRAMMATIC_SCROLL_WINDOW_MS = 800;
@@ -63,6 +66,7 @@ export function SessionPane({
   onOpenDiffFallback,
   onOpenReviewArtifact,
   onRestoreSession,
+  onResolvePermission,
   onSetSessionConfigOption,
   onStopSession,
   onSendPrompt,
@@ -77,8 +81,9 @@ export function SessionPane({
   onOpenDiffFallback: () => void;
   onOpenReviewArtifact: (artifactId: string) => void;
   onRestoreSession: (sessionId: string) => Promise<void>;
+  onResolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
-  onStopSession: () => Promise<void>;
+  onStopSession: (options?: { clearQueuedPrompts?: boolean }) => Promise<void>;
   onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
   onDeleteSession: () => Promise<void>;
   onUpdateSessionTitle: (title: string) => Promise<void>;
@@ -93,13 +98,12 @@ export function SessionPane({
   const permissionMode = currentSession.session.permissionMode;
   const agentConnection = agentStatus ? connectionStatusForMode(agentStatus, permissionMode) : null;
   const agentReady = continuity.continuable || !agentConnection || agentConnection.state === "ready";
-  const canSend = continuity.continuable && agentReady;
+  const canSend = continuity.continuable && agentReady && !waitingApproval;
   const imagePromptSupported = promptComposerImageSupported(agentConnection, {
     continuable: continuity.continuable,
     fallbackConnection: agentStatus?.status ?? null
   });
   const canRestore = continuity.restorable && !continuity.restoring;
-  const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
   const continuityReason = continuity.reason ?? currentSession.viewOnlyReason;
   const restoreButtonLabel = continuity.restoring
     ? "Restoring..."
@@ -348,12 +352,6 @@ export function SessionPane({
         {!continuity.continuable && !continuity.failureMessage && !continuity.restoring ? (
           <div className="notice warning">{continuityReason}</div>
         ) : null}
-        {waitingApproval ? (
-          <div className="notice approval">
-            Waiting for approval: {currentSession.pendingPermission?.title ?? "Permission requested"}
-            {queuedApprovalCount > 0 ? ` (${queuedApprovalCount} queued)` : ""}
-          </div>
-        ) : null}
         {currentSession.queuedPrompts?.length ? (
           <QueuedPromptList queuedPrompts={currentSession.queuedPrompts} />
         ) : null}
@@ -369,6 +367,21 @@ export function SessionPane({
         {liveAssistant ? <MessageBubble live message={liveMessage(currentSession.session.id, liveAssistant)} /> : null}
         <div aria-hidden="true" className="timeline-end" />
       </div>
+      {currentSession.pendingPermission ? (
+        <InlineApprovalPanel
+          busy={busy}
+          currentSession={currentSession}
+          onResolve={onResolvePermission}
+          permission={currentSession.pendingPermission}
+        />
+      ) : waitingApproval ? (
+        <div className="inline-approval-panel compact" role="status">
+          <div>
+            <p className="eyebrow">Approval</p>
+            <strong>Waiting for permission request details</strong>
+          </div>
+        </div>
+      ) : null}
       {showScrollShortcut ? (
         <div className="scroll-follow-control">
           <Button
@@ -407,6 +420,65 @@ export function SessionPane({
         transcriptionAvailable={transcriptionAvailable}
       />
     </section>
+  );
+}
+
+function InlineApprovalPanel({
+  busy,
+  currentSession,
+  onResolve,
+  permission
+}: {
+  busy: boolean;
+  currentSession: SessionDetail;
+  onResolve: (permission: PermissionRequest, optionId: string) => Promise<void>;
+  permission: PermissionRequest;
+}) {
+  const queuedApprovalCount = currentSession.queuedApprovalCount ?? 0;
+  return (
+    <section className="inline-approval-panel" aria-label="Pending approval">
+      <div className="inline-approval-header">
+        <div>
+          <p className="eyebrow">{permission.kind}</p>
+          <h2>{permission.title}</h2>
+        </div>
+        {queuedApprovalCount > 0 ? <strong className="approval-queue-count">{queuedApprovalCount} queued</strong> : null}
+      </div>
+      <div className="approval-context">
+        <span>{currentSession.workspace.name}</span>
+        <span>{currentSession.session.agentName}</span>
+        <span>{permission.status}</span>
+      </div>
+      <pre className="tool-summary">{toolSummary(permission.toolCall)}</pre>
+      <div className="approval-actions">
+        {permission.options.map((option) => (
+          <PermissionOptionButton
+            busy={busy}
+            key={option.optionId}
+            onResolve={() => {
+              void onResolve(permission, option.optionId);
+            }}
+            option={option}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PermissionOptionButton({
+  busy,
+  onResolve,
+  option
+}: {
+  busy: boolean;
+  onResolve: () => void;
+  option: PermissionOption;
+}) {
+  return (
+    <Button className={`approval-option ${option.kind}`} isDisabled={busy} onPress={onResolve} type="button">
+      <span>{option.name}</span>
+    </Button>
   );
 }
 
@@ -843,7 +915,7 @@ function PromptComposer({
   queuedPromptCount: number;
   canStop: boolean;
   stoppingTurn: boolean;
-  onStopSession: () => Promise<void>;
+  onStopSession: (options?: { clearQueuedPrompts?: boolean }) => Promise<void>;
   waitingApproval: boolean;
   workspaceId: string;
   transcriptionAvailable: boolean;
@@ -868,6 +940,7 @@ function PromptComposer({
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [editingTemplateTitle, setEditingTemplateTitle] = useState("");
   const [editingTemplateBody, setEditingTemplateBody] = useState("");
+  const [stopChoiceOpen, setStopChoiceOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -906,6 +979,12 @@ function PromptComposer({
     if (!voiceRecording || (!disabled && !busy)) return;
     stopVoiceRecording(false);
   }, [busy, disabled, voiceRecording]);
+
+  useEffect(() => {
+    if (queuedPromptCount === 0 || !canStop) {
+      setStopChoiceOpen(false);
+    }
+  }, [canStop, queuedPromptCount]);
 
   useEffect(() => {
     if (!templatesOpen) return;
@@ -1239,6 +1318,46 @@ function PromptComposer({
 
   return (
     <div className="composer-wrap">
+      {stopChoiceOpen ? (
+        <div className="stop-scope-panel" role="dialog" aria-label="Stop queued prompts">
+          <div>
+            <strong>Stop this turn?</strong>
+            <span>{queuedPromptCount} queued prompt{queuedPromptCount === 1 ? "" : "s"} will remain unless cleared.</span>
+          </div>
+          <div className="stop-scope-actions">
+            <Button
+              className="secondary small"
+              isDisabled={busy}
+              onPress={() => setStopChoiceOpen(false)}
+              type="button"
+            >
+              Cancel
+            </Button>
+            <Button
+              className="secondary small"
+              isDisabled={busy}
+              onPress={() => {
+                setStopChoiceOpen(false);
+                void onStopSession({ clearQueuedPrompts: false });
+              }}
+              type="button"
+            >
+              Active only
+            </Button>
+            <Button
+              className="danger small"
+              isDisabled={busy}
+              onPress={() => {
+                setStopChoiceOpen(false);
+                void onStopSession({ clearQueuedPrompts: true });
+              }}
+              type="button"
+            >
+              Clear queue
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {status || restoreButtonLabel || queuedPromptCount > 0 || canStop ? (
         <div className="composer-topline">
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
@@ -1248,6 +1367,10 @@ function PromptComposer({
               className="secondary small stop-button"
               isDisabled={busy}
               onPress={() => {
+                if (queuedPromptCount > 0) {
+                  setStopChoiceOpen(true);
+                  return;
+                }
                 void onStopSession();
               }}
             >

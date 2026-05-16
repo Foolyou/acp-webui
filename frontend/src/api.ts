@@ -188,9 +188,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt, ...(contentBlocks?.length ? { contentBlocks } : {}) })
     }),
-  cancelSession: (sessionId: string) =>
+  cancelSession: (sessionId: string, options?: { clearQueuedPrompts?: boolean }) =>
     request<SessionDetail>(`/api/sessions/${sessionId}/cancel`, {
-      method: "POST"
+      method: "POST",
+      body: options ? JSON.stringify(options) : undefined
     }),
   resolvePermission: (permissionId: string, optionId: string) =>
     request<PermissionRequest>(`/api/permission-requests/${permissionId}/resolve`, {

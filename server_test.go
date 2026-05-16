@@ -42,6 +42,108 @@ func TestPromptBlocksFromRequestValidatesImages(t *testing.T) {
 	}
 }
 
+func TestHandlePromptRejectsPendingApprovalQueueing(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "approval-prompt"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: acpSessionID,
+		ACPRequestID: "approval-1",
+		Title:        "Approve command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{"toolCallId": "tool-1"},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/prompt", strings.NewReader(`{"prompt":"do this next"}`))
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued prompts = %#v, want none", queued)
+	}
+}
+
+func TestHandleCancelClearQueuedPromptsOption(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantQueued int
+		wantStatus string
+	}{
+		{name: "legacy active only", body: ``, wantQueued: 1, wantStatus: queuedPromptQueued},
+		{name: "clear queue", body: `{"clearQueuedPrompts":true}`, wantQueued: 0, wantStatus: queuedPromptCancelled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			storage := testStorage(t)
+			workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acpSessionID := "cancel-queued"
+			session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.UpdateSessionStatus(ctx, session.ID, statusRunning); err != nil {
+				t.Fatal(err)
+			}
+			message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, queuedPromptQueued)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+				t.Fatal(err)
+			}
+			server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+
+			recorder := httptest.NewRecorder()
+			var body *strings.Reader
+			if tc.body == "" {
+				body = strings.NewReader("")
+			} else {
+				body = strings.NewReader(tc.body)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/cancel", body)
+			server.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+			}
+			queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(queued) != tc.wantQueued {
+				t.Fatalf("queued prompts = %#v, want %d", queued, tc.wantQueued)
+			}
+			if count := storage.count(ctx, `SELECT COUNT(*) FROM queued_prompts WHERE session_id = ? AND status = ?`, session.ID, tc.wantStatus); count != 1 {
+				t.Fatalf("queued prompt count for %s = %d, want 1", tc.wantStatus, count)
+			}
+		})
+	}
+}
+
 func TestServerRejectsDisallowedAPIOrigin(t *testing.T) {
 	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
 	request := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)

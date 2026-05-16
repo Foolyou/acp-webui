@@ -1178,6 +1178,47 @@ pre {
   color: var(--color-accent);
 }
 
+.inline-approval-panel {
+  position: sticky;
+  bottom: 7.35rem;
+  z-index: 4;
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(154, 118, 30, 0.34);
+  border-radius: var(--radius-md);
+  background: rgba(255, 251, 235, 0.97);
+  padding: 0.72rem;
+  box-shadow: 0 14px 36px rgba(18, 20, 22, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+.inline-approval-panel.compact {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.inline-approval-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.inline-approval-header h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.approval-queue-count {
+  flex: 0 0 auto;
+  color: var(--color-warning);
+  font-size: 0.78rem;
+}
+
 .session-badges {
   display: flex;
   flex-wrap: wrap;
@@ -2036,6 +2077,39 @@ pre {
   font-weight: 800;
 }
 
+.stop-scope-panel {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  border: 1px solid rgba(154, 118, 30, 0.28);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  padding: 0.62rem;
+}
+
+.stop-scope-panel > div:first-child {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.stop-scope-panel span {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.stop-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.danger {
+  background: var(--color-danger);
+  color: #fff;
+}
+
 .queued-prompt {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2342,6 +2416,36 @@ pre {
   border-radius: var(--radius-sm);
   background: var(--color-surface-subtle);
   object-fit: contain;
+}
+
+.changed-files-review {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.changed-file-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-subtle);
+  padding: 0.55rem 0.65rem;
+}
+
+.changed-file-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+}
+
+.changed-file-row span {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .tool-summary,

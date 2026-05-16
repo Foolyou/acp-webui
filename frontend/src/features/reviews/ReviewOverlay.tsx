@@ -50,10 +50,65 @@ function ReviewPayload({ artifact }: { artifact: ReviewArtifact }) {
   if (artifact.kind === "terminal") {
     return <pre className="review-pre">{payloadText(artifact.payload)}</pre>;
   }
+  if (artifact.kind === "changed_files") {
+    return <ChangedFilesPayload payload={artifact.payload} />;
+  }
+  if (artifact.kind === "tool_call") {
+    return <pre className="review-pre">{payloadText(artifact.payload)}</pre>;
+  }
   if (artifact.kind === "image") {
     return <ImagePayload artifact={artifact} />;
   }
   return <pre className="review-pre">{JSON.stringify(artifact.payload, null, 2)}</pre>;
+}
+
+function ChangedFilesPayload({ payload }: { payload: unknown }) {
+  const files = changedFilesFromPayload(payload);
+  if (!files.length) {
+    return <pre className="review-pre">{payloadText(payload)}</pre>;
+  }
+  return (
+    <div className="changed-files-review">
+      {files.map((file) => (
+        <div className="changed-file-row" key={`${file.path}-${file.status}`}>
+          <strong>{file.path}</strong>
+          {file.status ? <span>{file.status}</span> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function changedFilesFromPayload(payload: unknown) {
+  if (!payload || typeof payload !== "object") return [];
+  const value = payload as Record<string, unknown>;
+  const candidates = Array.isArray(value.files)
+    ? value.files
+    : Array.isArray(value.changedFiles)
+      ? value.changedFiles
+      : [];
+  return candidates
+    .map((item) => {
+      if (typeof item === "string") {
+        return { path: item, status: "" };
+      }
+      if (!item || typeof item !== "object") return null;
+      const file = item as Record<string, unknown>;
+      const path =
+        typeof file.path === "string"
+          ? file.path
+          : typeof file.name === "string"
+            ? file.name
+            : typeof file.file === "string"
+              ? file.file
+              : "";
+      if (!path) return null;
+      return {
+        path,
+        status: typeof file.status === "string" ? file.status : ""
+      };
+    })
+    .filter((item): item is { path: string; status: string } => Boolean(item));
 }
 
 function ImagePayload({ artifact }: { artifact: ReviewArtifact }) {

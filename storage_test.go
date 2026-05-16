@@ -1084,6 +1084,52 @@ func TestStorageRepairsQueuedPromptsForTerminalSessions(t *testing.T) {
 	}
 }
 
+func TestStorageClearQueuedPromptsMarksPendingQueueCancelled(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "clear-queued"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, queuedPromptQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := storage.ClearQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 1 {
+		t.Fatalf("cleared = %d, want 1", cleared)
+	}
+	queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued prompts = %#v, want none", queued)
+	}
+	messages, err := storage.ListMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Status != statusStopped {
+		t.Fatalf("message status = %#v, want stopped", messages)
+	}
+	if count := storage.count(ctx, `SELECT COUNT(*) FROM queued_prompts WHERE session_id = ? AND status = ?`, session.ID, queuedPromptCancelled); count != 1 {
+		t.Fatalf("cancelled queued prompt count = %d, want 1", count)
+	}
+}
+
 func TestStorageBuildsSessionDetailTimeline(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

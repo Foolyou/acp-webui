@@ -79,6 +79,7 @@ describe("SessionPane route links", () => {
         onOpenDiffFallback={vi.fn()}
         onOpenReviewArtifact={vi.fn()}
         onRestoreSession={vi.fn()}
+        onResolvePermission={vi.fn()}
         onSendPrompt={vi.fn()}
         onSetSessionConfigOption={vi.fn()}
         onStopSession={vi.fn()}

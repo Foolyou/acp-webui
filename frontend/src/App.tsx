@@ -891,11 +891,11 @@ export function App() {
     [runBusy]
   );
 
-  const cancelApproval = useCallback(async () => {
+  const cancelApproval = useCallback(async (options?: { clearQueuedPrompts?: boolean }) => {
     const sessionId = state.currentSession?.session.id;
     if (!sessionId) return;
     await runBusy(async () => {
-      const detail = await api.cancelSession(sessionId);
+      const detail = await api.cancelSession(sessionId, options);
       setState((current) => ({
         ...current,
         currentSession: detail,

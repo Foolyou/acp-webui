@@ -780,8 +780,12 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	prompt := textFallbackFromBlocks(blocks)
 	pending, _ := s.storage.PendingPermissionForSession(r.Context(), sessionID)
+	if pending != nil {
+		writeError(w, conflict("Resolve the pending approval before sending another prompt."))
+		return
+	}
 	existingActiveTurn, _ := s.storage.ActiveTurnForSession(r.Context(), sessionID)
-	shouldQueue := pending != nil || existingActiveTurn != nil
+	shouldQueue := existingActiveTurn != nil
 	messageStatus := statusIdle
 	if shouldQueue {
 		messageStatus = "queued"
@@ -925,6 +929,22 @@ func hasImageBlocks(blocks []MessageContentBlock) bool {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionId")
+	var payload struct {
+		ClearQueuedPrompts bool `json:"clearQueuedPrompts"`
+	}
+	if r.Body != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, badRequest("Invalid JSON request body"))
+			return
+		}
+		if strings.TrimSpace(string(body)) != "" {
+			if err := json.Unmarshal(body, &payload); err != nil {
+				writeError(w, badRequest("Invalid JSON request body"))
+				return
+			}
+		}
+	}
 	session, err := s.storage.GetSession(r.Context(), sessionID)
 	if err != nil {
 		writeError(w, notFound("Session not found"))
@@ -943,6 +963,14 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.storage.FinishActiveTurn(r.Context(), sessionID, statusStopped)
+	if payload.ClearQueuedPrompts {
+		if _, err := s.storage.ClearQueuedPrompts(r.Context(), sessionID); err != nil {
+			writeError(w, err)
+			return
+		}
+		queued, _ := s.storage.ListQueuedPrompts(r.Context(), sessionID)
+		s.events.Publish(map[string]any{"type": "queued_prompts_updated", "sessionId": sessionID, "queuedPrompts": nonNilSlice(queued)})
+	}
 	detail, _ := s.sessionDetail(r.Context(), sessionID)
 	writeJSON(w, http.StatusOK, detail)
 }

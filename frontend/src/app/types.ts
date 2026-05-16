@@ -40,7 +40,7 @@ export type UiState = {
 };
 
 export type AppActions = {
-  cancelApproval: () => Promise<void>;
+  cancelApproval: (options?: { clearQueuedPrompts?: boolean }) => Promise<void>;
   createSession: (
     workspaceId: string,
     agentId?: string,

@@ -250,6 +250,7 @@ export function SessionDetailRoute() {
       onOpenDiffFallback={actions.openDiffFallback}
       onOpenReviewArtifact={actions.openReviewArtifact}
       onRestoreSession={actions.restoreSession}
+      onResolvePermission={actions.resolvePermission}
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}
@@ -317,6 +318,7 @@ export function WorkspaceAgentSessionDetailRoute() {
       onOpenDiffFallback={actions.openDiffFallback}
       onOpenReviewArtifact={actions.openReviewArtifact}
       onRestoreSession={actions.restoreSession}
+      onResolvePermission={actions.resolvePermission}
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}

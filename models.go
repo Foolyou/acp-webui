@@ -31,6 +31,7 @@ const (
 	queuedPromptQueued    = "queued"
 	queuedPromptSubmitted = "submitted"
 	queuedPromptFailed    = "failed"
+	queuedPromptCancelled = "cancelled"
 
 	continuityLive          = "live"
 	continuityLoadable      = "loadable"

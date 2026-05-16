@@ -1203,6 +1203,37 @@ func (s *Storage) MarkQueuedPromptsFailed(ctx context.Context, sessionID string)
 	return tx.Commit()
 }
 
+func (s *Storage) ClearQueuedPrompts(ctx context.Context, sessionID string) (int64, error) {
+	now := nowString()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE id IN (
+			SELECT message_id
+			FROM queued_prompts
+			WHERE session_id = ? AND status = ?
+		)`, statusStopped, sessionID, queuedPromptQueued)
+	if err != nil {
+		return 0, err
+	}
+	cleared, _ := result.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE queued_prompts
+		SET status = ?, submitted_at = ?
+		WHERE session_id = ? AND status = ?`, queuedPromptCancelled, now, sessionID, queuedPromptQueued); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return cleared, nil
+}
+
 func scanQueuedPrompt(scanner interface{ Scan(dest ...any) error }) (QueuedPrompt, error) {
 	var prompt QueuedPrompt
 	var blocksJSON, submitted sql.NullString

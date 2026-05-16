@@ -1,8 +1,7 @@
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 import { Button, Dialog, Modal, ModalOverlay } from "react-aria-components";
 import { useState } from "react";
 import { useAppContext } from "../app/context";
-import { ApprovalSheet } from "../features/approvals/ApprovalSheet";
 import { ReviewOverlay } from "../features/reviews/ReviewOverlay";
 import { BrandBlock } from "./common";
 import { FullscreenButton } from "./FullscreenButton";
@@ -12,9 +11,7 @@ import { WorkbenchNav } from "./WorkbenchNav";
 
 export function WorkbenchShell() {
   const { actions, state, selectedWorkspace } = useAppContext();
-  const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const showSessionApproval = /\/sessions\/[^/]+$/.test(pathname);
   const mobileStatus = state.agents.find((agent) => agent.status.state === "ready")?.status.state ?? state.agents[0]?.status.state ?? state.codex.state;
 
   return (
@@ -53,12 +50,6 @@ export function WorkbenchShell() {
         <Outlet />
       </section>
 
-      <ApprovalSheet
-        busy={state.busy}
-        currentSession={showSessionApproval ? state.currentSession : null}
-        onCancel={actions.cancelApproval}
-        onResolve={actions.resolvePermission}
-      />
       <ReviewOverlay artifact={state.activeReview} onClose={() => actions.setActiveReview(null)} />
 
       <ModalOverlay
