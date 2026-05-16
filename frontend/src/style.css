@@ -885,6 +885,31 @@ pre {
   padding: 0.62rem 0.7rem;
 }
 
+.workspace-management-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem 0.8rem;
+}
+
+.workspace-management-summary {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.workspace-open-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.management-form {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.65rem;
+}
+
 .item-title {
   color: var(--color-text);
   font-weight: 800;
@@ -2520,6 +2545,21 @@ pre {
   .prompt-template-actions {
     justify-content: flex-start;
     min-width: 0;
+  }
+
+  .workspace-management-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 0.55rem;
+  }
+
+  .workspace-management-row .section-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .workspace-management-row .section-actions > * {
+    flex: 1 1 0;
   }
 
   .tool-group-main,

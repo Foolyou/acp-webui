@@ -64,10 +64,10 @@ function WorkspaceListItem({
 
   return (
     <div className="list-item workspace-management-row">
-      <Link className="workspace-management-link" {...target}>
+      <div className="workspace-management-summary">
         <span className="item-title">{workspace.name}</span>
         <span className="item-path">{workspace.path}</span>
-      </Link>
+      </div>
       {editing ? (
         <div className="management-form">
           <label>
@@ -89,6 +89,9 @@ function WorkspaceListItem({
         </div>
       ) : (
         <div className="section-actions">
+          <Link className="secondary small workspace-open-link" {...target}>
+            Open
+          </Link>
           <Button className="secondary small" isDisabled={busy} onPress={() => setEditing(true)}>
             Edit
           </Button>

@@ -633,7 +633,7 @@ export function App() {
   const deleteWorkspace = useCallback(
     async (workspaceId: string) => {
       await runBusy(async () => {
-        const plan = await api.deleteWorkspace(workspaceId);
+        await api.deleteWorkspace(workspaceId);
         setState((current) => {
           const nextWorkspaces = current.workspaces.filter((workspace) => workspace.id !== workspaceId);
           const currentWorkspaceDeleted = current.currentWorkspaceId === workspaceId;
@@ -648,16 +648,14 @@ export function App() {
             liveAssistant: currentSessionDeleted ? "" : current.liveAssistant
           };
         });
-        const remaining = state.workspaces.filter((workspace) => workspace.id !== workspaceId);
-        const target = remaining[0] ? workspaceSessionsRouteTarget(remaining[0].id, state.agents) : { to: "/workspaces" as const };
         localStorage.removeItem("currentSessionId");
-        if (state.currentWorkspaceId === workspaceId || plan.workspace.id === workspaceId) {
+        if (state.currentWorkspaceId === workspaceId) {
           localStorage.removeItem("currentWorkspaceId");
-          await router.navigate(target);
+          await router.navigate({ to: "/workspaces" });
         }
       });
     },
-    [runBusy, state.agents, state.currentWorkspaceId, state.workspaces]
+    [runBusy, state.currentWorkspaceId]
   );
 
   const createSession = useCallback(async (
