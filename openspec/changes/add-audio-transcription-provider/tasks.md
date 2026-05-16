@@ -30,7 +30,8 @@
 
 ## 5. Documentation and Validation
 
-- [ ] 5.1 Document external OpenAI-compatible transcription provider configuration with generic placeholders only.
-- [ ] 5.2 Document that the project does not install, run, supervise, or update faster-whisper services.
-- [ ] 5.3 Run backend tests, frontend tests, public-source checks, formatting checks, and a release build.
-- [ ] 5.4 Manually verify a configured external transcription provider can record, transcribe, insert draft text, and leave prompt submission under user control.
+- [ ] 5.1 Add an optional Docker Compose example for an externally managed OpenAI-compatible faster-whisper service using loopback binding and Docker-managed model cache.
+- [ ] 5.2 Document external OpenAI-compatible transcription provider configuration with generic placeholders only.
+- [ ] 5.3 Document that the project does not install, run, supervise, require, or update faster-whisper services as part of ACP Web UI runtime.
+- [ ] 5.4 Run backend tests, frontend tests, public-source checks, formatting checks, and a release build.
+- [ ] 5.5 Manually verify a configured external transcription provider can record, transcribe, insert draft text, and leave prompt submission under user control.

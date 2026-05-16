@@ -17,7 +17,7 @@ The desired path is provider-based transcription: the browser records audio, the
 
 **Non-Goals:**
 
-- Do not bundle, install, launch, supervise, or document a blessed faster-whisper distribution as part of the app runtime.
+- Do not bundle, install, launch, supervise, or require a faster-whisper distribution as part of the app runtime.
 - Do not send audio blocks to ACP agents in this change.
 - Do not keep Web Speech API as a fallback path in this change.
 - Do not persist raw microphone audio in session history.
@@ -49,6 +49,16 @@ Rationale: many local faster-whisper deployments expose an OpenAI-compatible tra
 
 Alternative considered: hard-code a specific faster-whisper server API. That would simplify one deployment path but would make the project responsible for another service's API choices and make future providers harder to add.
 
+### Include an optional compose example, not service management
+
+The repository may include an optional Docker Compose example under a deployment-oriented directory for an externally managed OpenAI-compatible faster-whisper service. The example should bind to loopback by default, use a named Docker volume for model cache, and keep all values generic.
+
+Rationale: users get a repeatable starting point for local transcription without making ACP Web UI responsible for the lifecycle of the transcription service.
+
+Alternative considered: keep all local provider deployment guidance out of the repository. That preserves a stricter dependency boundary, but it makes the most likely self-hosted setup harder to reproduce and increases ad hoc local configuration.
+
+Alternative considered: have development or release scripts start the compose stack. That would be convenient, but it would turn an optional external provider into an implicit project service and conflict with the provider abstraction boundary.
+
 ### Mic requires configured transcription
 
 When no transcription provider is configured, the frontend should not present Mic as an available action.
@@ -68,6 +78,7 @@ Alternative considered: auto-submit on transcription completion. That would be f
 ## Risks / Trade-offs
 
 - External provider is down or misconfigured -> return a readable composer-level error and keep any existing draft intact.
+- Optional compose example image changes upstream -> document it as a convenience example and keep ACP Web UI provider integration tied only to the OpenAI-compatible API contract.
 - Audio upload is too large or unsupported -> reject before provider dispatch with a clear validation error.
 - Provider response shapes vary -> accept the OpenAI-compatible JSON `text` field in the first version and fail closed for unsupported responses.
 - Local transcription service may be slow on first request -> use a configurable timeout and show a transcribing state while the request is pending.
@@ -79,7 +90,7 @@ Alternative considered: auto-submit on transcription completion. That would be f
 1. Add configuration and provider plumbing with transcription disabled by default.
 2. Add the backend transcription endpoint and tests using a local mock OpenAI-compatible server.
 3. Replace the frontend voice adapter with MediaRecorder recording and backend transcription states.
-4. Update public documentation with generic OpenAI-compatible configuration examples and no machine-specific paths or hostnames.
+4. Add an optional compose example and update public documentation with generic OpenAI-compatible configuration examples and no machine-specific paths or hostnames.
 5. Rollback is disabling the provider configuration; Mic disappears while text prompt entry remains unchanged.
 
 ## Open Questions

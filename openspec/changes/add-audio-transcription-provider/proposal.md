@@ -8,7 +8,8 @@ The current voice input depends on browser speech recognition, which can appear 
 - Add a session-independent transcription API that accepts recorded audio from the browser, validates it, sends it to the configured provider, and returns transcript text.
 - Replace the composer Mic path with MediaRecorder-based recording and backend transcription when transcription is configured.
 - Do not support Web Speech API fallback in this change.
-- Do not install, launch, supervise, or bundle faster-whisper or any other local transcription service; users deploy and configure compatible services themselves.
+- Do not install, launch, supervise, or require faster-whisper or any other local transcription service as part of the ACP Web UI runtime.
+- Add an optional Docker Compose example for an externally managed OpenAI-compatible faster-whisper transcription service.
 - Keep voice input as a draft tool: transcribed text is inserted into the composer and is never submitted automatically.
 
 ## Capabilities
@@ -29,4 +30,4 @@ The current voice input depends on browser speech recognition, which can appear 
 - New backend provider interface and OpenAI-compatible HTTP multipart client.
 - Frontend Mic control, recording state, transcription state, errors, and API client support.
 - Frontend and backend tests for configured, unconfigured, validation, provider success, provider failure, and composer workflow behavior.
-- Public documentation for configuring an externally deployed OpenAI-compatible transcription service without committing local machine details.
+- Public documentation and optional compose example for configuring an externally deployed OpenAI-compatible transcription service without committing local machine details.

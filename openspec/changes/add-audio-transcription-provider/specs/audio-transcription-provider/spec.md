@@ -61,3 +61,17 @@ The system SHALL treat local or hosted transcription services as externally mana
 - **WHEN** the configured provider service is unavailable during app startup
 - **THEN** the application SHALL still start normally
 - **AND** transcription attempts SHALL fail with a readable provider error until the external service is available
+
+### Requirement: Repository may include optional transcription provider deployment examples
+The system SHALL treat any repository-provided transcription provider deployment examples as optional, externally managed examples rather than ACP Web UI runtime dependencies.
+
+#### Scenario: Optional compose example is provided
+- **WHEN** the repository includes a Docker Compose example for an OpenAI-compatible faster-whisper transcription service
+- **THEN** the example SHALL bind exposed service ports to loopback by default
+- **AND** it SHALL use generic placeholders or Docker-managed volumes rather than user-specific host paths
+- **AND** it SHALL document that users start, stop, update, and operate the service independently from ACP Web UI
+
+#### Scenario: ACP Web UI starts normally without compose service
+- **WHEN** the optional compose example has not been started
+- **THEN** ACP Web UI SHALL still start normally
+- **AND** transcription availability SHALL depend only on the configured provider endpoint, not on the presence of the example files
