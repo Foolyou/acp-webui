@@ -34,4 +34,4 @@
 - [x] 5.2 Document external OpenAI-compatible transcription provider configuration with generic placeholders only.
 - [x] 5.3 Document that the project does not install, run, supervise, require, or update faster-whisper services as part of ACP Web UI runtime.
 - [x] 5.4 Run backend tests, frontend tests, public-source checks, formatting checks, and a release build.
-- [ ] 5.5 Manually verify a configured external transcription provider can record, transcribe, insert draft text, and leave prompt submission under user control.
+- [x] 5.5 Manually verify a configured external transcription provider can record, transcribe, insert draft text, and leave prompt submission under user control.
