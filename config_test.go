@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+func clearTranscriptionEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"ACP_WEBUI_TRANSCRIPTION_PROVIDER",
+		"ACP_WEBUI_TRANSCRIPTION_BASE_URL",
+		"ACP_WEBUI_TRANSCRIPTION_API_KEY",
+		"ACP_WEBUI_TRANSCRIPTION_MODEL",
+		"ACP_WEBUI_TRANSCRIPTION_LANGUAGE",
+		"ACP_WEBUI_TRANSCRIPTION_TIMEOUT_SECONDS",
+		"ACP_WEBUI_TRANSCRIPTION_MAX_AUDIO_MB",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestConfigWorkDirOverrideChangesDefaultDatabase(t *testing.T) {
 	config, err := parseConfig([]string{"--work-dir", "custom-state"})
 	if err != nil {
@@ -22,6 +37,7 @@ func TestConfigWorkDirOverrideChangesDefaultDatabase(t *testing.T) {
 }
 
 func TestTranscriptionConfigDefaultsToDisabled(t *testing.T) {
+	clearTranscriptionEnv(t)
 	config, err := parseConfig(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +56,22 @@ func TestTranscriptionConfigDefaultsToDisabled(t *testing.T) {
 	}
 }
 
+func TestTranscriptionConfigDefaultsToMultilingualModelWhenEnabled(t *testing.T) {
+	clearTranscriptionEnv(t)
+	config, err := parseConfig([]string{
+		"--transcription-provider", "openai-compatible",
+		"--transcription-base-url", "http://127.0.0.1:7322/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TranscriptionModel != "Systran/faster-whisper-large-v3" {
+		t.Fatalf("TranscriptionModel = %q, want multilingual large-v3", config.TranscriptionModel)
+	}
+}
+
 func TestTranscriptionConfigParsesOpenAICompatibleProvider(t *testing.T) {
+	clearTranscriptionEnv(t)
 	config, err := parseConfig([]string{
 		"--transcription-provider", "openai-compatible",
 		"--transcription-base-url", "http://127.0.0.1:7322/v1",
@@ -74,6 +105,7 @@ func TestTranscriptionConfigParsesOpenAICompatibleProvider(t *testing.T) {
 }
 
 func TestTranscriptionConfigRejectsInvalidValues(t *testing.T) {
+	clearTranscriptionEnv(t)
 	cases := [][]string{
 		{"--transcription-provider", "openai-compatible"},
 		{"--transcription-provider", "unknown", "--transcription-base-url", "http://127.0.0.1:7322/v1"},

@@ -57,7 +57,7 @@ func newOpenAICompatibleTranscriptionProvider(config Config) TranscriptionProvid
 	return &openAICompatibleTranscriptionProvider{
 		endpoint: transcriptionEndpoint(config.TranscriptionBaseURL),
 		apiKey:   config.TranscriptionAPIKey,
-		model:    defaulted(config.TranscriptionModel, "Systran/faster-distil-whisper-large-v3"),
+		model:    defaulted(config.TranscriptionModel, defaultTranscriptionModel),
 		language: strings.TrimSpace(config.TranscriptionLanguage),
 		client:   &http.Client{Timeout: timeout},
 	}

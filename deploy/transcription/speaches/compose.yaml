@@ -1,14 +1,14 @@
 name: acp-webui-transcription
 
 services:
-  faster-whisper-server:
-    image: fedirz/faster-whisper-server:latest-cuda
+  speaches:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
     ports:
       - "127.0.0.1:7322:8000"
     volumes:
-      - whisper-cache:/root/.cache/huggingface
+      - speaches-hf-cache:/home/ubuntu/.cache/huggingface/hub
     gpus: all
     restart: unless-stopped
 
 volumes:
-  whisper-cache:
+  speaches-hf-cache:

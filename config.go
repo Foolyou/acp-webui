@@ -16,6 +16,8 @@ const (
 	defaultWorkDirName  = ".acp-webui"
 	defaultDatabaseFile = "acp-webui.db"
 	defaultFrontendDist = "frontend/dist"
+
+	defaultTranscriptionModel = "Systran/faster-whisper-large-v3"
 )
 
 type Config struct {
@@ -120,7 +122,7 @@ func parseConfig(args []string) (Config, error) {
 	transcriptionProvider := strings.TrimSpace(first(raw, "transcription-provider", env("ACP_WEBUI_TRANSCRIPTION_PROVIDER")))
 	transcriptionBaseURL := strings.TrimSpace(first(raw, "transcription-base-url", env("ACP_WEBUI_TRANSCRIPTION_BASE_URL")))
 	transcriptionAPIKey := first(raw, "transcription-api-key", env("ACP_WEBUI_TRANSCRIPTION_API_KEY"))
-	transcriptionModel := defaulted(first(raw, "transcription-model", env("ACP_WEBUI_TRANSCRIPTION_MODEL")), "Systran/faster-distil-whisper-large-v3")
+	transcriptionModel := defaulted(first(raw, "transcription-model", env("ACP_WEBUI_TRANSCRIPTION_MODEL")), defaultTranscriptionModel)
 	transcriptionLanguage := strings.TrimSpace(first(raw, "transcription-language", env("ACP_WEBUI_TRANSCRIPTION_LANGUAGE")))
 	if transcriptionProvider != "" && transcriptionProvider != "openai-compatible" {
 		return Config{}, fmt.Errorf("--transcription-provider must be openai-compatible")
