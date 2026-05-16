@@ -556,11 +556,21 @@ func (s *Storage) MarkSessionRestoreStarted(ctx context.Context, id string) erro
 	return err
 }
 
-func (s *Storage) MarkSessionRestoreSucceeded(ctx context.Context, id string) error {
+func (s *Storage) MarkSessionRestoreSucceeded(ctx context.Context, id string, acpSessionID *string) error {
 	now := nowString()
+	acpID := ""
+	if acpSessionID != nil {
+		acpID = strings.TrimSpace(*acpSessionID)
+	}
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET continuation_state = ?, restore_completed_at = ?, restore_failure_message = NULL, status = ?, updated_at = ?
-		WHERE id = ?`, continuityRestored, now, statusIdle, now, id)
+		UPDATE sessions
+		SET continuation_state = ?,
+		    restore_completed_at = ?,
+		    restore_failure_message = NULL,
+		    status = ?,
+		    updated_at = ?,
+		    acp_session_id = CASE WHEN ? = '' THEN acp_session_id ELSE ? END
+		WHERE id = ?`, continuityRestored, now, statusIdle, now, acpID, acpID, id)
 	return err
 }
 

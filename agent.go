@@ -472,7 +472,7 @@ func (r *AgentRuntime) ensureReady(ctx context.Context) error {
 	r.mu.Unlock()
 	r.events.Publish(map[string]any{"type": "agent_connection_status", "agentId": r.agent.ID, "permissionMode": r.permissionMode, "status": startingStatus(r.agent.Title)})
 
-	cmd := exec.CommandContext(ctx, r.agent.Command, r.agent.Args...)
+	cmd := exec.Command(r.agent.Command, r.agent.Args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		r.setStatus(failedStatus(err.Error()))
@@ -691,6 +691,11 @@ type NewSessionOutcome struct {
 	ConfigOptions []SessionConfigOption
 }
 
+type LoadSessionOutcome struct {
+	SessionID     string
+	ConfigOptions []SessionConfigOption
+}
+
 func (r *AgentRuntime) NewSession(ctx context.Context, cwd string) (NewSessionOutcome, error) {
 	if err := r.ensureReady(ctx); err != nil {
 		return NewSessionOutcome{}, err
@@ -759,7 +764,7 @@ func (r *AgentRuntime) runtimeSessionContinuity(acpSessionID, externalSessionID 
 	if r.status().State != "ready" {
 		return viewOnlyContinuity("Agent runtime is not ready.")
 	}
-	if r.hasRegisteredSession(acpSessionID) {
+	if r.hasRegisteredSession(acpSessionID) || r.hasRegisteredSession(externalSessionID) {
 		return liveContinuity()
 	}
 	r.mu.Lock()
@@ -771,13 +776,13 @@ func (r *AgentRuntime) runtimeSessionContinuity(acpSessionID, externalSessionID 
 	return viewOnlyContinuity("This session history is available for review, but the live runtime context is not available.")
 }
 
-func (r *AgentRuntime) LoadSession(ctx context.Context, externalSessionID, localSessionID, cwd string) ([]SessionConfigOption, error) {
+func (r *AgentRuntime) LoadSession(ctx context.Context, externalSessionID, localSessionID, cwd string) (LoadSessionOutcome, error) {
 	if err := r.ensureReady(ctx); err != nil {
-		return nil, err
+		return LoadSessionOutcome{}, err
 	}
 	hasAssistantHistory, err := r.storage.HasAssistantMessages(ctx, localSessionID)
 	if err != nil {
-		return nil, err
+		return LoadSessionOutcome{}, err
 	}
 	r.mu.Lock()
 	r.restoreMap[externalSessionID] = RestoreContext{
@@ -799,12 +804,19 @@ func (r *AgentRuntime) LoadSession(ctx context.Context, externalSessionID, local
 	delete(r.restoreMap, externalSessionID)
 	if err == nil {
 		r.sessionMap[externalSessionID] = localSessionID
+		if loadedSessionID := strings.TrimSpace(result.SessionID); loadedSessionID != "" {
+			r.sessionMap[loadedSessionID] = localSessionID
+		}
 	}
 	r.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return LoadSessionOutcome{}, err
 	}
-	return result.ConfigOptions, nil
+	loadedSessionID := strings.TrimSpace(result.SessionID)
+	if loadedSessionID == "" {
+		loadedSessionID = externalSessionID
+	}
+	return LoadSessionOutcome{SessionID: loadedSessionID, ConfigOptions: result.ConfigOptions}, nil
 }
 
 func (r *AgentRuntime) promptCapabilities() AgentPromptCapabilities {

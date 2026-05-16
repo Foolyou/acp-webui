@@ -1128,6 +1128,141 @@ func TestAgentRuntimeManagerSyncWorkspaceAgentSessionsReturnsPersistedRowsOnStar
 	}
 }
 
+func TestAgentRuntimeSurvivesStartupContextCancellation(t *testing.T) {
+	storage := testStorage(t)
+	startsPath := t.TempDir() + string(os.PathSeparator) + "starts.txt"
+	runtime := newAgentRuntime(AgentConfig{
+		ID:      codexAgentID,
+		Title:   "Codex",
+		Command: os.Args[0],
+		Args: []string{
+			"-test.run=TestAgentRuntimeHelperProcess",
+			"--",
+			"acp-helper",
+			startsPath,
+		},
+		Enabled: true,
+	}, permissionManual, storage, newEventHub())
+
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	sessions, err := runtime.ListSessions(startCtx, "workspace-cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "helper-session" {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+
+	cancelStart()
+	time.Sleep(200 * time.Millisecond)
+
+	verifyCtx, cancelVerify := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelVerify()
+	sessions, err = runtime.ListSessions(verifyCtx, "workspace-cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "helper-session" {
+		t.Fatalf("sessions after context cancellation = %#v", sessions)
+	}
+	starts, err := os.ReadFile(startsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(starts), "start\n"); count != 1 {
+		t.Fatalf("helper process starts = %d, want 1", count)
+	}
+}
+
+func TestAgentRuntimeContinuityTreatsRegisteredExternalSessionAsLive(t *testing.T) {
+	storage := testStorage(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	runtime.setStatus(readyStatus(map[string]any{"title": "Codex"}, AgentPromptCapabilities{}, AgentSessionCapabilities{LoadSession: true}))
+	externalSessionID := "external-session"
+	runtime.RegisterSession(externalSessionID, "local-session")
+
+	continuity := runtime.runtimeSessionContinuity(nil, &externalSessionID)
+
+	if !continuity.Continuable || continuity.State != continuityLive {
+		t.Fatalf("continuity = %#v, want live continuable", continuity)
+	}
+}
+
+func TestAgentRuntimeHelperProcess(t *testing.T) {
+	helperArg := -1
+	for i, arg := range os.Args {
+		if arg == "acp-helper" {
+			helperArg = i
+			break
+		}
+	}
+	if helperArg < 0 {
+		return
+	}
+	if helperArg+1 < len(os.Args) {
+		if file, err := os.OpenFile(os.Args[helperArg+1], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			_, _ = file.WriteString("start\n")
+			_ = file.Close()
+		}
+	}
+	decoder := json.NewDecoder(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+	for {
+		var request struct {
+			ID     any             `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := decoder.Decode(&request); err != nil {
+			os.Exit(0)
+		}
+		switch request.Method {
+		case "initialize":
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result": map[string]any{
+					"agentInfo": map[string]any{
+						"name":    "helper-codex-acp",
+						"title":   "Helper Codex",
+						"version": "0.0.0-test",
+					},
+					"agentCapabilities": map[string]any{
+						"loadSession": true,
+						"sessionCapabilities": map[string]any{
+							"list": map[string]any{},
+						},
+					},
+				},
+			})
+		case "session/list":
+			var params ACPSessionListParams
+			_ = json.Unmarshal(request.Params, &params)
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result": map[string]any{
+					"sessions": []map[string]any{{
+						"sessionId": "helper-session",
+						"cwd":       params.CWD,
+						"title":     "Helper session",
+						"updatedAt": "2026-05-16T00:00:00Z",
+					}},
+				},
+			})
+		default:
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"error": map[string]any{
+					"code":    -32601,
+					"message": "method not found",
+				},
+			})
+		}
+	}
+}
+
 func TestACPSessionListWireModels(t *testing.T) {
 	paramsCursor := "cursor-1"
 	paramsData, err := json.Marshal(ACPSessionListParams{CWD: "/workspace", Cursor: &paramsCursor})

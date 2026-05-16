@@ -586,7 +586,7 @@ func TestStorageSessionListProjectionOmitsViewOnlyReasonForContinuableSession(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.MarkSessionRestoreSucceeded(ctx, session.ID); err != nil {
+	if err := storage.MarkSessionRestoreSucceeded(ctx, session.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -862,10 +862,10 @@ func TestStorageRepairsOnlyRestoredRunningSessionsWithoutPendingApproval(t *test
 	restored := createSession("restored")
 	live := createSession("live")
 	waiting := createSession("waiting")
-	_ = storage.MarkSessionRestoreSucceeded(ctx, restored.ID)
+	_ = storage.MarkSessionRestoreSucceeded(ctx, restored.ID, nil)
 	_, _ = storage.StartActiveTurn(ctx, restored.ID)
 	_, _ = storage.StartActiveTurn(ctx, live.ID)
-	_ = storage.MarkSessionRestoreSucceeded(ctx, waiting.ID)
+	_ = storage.MarkSessionRestoreSucceeded(ctx, waiting.ID, nil)
 	_, _ = storage.StartActiveTurn(ctx, waiting.ID)
 	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
 		SessionID:    waiting.ID,

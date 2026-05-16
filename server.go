@@ -469,7 +469,7 @@ func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.storage.MarkSessionRestoreStarted(r.Context(), sessionID)
 	s.events.Publish(map[string]any{"type": "session_restore_started", "sessionId": sessionID})
-	options, err := runtime.LoadSession(r.Context(), *externalID, sessionID, nativePathString(workspace.Path))
+	outcome, err := runtime.LoadSession(r.Context(), *externalID, sessionID, nativePathString(workspace.Path))
 	if err != nil {
 		message := "Failed to restore session: " + err.Error()
 		_ = s.storage.MarkSessionRestoreFailed(r.Context(), sessionID, message)
@@ -477,10 +477,10 @@ func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict(message))
 		return
 	}
-	if options != nil {
-		_, _ = s.storage.UpdateSessionConfigOptions(r.Context(), sessionID, options)
+	if outcome.ConfigOptions != nil {
+		_, _ = s.storage.UpdateSessionConfigOptions(r.Context(), sessionID, outcome.ConfigOptions)
 	}
-	_ = s.storage.MarkSessionRestoreSucceeded(r.Context(), sessionID)
+	_ = s.storage.MarkSessionRestoreSucceeded(r.Context(), sessionID, &outcome.SessionID)
 	s.events.Publish(map[string]any{"type": "session_restore_succeeded", "sessionId": sessionID})
 	detail, _ := s.sessionDetail(r.Context(), sessionID)
 	writeJSON(w, http.StatusOK, detail)
@@ -519,7 +519,8 @@ func (s *Server) handleSetSessionConfig(w http.ResponseWriter, r *http.Request) 
 		writeError(w, conflict(valueOr(continuity.Reason, viewOnlyReason(session.AgentName))))
 		return
 	}
-	if session.ACPSessionID == nil {
+	agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID)
+	if agentSessionID == nil {
 		writeError(w, conflict("Session is missing an ACP session id"))
 		return
 	}
@@ -528,7 +529,7 @@ func (s *Server) handleSetSessionConfig(w http.ResponseWriter, r *http.Request) 
 		writeError(w, unavailable(err.Error()))
 		return
 	}
-	state, err := runtime.SetConfigOption(r.Context(), *session.ACPSessionID, configID, value)
+	state, err := runtime.SetConfigOption(r.Context(), *agentSessionID, configID, value)
 	if err != nil {
 		writeError(w, conflict(err.Error()))
 		return
@@ -571,7 +572,8 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict(valueOr(continuity.Reason, viewOnlyReason(session.AgentName))))
 		return
 	}
-	if session.ACPSessionID == nil {
+	agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID)
+	if agentSessionID == nil {
 		writeError(w, conflict("Session is missing an ACP session id"))
 		return
 	}
@@ -616,7 +618,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusRunning})
 	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": statusRunning, "activeTurn": active})
-	go s.runPromptTurn(context.Background(), runtime, sessionID, *session.ACPSessionID, blocks)
+	go s.runPromptTurn(context.Background(), runtime, sessionID, *agentSessionID, blocks)
 	queuedPrompts, _ := s.storage.ListQueuedPrompts(r.Context(), sessionID)
 	writeJSON(w, http.StatusOK, map[string]any{"message": message, "queuedPrompt": nil, "queuedPrompts": nonNilSlice(queuedPrompts), "activeTurn": active})
 }
@@ -732,8 +734,8 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	runtime, err := s.agents.runtimeForSession(r.Context(), session, false)
 	if err == nil {
 		_ = runtime.CancelPendingPermissionsForSession(r.Context(), sessionID)
-		if session.ACPSessionID != nil {
-			_ = runtime.StopSessionTurn(r.Context(), *session.ACPSessionID)
+		if agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID); agentSessionID != nil {
+			_ = runtime.StopSessionTurn(r.Context(), *agentSessionID)
 		}
 	}
 	_ = s.storage.FinishActiveTurn(r.Context(), sessionID, statusStopped)
@@ -976,7 +978,7 @@ func (s *Server) sessionContinuity(ctx context.Context, session Session) Session
 		}
 		return viewOnlyContinuity(agentUnavailableReason(session.AgentName, status))
 	}
-	if runtime.hasRegisteredSession(session.ACPSessionID) {
+	if runtime.hasRegisteredSession(session.ACPSessionID) || runtime.hasRegisteredSession(session.ExternalSessionID) {
 		if row.State == continuityRestored {
 			return row
 		}
