@@ -93,6 +93,8 @@ function setContext(state: Partial<UiState>) {
       cancelApproval: vi.fn(),
       createSession: vi.fn(),
       createWorkspace: vi.fn(),
+      deleteCurrentSession: vi.fn(),
+      deleteWorkspace: vi.fn(),
       loadSession: vi.fn(),
       loadSessionList: vi.fn(),
       openDiffFallback: vi.fn(),
@@ -101,6 +103,8 @@ function setContext(state: Partial<UiState>) {
       restoreSession: vi.fn(),
       sendPrompt: vi.fn(),
       setSessionConfigOption: vi.fn(),
+      updateCurrentSessionTitle: vi.fn(),
+      updateWorkspace: vi.fn(),
       setActiveReview: vi.fn(),
       setCurrentWorkspace: vi.fn(),
       setCurrentWorkspaceAgent: vi.fn()

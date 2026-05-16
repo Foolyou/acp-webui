@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"mime/multipart"
@@ -607,6 +608,140 @@ func TestHandleCreateSessionPublishesScopedListChangedEvent(t *testing.T) {
 	}
 	if event["count"] != 1 {
 		t.Fatalf("count = %#v, want 1", event["count"])
+	}
+}
+
+func TestWorkspaceManagementAPIUpdatesAndDeletes(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "workspace-management-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &AgentRuntimeManager{storage: storage, events: newEventHub()}
+	events := manager.events.Subscribe()
+	defer manager.events.Unsubscribe(events)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/api/workspaces/"+workspace.ID, strings.NewReader(`{"name":"Managed workspace"}`))
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var updated Workspace
+	if err := json.Unmarshal(recorder.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Managed workspace" {
+		t.Fatalf("workspace name = %q", updated.Name)
+	}
+	if event := receiveEventType(t, events, "workspace_changed"); event["workspaceId"] != workspace.ID {
+		t.Fatalf("workspace_changed event = %#v", event)
+	}
+	if event := receiveSessionListChangedEvent(t, events); event["agentId"] != codexAgentID {
+		t.Fatalf("session_list_changed event = %#v", event)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/api/workspaces/"+workspace.ID, nil)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := storage.GetWorkspace(ctx, workspace.ID); err != sql.ErrNoRows {
+		t.Fatalf("workspace lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := storage.GetSession(ctx, session.ID); err != sql.ErrNoRows {
+		t.Fatalf("session lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if event := receiveEventType(t, events, "workspace_deleted"); event["workspaceId"] != workspace.ID {
+		t.Fatalf("workspace_deleted event = %#v", event)
+	}
+}
+
+func TestSessionManagementAPIUpdatesDeletesAndBlocksActiveWork(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "session-management-acp"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &AgentRuntimeManager{storage: storage, events: newEventHub()}
+	events := manager.events.Subscribe()
+	defer manager.events.Unsubscribe(events)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+session.ID, strings.NewReader(`{"title":"Managed session"}`))
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail SessionDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Session.Title == nil || *detail.Session.Title != "Managed session" {
+		t.Fatalf("session title = %#v", detail.Session.Title)
+	}
+	if event := receiveEventType(t, events, "session_updated"); event["sessionId"] != session.ID {
+		t.Fatalf("session_updated event = %#v", event)
+	}
+	_ = receiveSessionListChangedEvent(t, events)
+
+	if _, err := storage.StartActiveTurn(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/api/sessions/"+session.ID, nil)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s, want conflict", recorder.Code, recorder.Body.String())
+	}
+	if err := storage.FinishActiveTurn(ctx, session.ID, statusIdle); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/api/sessions/"+session.ID, nil)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := storage.GetSession(ctx, session.ID); err != sql.ErrNoRows {
+		t.Fatalf("session lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if event := receiveEventType(t, events, "session_deleted"); event["sessionId"] != session.ID {
+		t.Fatalf("session_deleted event = %#v", event)
+	}
+}
+
+func receiveEventType(t *testing.T, ch <-chan any, eventType string) map[string]any {
+	t.Helper()
+	deadline := time.After(sessionListTestTimeout)
+	for {
+		select {
+		case event := <-ch:
+			payload, ok := event.(map[string]any)
+			if !ok {
+				continue
+			}
+			if payload["type"] == eventType {
+				return payload
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s event", eventType)
+		}
 	}
 }
 

@@ -28,6 +28,12 @@ vi.mock("@tanstack/react-router", () => ({
   Link: mocks.link
 }));
 
+vi.mock("react-aria-components", () => ({
+  Button: ({ children, className }: { children: string; className?: string }) => (
+    <button className={className}>{children}</button>
+  )
+}));
+
 function agent(overrides: Partial<AgentRuntimeStatus> = {}): AgentRuntimeStatus {
   return {
     id: "agent-default",
@@ -50,6 +56,12 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
   };
 }
 
+const listActions = {
+  busy: false,
+  onDeleteWorkspace: vi.fn(),
+  onUpdateWorkspace: vi.fn()
+};
+
 describe("WorkspaceList", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", createStorage());
@@ -69,7 +81,7 @@ describe("WorkspaceList", () => {
     const { WorkspaceList } = await import("./WorkspaceList");
 
     renderToStaticMarkup(
-      <WorkspaceList agents={[agent(), agent({ id: "agent-remembered" })]} workspaces={[workspace()]} />
+      <WorkspaceList agents={[agent(), agent({ id: "agent-remembered" })]} workspaces={[workspace()]} {...listActions} />
     );
 
     expect(mocks.link).toHaveBeenCalledWith(
@@ -84,7 +96,9 @@ describe("WorkspaceList", () => {
   test("keeps workspace links on the safe legacy route when no agent resolves", async () => {
     const { WorkspaceList } = await import("./WorkspaceList");
 
-    renderToStaticMarkup(<WorkspaceList agents={[agent({ status: { state: "disabled" } })]} workspaces={[workspace()]} />);
+    renderToStaticMarkup(
+      <WorkspaceList agents={[agent({ status: { state: "disabled" } })]} workspaces={[workspace()]} {...listActions} />
+    );
 
     expect(mocks.link).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -93,5 +107,16 @@ describe("WorkspaceList", () => {
       }),
       undefined
     );
+  });
+
+  test("renders workspace management actions", async () => {
+    const { WorkspaceList } = await import("./WorkspaceList");
+
+    const html = renderToStaticMarkup(
+      <WorkspaceList agents={[agent()]} workspaces={[workspace()]} {...listActions} />
+    );
+
+    expect(html).toContain("Edit");
+    expect(html).toContain("Delete");
   });
 });

@@ -55,6 +55,32 @@ type NativeSessionImportResult struct {
 	MaterialChanged bool
 }
 
+type WorkspaceUpdate struct {
+	Name *string
+	Path *string
+}
+
+type SessionMetadataUpdate struct {
+	Title *string
+}
+
+type SessionDeleteBlockers struct {
+	ActiveTurnStatus      *string `json:"activeTurnStatus,omitempty"`
+	PendingApprovalCount  int64   `json:"pendingApprovalCount"`
+	QueuedPromptCount     int64   `json:"queuedPromptCount"`
+	BlockingSessionStatus *string `json:"blockingSessionStatus,omitempty"`
+}
+
+func (b SessionDeleteBlockers) Blocked() bool {
+	return b.ActiveTurnStatus != nil || b.PendingApprovalCount > 0 || b.QueuedPromptCount > 0 || b.BlockingSessionStatus != nil
+}
+
+type WorkspaceDeletePlan struct {
+	Workspace            Workspace `json:"workspace"`
+	SessionCount         int64     `json:"sessionCount"`
+	BlockingSessionCount int64     `json:"blockingSessionCount"`
+}
+
 func openStorage(databaseURL string) (*Storage, error) {
 	path := sqlitePathFromURL(databaseURL)
 	if path != ":memory:" {
@@ -361,22 +387,10 @@ func (s *Storage) repairQueuedPromptsForTerminalSessions(ctx context.Context) (i
 }
 
 func (s *Storage) CreateWorkspace(ctx context.Context, path string, name *string) (Workspace, error) {
-	absolute, err := filepath.Abs(path)
+	storedPath, err := validateWorkspacePath(path)
 	if err != nil {
 		return Workspace{}, err
 	}
-	canonical, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return Workspace{}, fmt.Errorf("workspace path is not accessible: %s: %w", path, err)
-	}
-	info, err := os.Stat(canonical)
-	if err != nil {
-		return Workspace{}, err
-	}
-	if !info.IsDir() {
-		return Workspace{}, fmt.Errorf("workspace path must be a directory")
-	}
-	storedPath := nativePathString(canonical)
 	if existing, err := s.findWorkspaceByPath(ctx, storedPath); err == nil && existing != nil {
 		return *existing, nil
 	}
@@ -394,6 +408,25 @@ func (s *Storage) CreateWorkspace(ctx context.Context, path string, name *string
 		return Workspace{}, err
 	}
 	return Workspace{ID: id, Name: workspaceNameValue, Path: storedPath, CreatedAt: created}, nil
+}
+
+func validateWorkspacePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("workspace path is not accessible: %s: %w", path, err)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace path must be a directory")
+	}
+	return nativePathString(canonical), nil
 }
 
 func (s *Storage) findWorkspaceByPath(ctx context.Context, path string) (*Workspace, error) {
@@ -427,6 +460,116 @@ func (s *Storage) ListWorkspaces(ctx context.Context) ([]Workspace, error) {
 
 func (s *Storage) GetWorkspace(ctx context.Context, id string) (Workspace, error) {
 	return scanWorkspace(s.db.QueryRowContext(ctx, `SELECT id, name, path, created_at FROM workspaces WHERE id = ?`, id))
+}
+
+func (s *Storage) UpdateWorkspace(ctx context.Context, id string, update WorkspaceUpdate) (Workspace, error) {
+	current, err := s.GetWorkspace(ctx, id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	nextPath := current.Path
+	if update.Path != nil {
+		path := strings.TrimSpace(*update.Path)
+		if path == "" {
+			return Workspace{}, badRequest("Workspace path is required")
+		}
+		validated, err := validateWorkspacePath(path)
+		if err != nil {
+			return Workspace{}, badRequest(err.Error())
+		}
+		nextPath = validated
+	}
+	nextName := current.Name
+	if update.Name != nil {
+		nextName = strings.TrimSpace(*update.Name)
+		if nextName == "" {
+			nextName = workspaceName(nextPath)
+		}
+	} else if update.Path != nil && strings.TrimSpace(nextName) == "" {
+		nextName = workspaceName(nextPath)
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE workspaces SET name = ?, path = ? WHERE id = ?`, nextName, nextPath, id)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Workspace{}, conflict("A workspace already exists for this path")
+		}
+		return Workspace{}, err
+	}
+	return s.GetWorkspace(ctx, id)
+}
+
+func (s *Storage) WorkspaceDeletePlan(ctx context.Context, id string) (WorkspaceDeletePlan, error) {
+	workspace, err := s.GetWorkspace(ctx, id)
+	if err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	var sessionCount int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE workspace_id = ?`, id).Scan(&sessionCount); err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE workspace_id = ?`, id)
+	if err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	var sessionIDs []string
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			_ = rows.Close()
+			return WorkspaceDeletePlan{}, err
+		}
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return WorkspaceDeletePlan{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	var blocking int64
+	for _, sessionID := range sessionIDs {
+		blockers, err := s.SessionDeleteBlockers(ctx, sessionID)
+		if err != nil {
+			return WorkspaceDeletePlan{}, err
+		}
+		if blockers.Blocked() {
+			blocking++
+		}
+	}
+	return WorkspaceDeletePlan{Workspace: workspace, SessionCount: sessionCount, BlockingSessionCount: blocking}, nil
+}
+
+func (s *Storage) DeleteWorkspace(ctx context.Context, id string) (WorkspaceDeletePlan, error) {
+	plan, err := s.WorkspaceDeletePlan(ctx, id)
+	if err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	if plan.BlockingSessionCount > 0 {
+		return WorkspaceDeletePlan{}, conflict("Workspace contains sessions with active work, pending approvals, or queued prompts")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	result, err := tx.ExecContext(ctx, `DELETE FROM workspaces WHERE id = ?`, id)
+	if err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return WorkspaceDeletePlan{}, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkspaceDeletePlan{}, err
+	}
+	committed = true
+	return plan, nil
 }
 
 func scanWorkspace(scanner interface{ Scan(dest ...any) error }) (Workspace, error) {
@@ -601,6 +744,95 @@ func (s *Storage) GetSession(ctx context.Context, id string) (Session, error) {
 		       title, native_title, native_updated_at, acp_session_id, external_session_id, status,
 		       import_source, imported_at, created_at, updated_at
 		FROM sessions WHERE id = ?`, id))
+}
+
+func (s *Storage) UpdateSessionMetadata(ctx context.Context, id string, update SessionMetadataUpdate) (Session, error) {
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return Session{}, err
+	}
+	blockers, err := s.SessionDeleteBlockers(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if blockers.Blocked() {
+		return Session{}, conflict("Session metadata cannot be changed while active work, pending approvals, or queued prompts exist")
+	}
+	if update.Title == nil {
+		return s.GetSession(ctx, id)
+	}
+	title := strings.TrimSpace(*update.Title)
+	var titleValue any
+	if title != "" {
+		titleValue = title
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`, titleValue, nowString(), id)
+	if err != nil {
+		return Session{}, err
+	}
+	return s.GetSession(ctx, id)
+}
+
+func (s *Storage) SessionDeleteBlockers(ctx context.Context, id string) (SessionDeleteBlockers, error) {
+	session, err := s.GetSession(ctx, id)
+	if err != nil {
+		return SessionDeleteBlockers{}, err
+	}
+	var blockers SessionDeleteBlockers
+	if session.Status == statusRunning || session.Status == statusStopping || session.Status == statusWaitingApproval {
+		status := session.Status
+		blockers.BlockingSessionStatus = &status
+	}
+	active, err := s.ActiveTurnForSession(ctx, id)
+	if err != nil {
+		return SessionDeleteBlockers{}, err
+	}
+	if active != nil && (active.Status == statusRunning || active.Status == statusStopping || active.Status == statusWaitingApproval) {
+		status := active.Status
+		blockers.ActiveTurnStatus = &status
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM permission_requests WHERE session_id = ? AND status = ?`, id, permissionPending).Scan(&blockers.PendingApprovalCount); err != nil {
+		return SessionDeleteBlockers{}, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_prompts WHERE session_id = ? AND status = ?`, id, queuedPromptQueued).Scan(&blockers.QueuedPromptCount); err != nil {
+		return SessionDeleteBlockers{}, err
+	}
+	return blockers, nil
+}
+
+func (s *Storage) DeleteSession(ctx context.Context, id string) (Session, error) {
+	session, err := s.GetSession(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	blockers, err := s.SessionDeleteBlockers(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if blockers.Blocked() {
+		return Session{}, conflict("Session has active work, pending approvals, or queued prompts")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return Session{}, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, err
+	}
+	committed = true
+	return session, nil
 }
 
 func scanSession(scanner interface{ Scan(dest ...any) error }) (Session, error) {

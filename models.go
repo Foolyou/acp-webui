@@ -382,6 +382,13 @@ func stringPtr(value string) *string {
 	return &value
 }
 
+func stringPtrValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 var (
 	nowStringMu       sync.Mutex
 	nowStringClock    = func() time.Time { return time.Now().UTC() }

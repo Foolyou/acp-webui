@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,6 +59,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/inbox", s.handleInbox)
 	s.mux.HandleFunc("GET /api/workspaces", s.handleWorkspaces)
 	s.mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
+	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}", s.handleWorkspace)
+	s.mux.HandleFunc("PATCH /api/workspaces/{workspaceId}", s.handleUpdateWorkspace)
+	s.mux.HandleFunc("DELETE /api/workspaces/{workspaceId}", s.handleDeleteWorkspace)
 	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}/sessions", s.handleWorkspaceSessions)
 	s.mux.HandleFunc("POST /api/workspaces/{workspaceId}/sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /api/workspaces/{workspaceId}/agents/{agentId}/sessions", s.handleWorkspaceAgentSessions)
@@ -68,6 +72,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/prompt-templates/{templateId}/use", s.handleUsePromptTemplate)
 	s.mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	s.mux.HandleFunc("GET /api/sessions/{sessionId}", s.handleSession)
+	s.mux.HandleFunc("PATCH /api/sessions/{sessionId}", s.handleUpdateSession)
+	s.mux.HandleFunc("DELETE /api/sessions/{sessionId}", s.handleDeleteSession)
 	s.mux.HandleFunc("POST /api/sessions/{sessionId}/restore", s.handleRestoreSession)
 	s.mux.HandleFunc("POST /api/sessions/{sessionId}/config-options/{configId}", s.handleSetSessionConfig)
 	s.mux.HandleFunc("GET /api/sessions/{sessionId}/review-artifacts", s.handleReviewArtifacts)
@@ -370,6 +376,64 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, workspace)
 }
 
+func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
+	workspace, err := s.storage.GetWorkspace(r.Context(), r.PathValue("workspaceId"))
+	if err != nil {
+		writeError(w, notFound("Workspace not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, workspace)
+}
+
+func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name *string `json:"name"`
+		Path *string `json:"path"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, err)
+		return
+	}
+	workspaceID := r.PathValue("workspaceId")
+	beforeItems, _ := s.storage.ListSessionItems(r.Context(), &workspaceID)
+	workspace, err := s.storage.UpdateWorkspace(r.Context(), workspaceID, WorkspaceUpdate{Name: payload.Name, Path: payload.Path})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, notFound("Workspace not found"))
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	s.events.Publish(map[string]any{"type": "workspace_changed", "workspaceId": workspace.ID, "workspace": workspace})
+	s.publishSessionListChangedForItems(beforeItems)
+	writeJSON(w, http.StatusOK, workspace)
+}
+
+func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	workspaceID := r.PathValue("workspaceId")
+	beforeItems, _ := s.storage.ListSessionItems(r.Context(), &workspaceID)
+	plan, err := s.storage.DeleteWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, notFound("Workspace not found"))
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	for _, item := range beforeItems {
+		s.agents.unregisterSession(item.Session)
+	}
+	s.events.Publish(map[string]any{
+		"type":         "workspace_deleted",
+		"workspaceId":  plan.Workspace.ID,
+		"sessionCount": plan.SessionCount,
+	})
+	s.publishSessionListChangedForItems(beforeItems)
+	writeJSON(w, http.StatusOK, plan)
+}
+
 func (s *Server) handleWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.PathValue("workspaceId")
 	if _, err := s.storage.GetWorkspace(r.Context(), workspaceID); err != nil {
@@ -494,6 +558,74 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]json.RawMessage
+	if err := decodeJSON(r, &raw); err != nil {
+		writeError(w, err)
+		return
+	}
+	for _, key := range []string{"id", "workspaceId", "agentId", "agentName", "acpSessionId", "externalSessionId"} {
+		if _, ok := raw[key]; ok {
+			writeError(w, badRequest("Session runtime identity fields cannot be updated"))
+			return
+		}
+	}
+	var update SessionMetadataUpdate
+	if value, ok := raw["title"]; ok {
+		if string(value) == "null" {
+			empty := ""
+			update.Title = &empty
+		} else {
+			var title string
+			if err := json.Unmarshal(value, &title); err != nil {
+				writeError(w, badRequest("Session title must be a string"))
+				return
+			}
+			update.Title = &title
+		}
+	}
+	sessionID := r.PathValue("sessionId")
+	updated, err := s.storage.UpdateSessionMetadata(r.Context(), sessionID, update)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, notFound("Session not found"))
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	detail, err := s.sessionDetail(r.Context(), updated.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.events.Publish(map[string]any{"type": "session_updated", "sessionId": updated.ID, "session": updated})
+	s.publishSessionListChanged(updated.WorkspaceID, updated.AgentID, 1)
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionId")
+	deleted, err := s.storage.DeleteSession(r.Context(), sessionID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, notFound("Session not found"))
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	s.agents.unregisterSession(deleted)
+	s.events.Publish(map[string]any{
+		"type":        "session_deleted",
+		"sessionId":   deleted.ID,
+		"workspaceId": deleted.WorkspaceID,
+		"agentId":     deleted.AgentID,
+	})
+	s.publishSessionListChanged(deleted.WorkspaceID, deleted.AgentID, 1)
+	writeJSON(w, http.StatusOK, deleted)
 }
 
 func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
@@ -1078,6 +1210,27 @@ func (s *Server) applySessionListContinuity(items []SessionListItem) []SessionLi
 		}
 	}
 	return items
+}
+
+func (s *Server) publishSessionListChanged(workspaceID, agentID string, count int) {
+	s.events.Publish(map[string]any{
+		"type":        "session_list_changed",
+		"workspaceId": workspaceID,
+		"agentId":     agentID,
+		"count":       count,
+	})
+}
+
+func (s *Server) publishSessionListChangedForItems(items []SessionListItem) {
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		key := item.Session.WorkspaceID + "\x00" + item.Session.AgentID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		s.publishSessionListChanged(item.Session.WorkspaceID, item.Session.AgentID, 1)
+	}
 }
 
 func valueOr(value *string, fallback string) string {

@@ -59,7 +59,13 @@ export function WorkspacesRoute() {
         description="Create a workspace or reopen one of your existing local workspaces."
       />
       <WorkspaceForm busy={state.busy} onCreateWorkspace={actions.createWorkspace} />
-      <WorkspaceList agents={state.agents} workspaces={state.workspaces} />
+      <WorkspaceList
+        agents={state.agents}
+        busy={state.busy}
+        onDeleteWorkspace={actions.deleteWorkspace}
+        onUpdateWorkspace={actions.updateWorkspace}
+        workspaces={state.workspaces}
+      />
     </div>
   );
 }
@@ -298,6 +304,8 @@ export function WorkspaceAgentSessionDetailRoute() {
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}
+      onDeleteSession={actions.deleteCurrentSession}
+      onUpdateSessionTitle={actions.updateCurrentSessionTitle}
       transcriptionAvailable={state.transcription.available}
     />
   );

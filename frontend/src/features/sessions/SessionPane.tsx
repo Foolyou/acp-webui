@@ -66,6 +66,8 @@ export function SessionPane({
   onSetSessionConfigOption,
   onStopSession,
   onSendPrompt,
+  onDeleteSession,
+  onUpdateSessionTitle,
   transcriptionAvailable
 }: {
   agentStatus: AgentRuntimeStatus | null;
@@ -78,6 +80,8 @@ export function SessionPane({
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
   onStopSession: () => Promise<void>;
   onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
+  onDeleteSession: () => Promise<void>;
+  onUpdateSessionTitle: (title: string) => Promise<void>;
   transcriptionAvailable: boolean;
 }) {
   const waitingApproval =
@@ -327,7 +331,9 @@ export function SessionPane({
         currentSession={currentSession}
         modelDisabledReason={modelDisabledReason}
         onOpenDiffFallback={onOpenDiffFallback}
+        onDeleteSession={onDeleteSession}
         onSetSessionConfigOption={onSetSessionConfigOption}
+        onUpdateSessionTitle={onUpdateSessionTitle}
         permissionMode={permissionMode}
         permissionModes={permissionModes}
         sessionSelectOptions={sessionSelectOptions}
@@ -444,7 +450,9 @@ function SessionContextHeader({
   currentSession,
   modelDisabledReason,
   onOpenDiffFallback,
+  onDeleteSession,
   onSetSessionConfigOption,
+  onUpdateSessionTitle,
   permissionMode,
   permissionModes,
   sessionSelectOptions
@@ -455,7 +463,9 @@ function SessionContextHeader({
   currentSession: SessionDetail;
   modelDisabledReason: string | null;
   onOpenDiffFallback: () => void;
+  onDeleteSession: () => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
+  onUpdateSessionTitle: (title: string) => Promise<void>;
   permissionMode: PermissionModeId;
   permissionModes: ReturnType<typeof fallbackPermissionModes>;
   sessionSelectOptions: NonNullable<SessionDetail["configOptions"]>;
@@ -464,13 +474,32 @@ function SessionContextHeader({
     sessionId: currentSession.session.id,
     value: false
   });
+  const [titleDraft, setTitleDraft] = useState(currentSession.session.title ?? "");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const infoExpanded = infoExpandedState.sessionId === currentSession.session.id ? infoExpandedState.value : false;
+
+  useEffect(() => {
+    setTitleDraft(currentSession.session.title ?? "");
+    setConfirmDelete(false);
+  }, [currentSession.session.id, currentSession.session.title]);
 
   function toggleInfoExpanded() {
     setInfoExpandedState((current) => ({
       sessionId: currentSession.session.id,
       value: current.sessionId === currentSession.session.id ? !current.value : true
     }));
+  }
+
+  async function saveTitle() {
+    await onUpdateSessionTitle(titleDraft);
+  }
+
+  async function deleteSession() {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    await onDeleteSession();
   }
 
   return (
@@ -507,11 +536,25 @@ function SessionContextHeader({
         <div className="session-context-controls">
           <div className="session-expanded-context">
             <span>{currentSession.workspace.name}</span>
-            <strong>{agentName} Session</strong>
+            <strong>{currentSession.session.title?.trim() || `${agentName} Session`}</strong>
             <span className={`badge ${currentSession.session.status}`}>
               {sessionStatusLabel(currentSession.session.status)}
               <span className="visually-hidden"> {currentSession.session.status}</span>
             </span>
+          </div>
+          <div className="management-form compact">
+            <label>
+              <span>Title</span>
+              <input
+                aria-label="Session title"
+                disabled={busy}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                value={titleDraft}
+              />
+            </label>
+            <Button className="secondary small" isDisabled={busy} onPress={saveTitle}>
+              Save title
+            </Button>
           </div>
           {sessionSelectOptions.length ? (
             <div className="session-config-controls">
@@ -530,6 +573,9 @@ function SessionContextHeader({
           <div className="section-actions">
             <Button className="secondary small" isDisabled={busy} onPress={onOpenDiffFallback}>
               Diff
+            </Button>
+            <Button className="secondary small danger" isDisabled={busy} onPress={deleteSession}>
+              {confirmDelete ? "Confirm delete" : "Delete"}
             </Button>
           </div>
         </div>

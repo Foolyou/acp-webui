@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   },
   creatingSessionPane: vi.fn(),
   sessionsPane: vi.fn(),
-  sessionPane: vi.fn()
+  sessionPane: vi.fn(),
+  workspaceList: vi.fn()
 }));
 
 function createStorage(): Storage {
@@ -84,7 +85,7 @@ vi.mock("../features/workspaces/WorkspaceForm", () => ({
 }));
 
 vi.mock("../features/workspaces/WorkspaceList", () => ({
-  WorkspaceList: () => null
+  WorkspaceList: mocks.workspaceList
 }));
 
 vi.mock("../components/common", () => ({
@@ -186,6 +187,8 @@ function setContext(context: Partial<AppRouterContext> = {}) {
       cancelApproval: vi.fn(),
       createSession: vi.fn(),
       createWorkspace: vi.fn(),
+      deleteCurrentSession: vi.fn(),
+      deleteWorkspace: vi.fn(),
       loadSession: vi.fn(),
       loadSessionList: vi.fn(),
       openDiffFallback: vi.fn(),
@@ -194,6 +197,8 @@ function setContext(context: Partial<AppRouterContext> = {}) {
       restoreSession: vi.fn(),
       sendPrompt: vi.fn(),
       setSessionConfigOption: vi.fn(),
+      updateCurrentSessionTitle: vi.fn(),
+      updateWorkspace: vi.fn(),
       setActiveReview: vi.fn(),
       setCurrentWorkspace: vi.fn(),
       setCurrentWorkspaceAgent: vi.fn()
@@ -214,12 +219,29 @@ describe("workspace-agent route components", () => {
     mocks.navigate.mockReset();
     mocks.sessionsPane.mockReset();
     mocks.sessionPane.mockReset();
+    mocks.workspaceList.mockReset();
     mocks.params.workspaceAgentSessions = { workspaceId: "workspace-route", agentId: "agent-route" };
     mocks.params.workspaceAgentSessionDetail = {
       workspaceId: "workspace-route",
       agentId: "agent-route",
       sessionId: "session-route"
     };
+  });
+
+  test("passes workspace management actions to Workspaces route", async () => {
+    const context = setContext();
+    const { WorkspacesRoute } = await import("./RouteComponents");
+
+    const result = WorkspacesRoute();
+    const children = Array.isArray(result.props.children) ? result.props.children : [result.props.children];
+    const workspaceList = children.find((child: { type?: unknown }) => child?.type === mocks.workspaceList);
+
+    expect(workspaceList).toMatchObject({
+      props: expect.objectContaining({
+        onDeleteWorkspace: context.actions.deleteWorkspace,
+        onUpdateWorkspace: context.actions.updateWorkspace
+      })
+    });
   });
 
   test("replaces legacy workspace session list with remembered agent route", async () => {
@@ -442,6 +464,31 @@ describe("workspace-agent route components", () => {
         sessionId: "session-route"
       },
       replace: true
+    });
+  });
+
+  test("passes session management actions to Session Detail route", async () => {
+    mocks.params.workspaceAgentSessionDetail = {
+      workspaceId: "workspace-actual",
+      agentId: "agent-actual",
+      sessionId: "session-route"
+    };
+    const context = setContext({
+      state: {
+        ...baseState(),
+        currentSession: detail()
+      }
+    });
+    const { WorkspaceAgentSessionDetailRoute } = await import("./RouteComponents");
+
+    const result = WorkspaceAgentSessionDetailRoute();
+
+    expect(result).toMatchObject({
+      type: mocks.sessionPane,
+      props: expect.objectContaining({
+        onDeleteSession: context.actions.deleteCurrentSession,
+        onUpdateSessionTitle: context.actions.updateCurrentSessionTitle
+      })
     });
   });
 });

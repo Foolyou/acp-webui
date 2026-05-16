@@ -76,6 +76,12 @@ export type Workspace = {
   createdAt: string;
 };
 
+export type WorkspaceDeletePlan = {
+  workspace: Workspace;
+  sessionCount: number;
+  blockingSessionCount: number;
+};
+
 export type Session = {
   id: string;
   workspaceId: string;
@@ -384,6 +390,10 @@ export type RealtimeEvent =
   | { type: "session_restore_succeeded"; sessionId: string }
   | { type: "session_restore_failed"; sessionId: string; message: string }
   | { type: "session_list_changed"; workspaceId: string; agentId: string; count: number }
+  | { type: "workspace_changed"; workspaceId: string; workspace: Workspace }
+  | { type: "workspace_deleted"; workspaceId: string; sessionCount: number }
+  | { type: "session_updated"; sessionId: string; session: Session }
+  | { type: "session_deleted"; sessionId: string; workspaceId: string; agentId: string }
   | {
       type: "session_config_updated";
       sessionId: string;

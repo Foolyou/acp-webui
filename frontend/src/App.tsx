@@ -43,7 +43,9 @@ import type {
   PermissionModeId,
   PermissionRequest,
   RealtimeEvent,
-  SessionDetail
+  Session,
+  SessionDetail,
+  Workspace
 } from "./types";
 import { notifyForRealtimeTransition } from "./utils/browserNotifications";
 import { fallbackPermissionModes } from "./utils/permissionMode";
@@ -161,6 +163,45 @@ function mergeTimelineItem(timeline: SessionDetail["timeline"], item: SessionDet
     ? timeline.map((candidate) => (`${candidate.kind}-${candidate.id}` === key ? item : candidate))
     : [...timeline, item];
   return next.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+}
+
+function replaceWorkspaceInState(current: UiState, workspace: Workspace): UiState {
+  return {
+    ...current,
+    workspaces: current.workspaces.map((item) => (item.id === workspace.id ? workspace : item)),
+    currentSession:
+      current.currentSession?.workspace.id === workspace.id
+        ? { ...current.currentSession, workspace }
+        : current.currentSession,
+    sessions: current.sessions.map((item) =>
+      item.workspace.id === workspace.id ? { ...item, workspace } : item
+    )
+  };
+}
+
+function replaceSessionInState(current: UiState, detail: SessionDetail): UiState {
+  return {
+    ...current,
+    currentSession:
+      current.currentSession?.session.id === detail.session.id ? detail : current.currentSession,
+    sessions: [
+      sessionDetailToListItem(detail),
+      ...current.sessions.filter((item) => item.session.id !== detail.session.id)
+    ],
+    liveAssistant:
+      current.currentSession?.session.id === detail.session.id
+        ? liveAssistantAfterSessionReconcile(current.liveAssistant, detail)
+        : current.liveAssistant
+  };
+}
+
+function removeSessionFromState(current: UiState, session: Session): UiState {
+  return {
+    ...current,
+    currentSession: current.currentSession?.session.id === session.id ? null : current.currentSession,
+    sessions: current.sessions.filter((item) => item.session.id !== session.id),
+    liveAssistant: current.currentSession?.session.id === session.id ? "" : current.liveAssistant
+  };
 }
 
 async function waitForPromptSessionDetail(sessionId: string, queued: boolean) {
@@ -379,6 +420,40 @@ export function App() {
           void refreshScopedSessionList(message);
           return;
         }
+        if (message.type === "workspace_changed") {
+          setState((current) => replaceWorkspaceInState(current, message.workspace));
+          return;
+        }
+        if (message.type === "workspace_deleted") {
+          setState((current) => {
+            const nextWorkspaces = current.workspaces.filter((workspace) => workspace.id !== message.workspaceId);
+            const currentWorkspaceDeleted = current.currentWorkspaceId === message.workspaceId;
+            const currentSessionDeleted = current.currentSession?.workspace.id === message.workspaceId;
+            return {
+              ...current,
+              workspaces: nextWorkspaces,
+              sessions: current.sessions.filter((item) => item.workspace.id !== message.workspaceId),
+              currentWorkspaceId: currentWorkspaceDeleted ? null : current.currentWorkspaceId,
+              currentAgentId: currentWorkspaceDeleted ? null : current.currentAgentId,
+              currentSession: currentSessionDeleted ? null : current.currentSession,
+              liveAssistant: currentSessionDeleted ? "" : current.liveAssistant
+            };
+          });
+          return;
+        }
+        if (message.type === "session_updated") {
+          void reconcileCurrentSession();
+          return;
+        }
+        if (message.type === "session_deleted") {
+          setState((current) => ({
+            ...current,
+            currentSession: current.currentSession?.session.id === message.sessionId ? null : current.currentSession,
+            sessions: current.sessions.filter((item) => item.session.id !== message.sessionId),
+            liveAssistant: current.currentSession?.session.id === message.sessionId ? "" : current.liveAssistant
+          }));
+          return;
+        }
         setState((current) => {
           const snapshot = applyRealtimeEvent(
             {
@@ -543,6 +618,46 @@ export function App() {
       });
     },
     [runBusy, state.agents]
+  );
+
+  const updateWorkspace = useCallback(
+    async (workspaceId: string, update: { name?: string; path?: string }) => {
+      await runBusy(async () => {
+        const workspace = await api.updateWorkspace(workspaceId, update);
+        setState((current) => replaceWorkspaceInState(current, workspace));
+      });
+    },
+    [runBusy]
+  );
+
+  const deleteWorkspace = useCallback(
+    async (workspaceId: string) => {
+      await runBusy(async () => {
+        const plan = await api.deleteWorkspace(workspaceId);
+        setState((current) => {
+          const nextWorkspaces = current.workspaces.filter((workspace) => workspace.id !== workspaceId);
+          const currentWorkspaceDeleted = current.currentWorkspaceId === workspaceId;
+          const currentSessionDeleted = current.currentSession?.workspace.id === workspaceId;
+          return {
+            ...current,
+            workspaces: nextWorkspaces,
+            sessions: current.sessions.filter((item) => item.workspace.id !== workspaceId),
+            currentWorkspaceId: currentWorkspaceDeleted ? null : current.currentWorkspaceId,
+            currentAgentId: currentWorkspaceDeleted ? null : current.currentAgentId,
+            currentSession: currentSessionDeleted ? null : current.currentSession,
+            liveAssistant: currentSessionDeleted ? "" : current.liveAssistant
+          };
+        });
+        const remaining = state.workspaces.filter((workspace) => workspace.id !== workspaceId);
+        const target = remaining[0] ? workspaceSessionsRouteTarget(remaining[0].id, state.agents) : { to: "/workspaces" as const };
+        localStorage.removeItem("currentSessionId");
+        if (state.currentWorkspaceId === workspaceId || plan.workspace.id === workspaceId) {
+          localStorage.removeItem("currentWorkspaceId");
+          await router.navigate(target);
+        }
+      });
+    },
+    [runBusy, state.agents, state.currentWorkspaceId, state.workspaces]
   );
 
   const createSession = useCallback(async (
@@ -794,6 +909,33 @@ export function App() {
     });
   }, [runBusy, state.currentSession?.session.id]);
 
+  const updateCurrentSessionTitle = useCallback(
+    async (title: string) => {
+      const sessionId = state.currentSession?.session.id;
+      if (!sessionId) return;
+      await runBusy(async () => {
+        const detail = await api.updateSession(sessionId, { title });
+        setState((current) => replaceSessionInState(current, detail));
+      });
+    },
+    [runBusy, state.currentSession?.session.id]
+  );
+
+  const deleteCurrentSession = useCallback(async () => {
+    const session = state.currentSession?.session;
+    const workspace = state.currentSession?.workspace;
+    if (!session || !workspace) return;
+    await runBusy(async () => {
+      const deleted = await api.deleteSession(session.id);
+      setState((current) => removeSessionFromState(current, deleted));
+      localStorage.removeItem("currentSessionId");
+      await router.navigate({
+        to: "/workspaces/$workspaceId/agents/$agentId/sessions",
+        params: { workspaceId: workspace.id, agentId: session.agentId }
+      });
+    });
+  }, [runBusy, state.currentSession?.session, state.currentSession?.workspace]);
+
   const openReviewArtifact = useCallback(
     async (artifactId: string) => {
       const sessionId = state.currentSession?.session.id;
@@ -851,6 +993,8 @@ export function App() {
         cancelApproval,
         createSession,
         createWorkspace,
+        deleteCurrentSession,
+        deleteWorkspace,
         loadSession,
         loadSessionList,
         openDiffFallback,
@@ -859,6 +1003,8 @@ export function App() {
         restoreSession,
         sendPrompt,
         setSessionConfigOption,
+        updateCurrentSessionTitle,
+        updateWorkspace,
         setActiveReview: (artifact) => setState((current) => ({ ...current, activeReview: artifact })),
         setCurrentWorkspace,
         setCurrentWorkspaceAgent
@@ -870,6 +1016,8 @@ export function App() {
       cancelApproval,
       createSession,
       createWorkspace,
+      deleteCurrentSession,
+      deleteWorkspace,
       loadSession,
       loadSessionList,
       openDiffFallback,
@@ -881,7 +1029,9 @@ export function App() {
       setSessionConfigOption,
       setCurrentWorkspace,
       setCurrentWorkspaceAgent,
-      state
+      state,
+      updateCurrentSessionTitle,
+      updateWorkspace
     ]
   );
 

@@ -1135,6 +1135,106 @@ func TestStorageBuildsSessionDetailTimeline(t *testing.T) {
 	}
 }
 
+func TestStorageWorkspaceAndSessionManagementCRUD(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	firstDir := t.TempDir()
+	workspace, err := storage.CreateWorkspace(ctx, firstDir, stringPtr("Original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDir := t.TempDir()
+	updated, err := storage.UpdateWorkspace(ctx, workspace.ID, WorkspaceUpdate{Name: stringPtr("Renamed"), Path: &secondDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Renamed" || updated.Path == workspace.Path {
+		t.Fatalf("updated workspace = %#v", updated)
+	}
+
+	acpSessionID := "management-acp-session"
+	session, err := storage.CreateSession(ctx, updated.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := storage.UpdateSessionMetadata(ctx, session.ID, SessionMetadataUpdate{Title: stringPtr("Managed title")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Title == nil || *renamed.Title != "Managed title" || renamed.ACPSessionID == nil || *renamed.ACPSessionID != acpSessionID {
+		t.Fatalf("renamed session = %#v", renamed)
+	}
+
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "hello", []MessageContentBlock{textBlock("hello")}, statusIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateReviewArtifact(ctx, session.ID, nil, "markdown", "Evidence", "summary", map[string]any{"markdown": "# ok"}, "tool_call"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued", []MessageContentBlock{textBlock("queued")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.DeleteSession(ctx, session.ID); err == nil || !strings.Contains(err.Error(), "queued prompts") {
+		t.Fatalf("delete with queued prompt error = %v", err)
+	}
+	if err := storage.MarkQueuedPromptsFailed(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := storage.DeleteSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.ID != session.ID {
+		t.Fatalf("deleted session = %#v", deleted)
+	}
+	if _, err := storage.GetSession(ctx, session.ID); err != sql.ErrNoRows {
+		t.Fatalf("deleted session lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if count := storage.count(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ?`, session.ID); count != 0 {
+		t.Fatalf("message count after delete = %d, want 0", count)
+	}
+	if count := storage.count(ctx, `SELECT COUNT(*) FROM review_artifacts WHERE session_id = ?`, session.ID); count != 0 {
+		t.Fatalf("review artifact count after delete = %d, want 0", count)
+	}
+}
+
+func TestStorageDeleteWorkspaceBlocksActiveSessionsAndCascades(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "workspace-delete-acp-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.StartActiveTurn(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.DeleteWorkspace(ctx, workspace.ID); err == nil || !strings.Contains(err.Error(), "active work") {
+		t.Fatalf("delete active workspace error = %v", err)
+	}
+	if err := storage.FinishActiveTurn(ctx, session.ID, statusIdle); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := storage.DeleteWorkspace(ctx, workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SessionCount != 1 || plan.BlockingSessionCount != 0 {
+		t.Fatalf("delete plan = %#v", plan)
+	}
+	if _, err := storage.GetWorkspace(ctx, workspace.ID); err != sql.ErrNoRows {
+		t.Fatalf("deleted workspace lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := storage.GetSession(ctx, session.ID); err != sql.ErrNoRows {
+		t.Fatalf("cascaded session lookup error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func applyEmbeddedMigrationsForOldSQLxDB(t *testing.T, db *sql.DB) {
 	t.Helper()
 	entries, err := fs.ReadDir(migrations.FS, ".")

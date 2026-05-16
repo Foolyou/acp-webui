@@ -13,7 +13,8 @@ import type {
   SessionListItem,
   SessionDetail,
   SkillSummary,
-  Workspace
+  Workspace,
+  WorkspaceDeletePlan
 } from "./types";
 
 export class UnauthorizedError extends Error {
@@ -95,6 +96,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path })
     }),
+  workspace: (workspaceId: string) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspaceId)}`),
+  updateWorkspace: (workspaceId: string, update: { name?: string; path?: string }) =>
+    request<Workspace>(`/api/workspaces/${encodeURIComponent(workspaceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(update)
+    }),
+  deleteWorkspace: (workspaceId: string) =>
+    request<WorkspaceDeletePlan>(`/api/workspaces/${encodeURIComponent(workspaceId)}`, {
+      method: "DELETE"
+    }),
   createSession: (
     workspaceId: string,
     agentId?: string,
@@ -120,6 +131,15 @@ export const api = {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/sessions`
     ),
   session: (sessionId: string) => request<SessionDetail>(`/api/sessions/${sessionId}`),
+  updateSession: (sessionId: string, update: { title?: string | null }) =>
+    request<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(update)
+    }),
+  deleteSession: (sessionId: string) =>
+    request<SessionDetail["session"]>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE"
+    }),
   promptTemplates: (workspaceId: string, agentId: string) =>
     request<PromptTemplate[]>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/prompt-templates`

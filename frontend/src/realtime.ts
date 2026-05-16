@@ -125,6 +125,12 @@ export function applyRealtimeEvent(state: AppSnapshot, event: RealtimeEvent): Ap
 
     case "session_list_changed":
       return state;
+
+    case "workspace_changed":
+    case "workspace_deleted":
+    case "session_updated":
+    case "session_deleted":
+      return state;
   }
 }
 

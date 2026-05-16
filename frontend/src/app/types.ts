@@ -48,6 +48,8 @@ export type AppActions = {
     launchControlValues?: Record<string, string>
   ) => Promise<void>;
   createWorkspace: (path: string) => Promise<void>;
+  updateWorkspace: (workspaceId: string, update: { name?: string; path?: string }) => Promise<void>;
+  deleteWorkspace: (workspaceId: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessionList: (workspaceId?: string | null, agentId?: string | null) => Promise<void>;
   openDiffFallback: () => Promise<void>;
@@ -56,6 +58,8 @@ export type AppActions = {
   restoreSession: (sessionId: string) => Promise<void>;
   sendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
   setSessionConfigOption: (configId: string, value: string) => Promise<void>;
+  updateCurrentSessionTitle: (title: string) => Promise<void>;
+  deleteCurrentSession: () => Promise<void>;
   setActiveReview: (artifact: ReviewArtifact | null) => void;
   setCurrentWorkspace: (workspaceId: string | null) => void;
   setCurrentWorkspaceAgent: (workspaceId: string, agentId: string | null) => void;

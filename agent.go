@@ -182,6 +182,14 @@ func (m *AgentRuntimeManager) runtimeForSession(ctx context.Context, session Ses
 	return m.runtimeForLaunchProfile(ctx, session.AgentID, profile, start)
 }
 
+func (m *AgentRuntimeManager) unregisterSession(session Session) {
+	runtime, err := m.runtimeForSession(context.Background(), session, false)
+	if err != nil || runtime == nil {
+		return
+	}
+	runtime.UnregisterSession(session)
+}
+
 func (m *AgentRuntimeManager) SyncWorkspaceAgentSessions(ctx context.Context, workspace Workspace, agentID string, profile ResolvedAgentLaunchProfile) ([]SessionListItem, error) {
 	resolvedAgentID, err := m.resolveAgentID(agentID)
 	if err != nil {
@@ -770,6 +778,21 @@ func (r *AgentRuntime) ListSessions(ctx context.Context, cwd string) ([]ACPSessi
 func (r *AgentRuntime) RegisterSession(acpSessionID, localSessionID string) {
 	r.mu.Lock()
 	r.sessionMap[acpSessionID] = localSessionID
+	r.mu.Unlock()
+}
+
+func (r *AgentRuntime) UnregisterSession(session Session) {
+	r.mu.Lock()
+	for _, key := range []string{stringPtrValue(session.ACPSessionID), stringPtrValue(session.ExternalSessionID)} {
+		if key == "" {
+			continue
+		}
+		if localSessionID := r.sessionMap[key]; localSessionID == session.ID {
+			delete(r.sessionMap, key)
+		}
+		delete(r.restoreMap, key)
+		delete(r.assistant, key)
+	}
 	r.mu.Unlock()
 }
 

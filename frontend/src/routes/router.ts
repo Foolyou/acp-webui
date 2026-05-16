@@ -22,6 +22,8 @@ export const placeholderContext: AppRouterContext = {
     cancelApproval: noopAsync,
     createSession: noopAsync,
     createWorkspace: noopAsync,
+    deleteCurrentSession: noopAsync,
+    deleteWorkspace: noopAsync,
     loadSession: noopAsync,
     loadSessionList: noopAsync,
     openDiffFallback: noopAsync,
@@ -30,6 +32,8 @@ export const placeholderContext: AppRouterContext = {
     restoreSession: noopAsync,
     sendPrompt: noopAsync,
     setSessionConfigOption: noopAsync,
+    updateCurrentSessionTitle: noopAsync,
+    updateWorkspace: noopAsync,
     setActiveReview: () => {},
     setCurrentWorkspace: () => {},
     setCurrentWorkspaceAgent: () => {}
