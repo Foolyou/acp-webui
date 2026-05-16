@@ -932,6 +932,112 @@ func TestStorageRepairsOnlyRestoredRunningSessionsWithoutPendingApproval(t *test
 	}
 }
 
+func TestStorageFinalizesRunningAssistantMessagesForSession(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "finalize-assistant"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAssistant, err := storage.CreateMessage(ctx, session.ID, roleAssistant, "still live", []MessageContentBlock{textBlock("still live")}, statusRunning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued user", []MessageContentBlock{textBlock("queued user")}, "queued"); err != nil {
+		t.Fatal(err)
+	}
+
+	finalized, err := storage.finalizeRunningAssistantMessagesForSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized != 1 {
+		t.Fatalf("finalized = %d, want 1", finalized)
+	}
+	updated, err := storage.GetMessage(ctx, runningAssistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusIdle {
+		t.Fatalf("assistant status = %s, want idle", updated.Status)
+	}
+}
+
+func TestStorageRepairsStaleRunningTurnSessions(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createSession := func(acpSessionID string) Session {
+		t.Helper()
+		session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return session
+	}
+	stale := createSession("stale-running")
+	waiting := createSession("waiting-running")
+	active := createSession("active-running")
+	if err := storage.UpdateSessionStatus(ctx, stale.ID, statusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateMessage(ctx, stale.ID, roleAssistant, "stale assistant", []MessageContentBlock{textBlock("stale assistant")}, statusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.UpdateSessionStatus(ctx, waiting.ID, statusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    waiting.ID,
+		ACPSessionID: "waiting-running",
+		ACPRequestID: "approval-1",
+		Title:        "Approve",
+		Kind:         "execute",
+		ToolCall:     map[string]any{},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.StartActiveTurn(ctx, active.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := storage.repairStaleRunningTurnSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	staleAfter, _ := storage.GetSession(ctx, stale.ID)
+	waitingAfter, _ := storage.GetSession(ctx, waiting.ID)
+	activeAfter, _ := storage.GetSession(ctx, active.ID)
+	if staleAfter.Status != statusIdle {
+		t.Fatalf("stale status = %s, want idle", staleAfter.Status)
+	}
+	if waitingAfter.Status != statusWaitingApproval {
+		t.Fatalf("waiting status = %s, want waiting_approval", waitingAfter.Status)
+	}
+	if activeAfter.Status != statusRunning {
+		t.Fatalf("active status = %s, want running", activeAfter.Status)
+	}
+	messages, err := storage.ListMessages(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Status != statusIdle {
+		t.Fatalf("stale messages = %#v, want finalized assistant", messages)
+	}
+}
+
 func TestStorageRepairsQueuedPromptsForTerminalSessions(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)

@@ -16,6 +16,9 @@ func TestAgentRuntimeFlushesAssistantChunksBeforeToolCalls(t *testing.T) {
 	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
 	runtime.RegisterSession("acp-session", session.ID)
 	runtime.beginAssistantBuffer("acp-session")
+	if _, err := storage.StartActiveTurn(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	runtime.handleSessionUpdate(sessionUpdate(t, "acp-session", map[string]any{
 		"sessionUpdate": "agent_message_chunk",
@@ -175,6 +178,94 @@ func TestAgentRuntimeSkipsRestoreReplayWhenAssistantHistoryExists(t *testing.T) 
 	}
 	if len(calls) != 0 {
 		t.Fatalf("tool calls = %#v", calls)
+	}
+}
+
+func TestAgentRuntimeResolvePermissionDoesNotLeaveRunningWithoutActiveTurn(t *testing.T) {
+	ctx := context.Background()
+	storage, session := testRuntimeSession(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	permission, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: "acp-session",
+		ACPRequestID: "permission-1",
+		Title:        "Approve command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.ResolvePermission(ctx, permission.ID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusIdle {
+		t.Fatalf("session status = %s, want idle when active turn is missing", updated.Status)
+	}
+}
+
+func TestAgentRuntimeResolvePermissionKeepsRunningWithActiveTurn(t *testing.T) {
+	ctx := context.Background()
+	storage, session := testRuntimeSession(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	if _, err := storage.StartActiveTurn(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	permission, err := storage.CreatePermissionRequest(ctx, NewPermissionRequest{
+		SessionID:    session.ID,
+		ACPSessionID: "acp-session",
+		ACPRequestID: "permission-1",
+		Title:        "Approve command",
+		Kind:         "execute",
+		ToolCall:     map[string]any{},
+		Options:      []PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.ResolvePermission(ctx, permission.ID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := storage.ActiveTurnForSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusRunning || active == nil {
+		t.Fatalf("session status = %s active = %#v, want running active turn", updated.Status, active)
+	}
+}
+
+func TestAgentRuntimePersistsLateAssistantChunkIdleWithoutActiveTurn(t *testing.T) {
+	ctx := context.Background()
+	storage, session := testRuntimeSession(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	runtime.RegisterSession("acp-session", session.ID)
+
+	runtime.handleSessionUpdate(sessionUpdate(t, "acp-session", map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"content":       map[string]any{"type": "text", "text": "Late final answer"},
+	}))
+
+	messages, err := storage.ListMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one assistant message", messages)
+	}
+	if messages[0].Status != statusIdle {
+		t.Fatalf("message status = %s, want idle for chunk without active turn", messages[0].Status)
 	}
 }
 

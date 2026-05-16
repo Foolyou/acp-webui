@@ -266,6 +266,55 @@ func (s *Storage) repairRestoredRunningSessionsOnStartup(ctx context.Context) (i
 	return result.RowsAffected()
 }
 
+func (s *Storage) repairStaleRunningTurnSessions(ctx context.Context) (int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id
+		FROM sessions
+		WHERE status IN (?, ?)
+		  AND (active_turn_started_at IS NULL OR active_turn_status IS NULL)
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM permission_requests
+		      WHERE permission_requests.session_id = sessions.id
+		        AND permission_requests.status = ?
+		  )`,
+		statusRunning, statusStopping, permissionPending,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var sessionIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		sessionIDs = append(sessionIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, sessionID := range sessionIDs {
+		if _, err := s.finalizeRunningAssistantMessagesForSession(ctx, sessionID); err != nil {
+			return 0, err
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE sessions
+			SET status = ?,
+			    active_turn_started_at = NULL,
+			    active_turn_status = NULL,
+			    active_turn_stop_requested_at = NULL,
+			    updated_at = ?
+			WHERE id = ?`,
+			statusIdle, nowString(), sessionID,
+		); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(sessionIDs)), nil
+}
+
 func (s *Storage) repairQueuedPromptsForTerminalSessions(ctx context.Context) (int64, error) {
 	now := nowString()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -700,6 +749,21 @@ func (s *Storage) UpdateMessageStatus(ctx context.Context, id string, status str
 	return s.GetMessage(ctx, id)
 }
 
+func (s *Storage) finalizeRunningAssistantMessagesForSession(ctx context.Context, sessionID string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE session_id = ?
+		  AND role = ?
+		  AND status = ?`,
+		statusIdle, sessionID, roleAssistant, statusRunning,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Storage) AppendMessageContentBlocks(ctx context.Context, id string, contentDelta string, blocks []MessageContentBlock, status string) (Message, error) {
 	message, err := s.GetMessage(ctx, id)
 	if err != nil {
@@ -798,6 +862,9 @@ func (s *Storage) RequestActiveTurnStop(ctx context.Context, sessionID string) (
 }
 
 func (s *Storage) FinishActiveTurn(ctx context.Context, sessionID string, nextStatus string) error {
+	if _, err := s.finalizeRunningAssistantMessagesForSession(ctx, sessionID); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET status = ?, active_turn_started_at = NULL, active_turn_status = NULL, active_turn_stop_requested_at = NULL, updated_at = ?
 		WHERE id = ?`, nextStatus, nowString(), sessionID)

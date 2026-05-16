@@ -885,8 +885,14 @@ func (r *AgentRuntime) ResolvePermission(ctx context.Context, permissionID strin
 	if len(pending) > 0 {
 		next = &pending[0]
 	} else {
-		_ = r.storage.UpdateSessionStatus(ctx, permission.SessionID, statusRunning)
-		nextStatus = statusRunning
+		active, _ := r.storage.ActiveTurnForSession(ctx, permission.SessionID)
+		if active != nil {
+			_ = r.storage.UpdateSessionStatus(ctx, permission.SessionID, statusRunning)
+			nextStatus = statusRunning
+		} else {
+			_ = r.storage.UpdateSessionStatus(ctx, permission.SessionID, statusIdle)
+			nextStatus = statusIdle
+		}
 	}
 	r.events.Publish(map[string]any{"type": "session_status", "sessionId": permission.SessionID, "status": nextStatus})
 	r.events.Publish(map[string]any{
@@ -894,6 +900,7 @@ func (r *AgentRuntime) ResolvePermission(ctx context.Context, permissionID strin
 		"sessionId":            permission.SessionID,
 		"permissionId":         permission.ID,
 		"nextPermission":       next,
+		"status":               nextStatus,
 		"pendingApprovalCount": len(pending),
 		"queuedApprovalCount":  maxInt64(int64(len(pending)-1), 0),
 	})
@@ -961,14 +968,19 @@ func (r *AgentRuntime) appendAssistantBuffer(ctx context.Context, bufferID, loca
 
 func (r *AgentRuntime) persistLiveAssistantChunk(ctx context.Context, bufferID, localSessionID string, blocks []MessageContentBlock) {
 	contentDelta := textFallbackFromBlocks(blocks)
+	status := statusRunning
+	active, _ := r.storage.ActiveTurnForSession(ctx, localSessionID)
+	if active == nil {
+		status = statusIdle
+	}
 	r.mu.Lock()
 	messageID := r.assistantIDs[bufferID]
 	r.mu.Unlock()
 	if messageID != "" {
-		_, _ = r.storage.AppendMessageContentBlocks(ctx, messageID, contentDelta, blocks, statusRunning)
+		_, _ = r.storage.AppendMessageContentBlocks(ctx, messageID, contentDelta, blocks, status)
 		return
 	}
-	message, err := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, contentDelta, blocks, statusRunning)
+	message, err := r.storage.CreateMessage(ctx, localSessionID, roleAssistant, contentDelta, blocks, status)
 	if err != nil {
 		return
 	}

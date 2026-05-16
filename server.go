@@ -648,7 +648,8 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	prompt := textFallbackFromBlocks(blocks)
 	pending, _ := s.storage.PendingPermissionForSession(r.Context(), sessionID)
-	shouldQueue := pending != nil || session.Status == statusWaitingApproval || session.Status == statusRunning || session.Status == statusStopping
+	existingActiveTurn, _ := s.storage.ActiveTurnForSession(r.Context(), sessionID)
+	shouldQueue := pending != nil || existingActiveTurn != nil
 	messageStatus := statusIdle
 	if shouldQueue {
 		messageStatus = "queued"

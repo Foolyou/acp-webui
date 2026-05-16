@@ -270,7 +270,7 @@ function applyPermissionResolved(
           event.nextPermission ?? null,
           event.pendingApprovalCount,
           event.queuedApprovalCount,
-          event.nextPermission ? "waiting_approval" : "running"
+          event.status ?? (event.nextPermission ? "waiting_approval" : "running")
         )
       : state.currentSession;
 

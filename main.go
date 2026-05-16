@@ -46,6 +46,9 @@ func main() {
 	if repaired, err := storage.repairRestoredRunningSessionsOnStartup(ctx); err == nil && repaired > 0 {
 		log.Printf("reset %d restored sessions stuck in running state", repaired)
 	}
+	if repaired, err := storage.repairStaleRunningTurnSessions(ctx); err == nil && repaired > 0 {
+		log.Printf("reset %d stale sessions without active turn state", repaired)
+	}
 	if repaired, err := storage.repairQueuedPromptsForTerminalSessions(ctx); err == nil && repaired > 0 {
 		log.Printf("cleared %d queued prompts from terminal sessions", repaired)
 	}

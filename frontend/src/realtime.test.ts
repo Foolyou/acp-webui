@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { SessionDetail } from "./types";
+import type { PermissionRequest, SessionDetail } from "./types";
 import { applyRealtimeEvent } from "./realtime";
 
 function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
@@ -32,6 +32,21 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
       restoring: false
     },
     continuable: true,
+    ...overrides
+  };
+}
+
+function permission(overrides: Partial<PermissionRequest> = {}): PermissionRequest {
+  return {
+    id: "permission-1",
+    sessionId: "session-1",
+    acpSessionId: "acp-session-1",
+    title: "Run command",
+    kind: "exec",
+    status: "pending",
+    toolCall: {},
+    options: [],
+    createdAt: "2026-04-30T00:00:01Z",
     ...overrides
   };
 }
@@ -116,5 +131,35 @@ describe("applyRealtimeEvent", () => {
     );
 
     expect(result.liveAssistant).toBe("");
+  });
+
+  test("uses resolved permission status when no active turn remains", () => {
+    const result = applyRealtimeEvent(
+      {
+        currentSession: detail({
+          session: {
+            ...detail().session,
+            status: "waiting_approval"
+          },
+          pendingPermission: permission(),
+          pendingPermissions: [permission()]
+        }),
+        inbox: [],
+        liveAssistant: "",
+        error: null
+      },
+      {
+        type: "permission_resolved",
+        sessionId: "session-1",
+        permissionId: "permission-1",
+        nextPermission: null,
+        status: "idle",
+        pendingApprovalCount: 0,
+        queuedApprovalCount: 0
+      }
+    );
+
+    expect(result.currentSession?.session.status).toBe("idle");
+    expect(result.currentSession?.pendingPermission).toBeNull();
   });
 });

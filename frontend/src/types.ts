@@ -374,6 +374,7 @@ export type RealtimeEvent =
       sessionId: string;
       permissionId: string;
       nextPermission?: PermissionRequest | null;
+      status?: string;
       pendingApprovalCount?: number;
       queuedApprovalCount?: number;
     }
