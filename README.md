@@ -272,6 +272,24 @@ ports, stops release binaries running from this repository, builds the frontend
 and embedded release binary, then starts the release binary in the background.
 By default it binds to `127.0.0.1:7635`.
 
+When restarting the release that is serving your current browser session, use
+the detached wrapper so the restart continues after the old backend disconnects
+the browser:
+
+```powershell
+.\scripts\restart-release-detached.ps1
+```
+
+The wrapper launches `build-run-release.ps1` in a separate PowerShell process and
+writes worker logs under `.data\release-restart`. Extra arguments are forwarded,
+so this keeps the same release options:
+
+```powershell
+.\scripts\restart-release-detached.ps1 -SkipBuild
+.\scripts\restart-release-detached.ps1 -TailscaleServe -SkipBuild
+.\scripts\restart-release-detached.ps1 -NoRun -BindPort 7635
+```
+
 To bind only to the local Tailscale IPv4 address:
 
 ```powershell

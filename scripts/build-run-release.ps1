@@ -28,6 +28,7 @@ param(
     [int]$BindPort = 7635,
     [int]$FrontendPort = 5777,
     [int]$ReleaseTimeoutSeconds = 30,
+    [int]$PortReleaseRetries = 3,
     [int]$StartupTimeoutSeconds = 180,
     [switch]$SkipBuild,
     [switch]$InstallFrontendDeps,
@@ -527,8 +528,29 @@ function Stop-ProjectServices {
         Stop-ProcessTreeById $ProcessId
     }
 
-    Wait-ForPortRelease -Port $BindPort -BindHost $ResolvedBindHost -TimeoutSeconds $ReleaseTimeoutSeconds -AllAddresses
-    Wait-ForPortRelease -Port $FrontendPort -BindHost $ResolvedBindHost -TimeoutSeconds $ReleaseTimeoutSeconds -AllAddresses
+    for ($Attempt = 1; $Attempt -le $PortReleaseRetries; $Attempt++) {
+        try {
+            Wait-ForPortRelease -Port $BindPort -BindHost $ResolvedBindHost -TimeoutSeconds $ReleaseTimeoutSeconds -AllAddresses
+            Wait-ForPortRelease -Port $FrontendPort -BindHost $ResolvedBindHost -TimeoutSeconds $ReleaseTimeoutSeconds -AllAddresses
+            return
+        } catch {
+            if ($Attempt -ge $PortReleaseRetries) {
+                throw
+            }
+
+            Write-Warning "Ports did not release on attempt $Attempt of $PortReleaseRetries. Retrying the same ports..."
+            $RetryProcessIds = @()
+            $RetryProcessIds += @(Get-PortListenConnections -Port $BindPort -BindHost $ResolvedBindHost -AllAddresses |
+                ForEach-Object { $_.OwningProcess })
+            $RetryProcessIds += @(Get-PortListenConnections -Port $FrontendPort -BindHost $ResolvedBindHost -AllAddresses |
+                ForEach-Object { $_.OwningProcess })
+            $RetryProcessIds = @($RetryProcessIds | Where-Object { $_ -gt 0 -and $_ -ne $PID } | Sort-Object -Unique)
+            foreach ($ProcessId in $RetryProcessIds) {
+                Stop-ProcessTreeById $ProcessId
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
 }
 
 function Format-ArgumentForDisplay {
@@ -568,6 +590,9 @@ if ($UseTailscaleBind -and $PSBoundParameters.ContainsKey("BindHost")) {
 }
 if ($TailscaleServeHttpsPort -le 0 -or $TailscaleServeHttpsPort -gt 65535) {
     throw "-TailscaleServeHttpsPort must be between 1 and 65535."
+}
+if ($PortReleaseRetries -le 0) {
+    throw "-PortReleaseRetries must be at least 1."
 }
 if ($TailscaleServe -and $Foreground) {
     throw "-TailscaleServe requires background mode so the script can configure the tailscale serve proxy after startup."
