@@ -1,5 +1,6 @@
 const textFenceInfos = ["text", "txt", "plaintext"];
 const fenceLinePattern = /^([ \t]{0,3})(`{3,}|~{3,})(.*)$/;
+const proseGluedOpeningPattern = /^(.+\S)(`{3,}|~{3,})([A-Za-z][A-Za-z0-9_+.-]*)[ \t]*$/;
 
 export function normalizeMarkdownContent(content: string) {
   const wholeTextFence = unwrapWholeTextFence(content);
@@ -31,7 +32,29 @@ export function normalizeMarkdownContent(content: string) {
         }
       }
 
+      const trailingClosingFence = line.match(/^(.*?)(`{3,}|~{3,})[ \t]*$/);
+      if (trailingClosingFence) {
+        const [, text, marker] = trailingClosingFence;
+        const markerChar = marker[0];
+        const isMatchingFence = markerChar === openFence.markerChar && marker.length >= openFence.markerLength;
+        if (isMatchingFence && text.trim() !== "") {
+          output.push(text);
+          output.push(marker);
+          openFence = null;
+          return;
+        }
+      }
+
       output.push(line);
+      return;
+    }
+
+    const proseGluedOpening = line.match(proseGluedOpeningPattern);
+    if (!fenceMatch && proseGluedOpening) {
+      const [, prose, marker, info] = proseGluedOpening;
+      output.push(prose);
+      output.push(`${marker}${info}`);
+      openFence = { markerChar: marker[0], markerLength: marker.length };
       return;
     }
 

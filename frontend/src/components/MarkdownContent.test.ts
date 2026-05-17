@@ -61,10 +61,54 @@ describe("normalizeMarkdownContent", () => {
     );
   });
 
+  test("repairs fenced code closings glued to the previous content line", () => {
+    const input = [
+      "```text",
+      "DM private: control mode - workspace / session / agent",
+      "- only respond to explicit bot mentions```",
+      "",
+      "1. **Default chat entry**",
+      "   - Recommendation: use direct messages for control."
+    ].join("\n");
+
+    expect(normalizeMarkdownContent(input)).toBe(
+      [
+        "```text",
+        "DM private: control mode - workspace / session / agent",
+        "- only respond to explicit bot mentions",
+        "```",
+        "",
+        "1. **Default chat entry**",
+        "   - Recommendation: use direct messages for control."
+      ].join("\n")
+    );
+  });
+
   test("repairs text fences glued to their first content line", () => {
     const input = ["```textGET session detail", "  -> ok", "```Done"].join("\n");
 
     expect(normalizeMarkdownContent(input)).toBe(["```text", "GET session detail", "  -> ok", "```", "Done"].join("\n"));
+  });
+
+  test("repairs fenced code openings glued to preceding prose", () => {
+    const input = [
+      "请在新的 PowerShell 窗口里运行下面两步：```powershell",
+      "cd <project-path>",
+      ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+      "```",
+      "然后重启服务。"
+    ].join("\n");
+
+    expect(normalizeMarkdownContent(input)).toBe(
+      [
+        "请在新的 PowerShell 窗口里运行下面两步：",
+        "```powershell",
+        "cd <project-path>",
+        ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+        "```",
+        "然后重启服务。"
+      ].join("\n")
+    );
   });
 
   test("keeps valid fenced code blocks unchanged", () => {
