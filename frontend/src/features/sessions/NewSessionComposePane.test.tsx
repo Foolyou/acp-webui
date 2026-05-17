@@ -165,4 +165,58 @@ describe("NewSessionComposePane", () => {
     await mocks.buttons.find((button) => button.label.includes("Create session"))?.onPress?.();
     expect(onCreate).toHaveBeenCalledWith("codex", "manual", { model: "fast", permission: "manual" }, "");
   });
+
+  test("offers Claude YOLO creation without unsupported full auto mode", async () => {
+    const onCreate = vi.fn();
+    const { NewSessionComposePane } = await import("./NewSessionComposePane");
+
+    const html = renderToStaticMarkup(
+      <NewSessionComposePane
+        agents={[
+          agent({
+            id: "claude",
+            title: "Claude",
+            permissionModes: [
+              {
+                id: "manual",
+                label: "Manual",
+                description: "Ask before approval-managed actions",
+                riskLevel: "low",
+                status: { state: "ready" }
+              },
+              {
+                id: "yolo",
+                label: "YOLO",
+                description: "No approvals / no sandbox",
+                riskLevel: "high",
+                status: { state: "ready" }
+              }
+            ],
+            launchControls: [
+              {
+                id: "permission",
+                label: "Permission",
+                category: "permission",
+                scope: "launch",
+                type: "select",
+                defaultValue: "manual",
+                options: [
+                  { value: "manual", label: "Manual" },
+                  { value: "yolo", label: "YOLO" }
+                ]
+              }
+            ]
+          })
+        ]}
+        busy={false}
+        onCreate={onCreate}
+        workspace={workspace()}
+        workspaceId="workspace-a"
+      />
+    );
+
+    expect(html).toContain('<option value="yolo">YOLO</option>');
+    expect(html).not.toContain("Full auto");
+    expect(html).not.toContain('value="full_auto"');
+  });
 });

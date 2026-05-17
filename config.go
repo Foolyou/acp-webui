@@ -18,6 +18,10 @@ const (
 	defaultFrontendDist = "frontend/dist"
 
 	defaultTranscriptionModel = "Systran/faster-whisper-large-v3"
+
+	claudeACPModeConfigID          = "mode"
+	claudeACPModeDefault           = "default"
+	claudeACPModeBypassPermissions = "bypassPermissions"
 )
 
 type Config struct {
@@ -240,7 +244,7 @@ func (c Config) ensureWorkDir() error {
 func (c Config) agentConfigs() []AgentConfig {
 	return []AgentConfig{
 		codexAgentConfig(c.CodexACPCommand, c.CodexACPArgs, true),
-		genericAgentConfig(claudeAgentID, "claude", "Claude", c.ClaudeACPCommand, c.ClaudeACPArgs, c.ClaudeACPEnabled),
+		claudeAgentConfig(c.ClaudeACPCommand, c.ClaudeACPArgs, c.ClaudeACPEnabled),
 		genericAgentConfig(opencodeAgentID, "opencode", "OpenCode", c.OpenCodeACPCommand, c.OpenCodeACPArgs, c.OpenCodeACPEnabled),
 	}
 }
@@ -281,6 +285,78 @@ func genericAgentConfig(id, providerID, title, command string, baseArgs []string
 			Summary:        controlSummary(controls, values),
 		}},
 	}
+}
+
+func claudeAgentConfig(command string, baseArgs []string, enabled bool) AgentConfig {
+	modes := claudePermissionModes()
+	controls := []AgentControl{permissionLaunchControl(modes)}
+	return AgentConfig{
+		ID:              claudeAgentID,
+		ProviderID:      "claude",
+		Title:           "Claude",
+		Command:         command,
+		Args:            append([]string{}, baseArgs...),
+		Enabled:         enabled,
+		PermissionModes: modes,
+		LaunchControls:  controls,
+		LaunchProfiles:  claudeLaunchProfiles(baseArgs, controls),
+	}
+}
+
+func claudePermissionModes() []AgentPermissionMode {
+	return []AgentPermissionMode{
+		manualPermissionMode(),
+		{ID: permissionYolo, Label: "YOLO", Description: "No approvals / no sandbox", RiskLevel: "high"},
+	}
+}
+
+func claudeLaunchProfiles(baseArgs []string, controls []AgentControl) []AgentLaunchProfile {
+	var profiles []AgentLaunchProfile
+	for _, permission := range []string{permissionManual, permissionYolo} {
+		values := map[string]string{"permission": permission}
+		profiles = append(profiles, AgentLaunchProfile{
+			ID:             permission,
+			Key:            launchProfileKey(values),
+			PermissionMode: permission,
+			Args:           append([]string{}, baseArgs...),
+			Summary:        controlSummary(controls, values),
+		})
+	}
+	return profiles
+}
+
+func claudeACPModeForPermissionMode(permissionMode string) (string, error) {
+	switch strings.TrimSpace(permissionMode) {
+	case "", permissionManual:
+		return claudeACPModeDefault, nil
+	case permissionYolo:
+		return claudeACPModeBypassPermissions, nil
+	case permissionFullAuto:
+		return "", fmt.Errorf("Claude does not support permission mode %q", permissionFullAuto)
+	default:
+		return "", fmt.Errorf("unknown permission mode %q", permissionMode)
+	}
+}
+
+func claudeACPModeOption(configOptions []SessionConfigOption) (*SessionConfigOption, bool) {
+	for i := range configOptions {
+		if configOptions[i].ID == claudeACPModeConfigID && configOptions[i].Type == "select" {
+			return &configOptions[i], true
+		}
+	}
+	return nil, false
+}
+
+func sessionConfigOptionValueExists(values []SessionConfigOptionValue, value string) bool {
+	for _, item := range values {
+		if item.Value == value {
+			return true
+		}
+		if sessionConfigOptionValueExists(item.Options, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a AgentConfig) supportsPermissionMode(mode string) bool {

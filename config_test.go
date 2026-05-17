@@ -191,3 +191,54 @@ func TestResolveLaunchProfileValidatesControls(t *testing.T) {
 		t.Fatal("expected invalid launch control value to fail")
 	}
 }
+
+func TestClaudeAgentConfigAdvertisesVerifiedPermissionModes(t *testing.T) {
+	agent := claudeAgentConfig("claude-acp", []string{"--stdio"}, true)
+	var modeIDs []string
+	for _, mode := range agent.PermissionModes {
+		modeIDs = append(modeIDs, mode.ID)
+	}
+	if !reflect.DeepEqual(modeIDs, []string{permissionManual, permissionYolo}) {
+		t.Fatalf("Claude permission modes = %#v, want manual and yolo only", modeIDs)
+	}
+	if agent.supportsPermissionMode(permissionFullAuto) {
+		t.Fatal("Claude should not advertise full_auto")
+	}
+
+	manual, err := agent.resolveLaunchProfile(permissionManual, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.PermissionMode != permissionManual || manual.Key != "permission=manual" {
+		t.Fatalf("manual profile = %#v", manual)
+	}
+	yolo, err := agent.resolveLaunchProfile(permissionYolo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if yolo.PermissionMode != permissionYolo || yolo.Key != "permission=yolo" {
+		t.Fatalf("yolo profile = %#v", yolo)
+	}
+	if _, err := agent.resolveLaunchProfile(permissionFullAuto, nil); err == nil {
+		t.Fatal("expected full_auto profile resolution to fail")
+	}
+}
+
+func TestClaudeACPModeForPermissionMode(t *testing.T) {
+	cases := map[string]string{
+		permissionManual: "default",
+		permissionYolo:   "bypassPermissions",
+	}
+	for permissionMode, want := range cases {
+		got, err := claudeACPModeForPermissionMode(permissionMode)
+		if err != nil {
+			t.Fatalf("claudeACPModeForPermissionMode(%q): %v", permissionMode, err)
+		}
+		if got != want {
+			t.Fatalf("claudeACPModeForPermissionMode(%q) = %q, want %q", permissionMode, got, want)
+		}
+	}
+	if _, err := claudeACPModeForPermissionMode(permissionFullAuto); err == nil {
+		t.Fatal("expected full_auto mapping to fail")
+	}
+}

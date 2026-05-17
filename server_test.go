@@ -921,6 +921,209 @@ func TestHandleCreateSessionStartsInitialPromptTurn(t *testing.T) {
 	respondToPromptRequest(t, decoder, runtime, "created-initial-prompt-session", "Plan the fix")
 }
 
+func TestHandleCreateClaudeYoloSessionSetsACPModeBeforeInitialPrompt(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile, runtime := testClaudeSessionManager(t, storage, permissionYolo)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, claudeAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"claude","permissionMode":"yolo","initialPrompt":"Ship it"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, nativePathString(workspace.Path), "claude-yolo-acp", claudeModeConfigOptions("default", "default", "bypassPermissions"))
+	respondToSetConfigOptionRequest(t, decoder, runtime, "claude-yolo-acp", "mode", "bypassPermissions", SessionConfigState{
+		ConfigOptions: claudeModeConfigOptions("bypassPermissions", "default", "bypassPermissions"),
+	})
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail SessionDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Session.PermissionMode != permissionYolo {
+		t.Fatalf("permissionMode = %q, want yolo", detail.Session.PermissionMode)
+	}
+	mode := configOptionByID(detail.ConfigOptions, "mode")
+	if mode == nil || stringPtrValue(mode.CurrentValue) != "bypassPermissions" {
+		t.Fatalf("mode config = %#v, want bypassPermissions", mode)
+	}
+	respondToPromptRequest(t, decoder, runtime, "claude-yolo-acp", "Ship it")
+}
+
+func TestHandleCreateClaudeYoloSessionFailsWhenBypassModeUnavailable(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile, runtime := testClaudeSessionManager(t, storage, permissionYolo)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, claudeAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"claude","permissionMode":"yolo","initialPrompt":"Do it"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, nativePathString(workspace.Path), "claude-yolo-unavailable", claudeModeConfigOptions("default", "default"))
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "Claude YOLO mode") || !strings.Contains(recorder.Body.String(), "bypassPermissions") {
+		t.Fatalf("error body = %s", recorder.Body.String())
+	}
+	items, err := storage.ListSessionItems(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("persisted sessions = %#v, want none", items)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var unexpected map[string]any
+	if err := decoder.Decode(&unexpected); err == nil {
+		t.Fatalf("unexpected prompt request after failed creation: %#v", unexpected)
+	}
+}
+
+func TestHandleCreateClaudeSessionDoesNotSetModeWhenAlreadyCurrent(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile, runtime := testClaudeSessionManager(t, storage, permissionYolo)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, claudeAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"claude","permissionMode":"yolo","initialPrompt":"Already bypassed"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, nativePathString(workspace.Path), "claude-yolo-current", claudeModeConfigOptions("bypassPermissions", "default", "bypassPermissions"))
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	respondToPromptRequest(t, decoder, runtime, "claude-yolo-current", "Already bypassed")
+}
+
+func TestHandleSetSessionConfigPreservesClaudePermissionMode(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile, runtime := testClaudeSessionManager(t, storage, permissionYolo)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, claudeAgentID, profile, runtime)
+	acpSessionID := "claude-config-acp"
+	session, err := storage.CreateSession(ctx, workspace.ID, claudeAgentID, "Claude", &acpSessionID, permissionYolo, profile, claudeModeConfigOptions("bypassPermissions", "default", "bypassPermissions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.RegisterSession(acpSessionID, session.ID)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"value":"default"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/config-options/mode", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToSetConfigOptionRequest(t, decoder, runtime, acpSessionID, "mode", "default", SessionConfigState{
+		ConfigOptions: claudeModeConfigOptions("default", "default", "bypassPermissions"),
+	})
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PermissionMode != permissionYolo {
+		t.Fatalf("permissionMode = %q, want yolo", updated.PermissionMode)
+	}
+	state, err := storage.SessionConfigState(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := configOptionByID(state.ConfigOptions, "mode")
+	if mode == nil || stringPtrValue(mode.CurrentValue) != "default" {
+		t.Fatalf("mode config = %#v, want default", mode)
+	}
+}
+
 func TestHandleCreateSessionPublishesScopedListChangedEvent(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)
@@ -1259,7 +1462,22 @@ type promptRequest struct {
 	} `json:"params"`
 }
 
+type setConfigOptionRequest struct {
+	ID     int64  `json:"id"`
+	Method string `json:"method"`
+	Params struct {
+		SessionID string `json:"sessionId"`
+		ConfigID  string `json:"configId"`
+		Value     string `json:"value"`
+	} `json:"params"`
+}
+
 func respondToNewSessionRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, sessionID string) {
+	t.Helper()
+	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, wantCWD, sessionID, nil)
+}
+
+func respondToNewSessionRequestWithConfigOptions(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, sessionID string, configOptions []SessionConfigOption) {
 	t.Helper()
 	requestCh := make(chan struct {
 		request newSessionRequest
@@ -1289,7 +1507,58 @@ func respondToNewSessionRequest(t *testing.T, decoder *json.Decoder, runtime *Ag
 	if request.Params.CWD != wantCWD {
 		t.Fatalf("cwd = %q, want %q", request.Params.CWD, wantCWD)
 	}
-	data, err := json.Marshal(map[string]any{"sessionId": sessionID})
+	data, err := json.Marshal(map[string]any{"sessionId": sessionID, "configOptions": configOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strconv.FormatInt(request.ID, 10)
+	runtime.mu.Lock()
+	ch := runtime.pending[key]
+	delete(runtime.pending, key)
+	runtime.mu.Unlock()
+	if ch == nil {
+		t.Fatalf("pending request %s not found", key)
+	}
+	ch <- rpcResponse{Result: data}
+}
+
+func respondToSetConfigOptionRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantSessionID string, wantConfigID string, wantValue string, state SessionConfigState) {
+	t.Helper()
+	requestCh := make(chan struct {
+		request setConfigOptionRequest
+		err     error
+	}, 1)
+	go func() {
+		var request setConfigOptionRequest
+		err := decoder.Decode(&request)
+		requestCh <- struct {
+			request setConfigOptionRequest
+			err     error
+		}{request: request, err: err}
+	}()
+	var request setConfigOptionRequest
+	select {
+	case result := <-requestCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		request = result.request
+	case <-time.After(sessionListTestTimeout):
+		t.Fatal("timed out waiting for session/set_config_option request")
+	}
+	if request.Method != "session/set_config_option" {
+		t.Fatalf("method = %q, want session/set_config_option", request.Method)
+	}
+	if request.Params.SessionID != wantSessionID {
+		t.Fatalf("sessionId = %q, want %q", request.Params.SessionID, wantSessionID)
+	}
+	if request.Params.ConfigID != wantConfigID {
+		t.Fatalf("configId = %q, want %q", request.Params.ConfigID, wantConfigID)
+	}
+	if request.Params.Value != wantValue {
+		t.Fatalf("value = %q, want %q", request.Params.Value, wantValue)
+	}
+	data, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1350,6 +1619,56 @@ func respondToPromptRequest(t *testing.T, decoder *json.Decoder, runtime *AgentR
 		t.Fatalf("pending request %s not found", key)
 	}
 	ch <- rpcResponse{Result: data}
+}
+
+func testClaudeSessionManager(t *testing.T, storage *Storage, permissionMode string) (*AgentRuntimeManager, ResolvedAgentLaunchProfile, *AgentRuntime) {
+	t.Helper()
+	agent := claudeAgentConfig("unused-acp", nil, true)
+	profile, err := agent.resolveLaunchProfile(permissionMode, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &AgentRuntimeManager{
+		configs:  map[string]AgentConfig{claudeAgentID: agent},
+		storage:  storage,
+		events:   newEventHub(),
+		runtimes: map[string]*AgentRuntime{},
+	}
+	return manager, profile, newReadyRuntimeForAgent(t, storage, agent, permissionMode)
+}
+
+func newReadyRuntimeForAgent(t *testing.T, storage *Storage, agent AgentConfig, permissionMode string) *AgentRuntime {
+	t.Helper()
+	runtime := newAgentRuntime(agent, permissionMode, storage, newEventHub())
+	caps := AgentSessionCapabilities{ListSessions: false}
+	runtime.mu.Lock()
+	runtime.statusValue = readyStatus(nil, AgentPromptCapabilities{}, caps)
+	runtime.sessionCaps = caps
+	runtime.mu.Unlock()
+	return runtime
+}
+
+func claudeModeConfigOptions(current string, values ...string) []SessionConfigOption {
+	options := make([]SessionConfigOptionValue, 0, len(values))
+	for _, value := range values {
+		options = append(options, SessionConfigOptionValue{Value: value, Name: value})
+	}
+	return []SessionConfigOption{{
+		ID:           "mode",
+		Name:         "Mode",
+		Type:         "select",
+		CurrentValue: stringPtr(current),
+		Options:      options,
+	}}
+}
+
+func configOptionByID(options []SessionConfigOption, id string) *SessionConfigOption {
+	for i := range options {
+		if options[i].ID == id {
+			return &options[i]
+		}
+	}
+	return nil
 }
 
 func receiveHTTPResponse(t *testing.T, ch <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {

@@ -9,7 +9,12 @@ import type {
 } from "react";
 import { Button } from "react-aria-components";
 import { api } from "../../api";
-import { currentModelLabel, modelSwitchDisabledReason, selectValues } from "../../app/sessionConfig";
+import {
+  currentModelLabel,
+  modelSwitchDisabledReason,
+  selectValues,
+  sessionConfigSelectOptions
+} from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
 import { buildTimelineBlocks, type TimelineDisplayBlock, type TimelineToolGroupEntry } from "../../app/timelineBlocks";
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -151,7 +156,7 @@ export function SessionPane({
     : continuity.state === "restore_failed"
       ? "Retry restore"
       : "Restore";
-  const sessionSelectOptions = (currentSession.configOptions ?? []).filter((option) => selectValues(option).length > 0);
+  const sessionSelectOptions = sessionConfigSelectOptions(currentSession.configOptions);
   const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentConnection);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);

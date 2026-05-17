@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { applySessionListRealtime, sessionDetailToListItem } from "./sessionList";
 import { applyRealtimeEvent } from "../realtime";
-import { modelConfigOption, modelSwitchDisabledReason, selectValues } from "./sessionConfig";
+import { modelConfigOption, modelSwitchDisabledReason, selectValues, sessionConfigSelectOptions } from "./sessionConfig";
 import type { ConnectionStatus, SessionDetail } from "../types";
 
 const continuity = {
@@ -140,5 +140,59 @@ describe("session config helpers", () => {
     expect(list[0].currentModel?.name).toBe("Fast model");
     expect(list[0].session.status).toBe("idle");
     expect(list[0].continuity.state).toBe("live");
+  });
+
+  test("keeps Claude mode config as a session control without changing local permission state", () => {
+    const current = detail({
+      session: {
+        ...detail().session,
+        agentId: "claude",
+        agentName: "Claude",
+        permissionMode: "yolo"
+      },
+      configOptions: [
+        {
+          id: "mode",
+          name: "Mode",
+          type: "select",
+          currentValue: "default",
+          options: [
+            { value: "default", name: "Default" },
+            { value: "bypassPermissions", name: "Bypass permissions" }
+          ]
+        }
+      ]
+    });
+
+    expect(sessionConfigSelectOptions(current.configOptions).map((option) => option.id)).toEqual(["mode"]);
+
+    const next = applyRealtimeEvent(
+      {
+        currentSession: current,
+        inbox: [],
+        liveAssistant: "",
+        error: null
+      },
+      {
+        type: "session_config_updated",
+        sessionId: "session-1",
+        configOptions: [
+          {
+            id: "mode",
+            name: "Mode",
+            type: "select",
+            currentValue: "bypassPermissions",
+            options: [
+              { value: "default", name: "Default" },
+              { value: "bypassPermissions", name: "Bypass permissions" }
+            ]
+          }
+        ],
+        currentModel: null
+      }
+    );
+
+    expect(next.currentSession?.session.permissionMode).toBe("yolo");
+    expect(next.currentSession?.configOptions?.[0]?.currentValue).toBe("bypassPermissions");
   });
 });

@@ -268,4 +268,79 @@ describe("SessionPane inline approval", () => {
     expect(html).not.toContain(">Image</button>");
     expect(html).not.toContain(">Send</button>");
   });
+
+  test("shows Claude YOLO warning from persisted local permission mode", async () => {
+    mocks.buttons = [];
+    const { SessionPane } = await import("./SessionPane");
+    const detail = sessionDetail();
+    detail.session = {
+      ...detail.session,
+      id: "session-claude-yolo",
+      agentId: "claude",
+      agentName: "Claude",
+      permissionMode: "yolo",
+      status: "idle"
+    };
+    detail.activeTurn = null;
+    detail.pendingPermission = null;
+    detail.pendingApprovalCount = 0;
+    detail.queuedApprovalCount = 0;
+    detail.queuedPrompts = [];
+    detail.configOptions = [
+      {
+        id: "mode",
+        name: "Mode",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { value: "default", name: "Default" },
+          { value: "bypassPermissions", name: "Bypass permissions" }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(
+      <SessionPane
+        agentStatus={{
+          ...agentStatus(),
+          id: "claude",
+          title: "Claude",
+          permissionModes: [
+            {
+              id: "manual",
+              label: "Manual",
+              description: "Ask before approval-managed actions",
+              riskLevel: "low",
+              status: { state: "ready" }
+            },
+            {
+              id: "yolo",
+              label: "YOLO",
+              description: "No approvals / no sandbox",
+              riskLevel: "high",
+              status: { state: "ready" }
+            }
+          ]
+        }}
+        busy={false}
+        currentSession={detail}
+        liveAssistant=""
+        onOpenDiffFallback={vi.fn()}
+        onOpenReviewArtifact={vi.fn()}
+        onRestoreSession={vi.fn()}
+        onResolvePermission={vi.fn()}
+        onRunQueuedPrompts={vi.fn()}
+        onSendPrompt={vi.fn()}
+        onSetSessionConfigOption={vi.fn()}
+        onStopSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onUpdateSessionTitle={vi.fn()}
+        transcriptionAvailable={false}
+      />
+    );
+
+    expect(html).toContain("YOLO mode: approvals and sandboxing are bypassed.");
+    expect(html).toContain("permission-mode-badge permission-mode-yolo");
+    expect(html).toContain(">YOLO</span>");
+  });
 });

@@ -16,6 +16,10 @@ export function selectValues(option: SessionConfigOption | null | undefined): Se
   return option.options.flatMap((item) => (isOptionGroup(item) ? item.options : [item]));
 }
 
+export function sessionConfigSelectOptions(configOptions?: SessionConfigOption[] | null): SessionConfigOption[] {
+  return (configOptions ?? []).filter((option) => selectValues(option).length > 0);
+}
+
 export function currentModelLabel(option: SessionConfigOption | null | undefined): string | null {
   const value = option?.currentValue;
   if (!value) {

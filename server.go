@@ -617,6 +617,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := outcome.SessionID
+	if agentID == claudeAgentID {
+		configOptions, err := ensureClaudeSessionACPMode(r.Context(), runtime, sessionID, profile.PermissionMode, outcome.ConfigOptions)
+		if err != nil {
+			writeError(w, conflict(err.Error()))
+			return
+		}
+		outcome.ConfigOptions = configOptions
+	}
 	session, err := s.storage.CreateSession(r.Context(), workspace.ID, agentID, runtime.agent.Title, &sessionID, profile.PermissionMode, profile, outcome.ConfigOptions)
 	if err != nil {
 		writeError(w, err)
@@ -641,6 +649,40 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"count":       1,
 	})
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func ensureClaudeSessionACPMode(ctx context.Context, runtime *AgentRuntime, acpSessionID, permissionMode string, configOptions []SessionConfigOption) ([]SessionConfigOption, error) {
+	acpMode, err := claudeACPModeForPermissionMode(permissionMode)
+	if err != nil {
+		return nil, err
+	}
+	modeLabel := claudePermissionModeErrorLabel(permissionMode)
+	modeOption, ok := claudeACPModeOption(configOptions)
+	if !ok {
+		return nil, fmt.Errorf("Claude %s mode requires ACP config option %q, but this Claude adapter did not advertise it", modeLabel, claudeACPModeConfigID)
+	}
+	if !sessionConfigOptionValueExists(modeOption.Options, acpMode) {
+		return nil, fmt.Errorf("Claude %s mode requires ACP mode %q, but this Claude adapter did not advertise it", modeLabel, acpMode)
+	}
+	if stringPtrValue(modeOption.CurrentValue) == acpMode {
+		return configOptions, nil
+	}
+	state, err := runtime.SetConfigOption(ctx, acpSessionID, claudeACPModeConfigID, acpMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set Claude %s mode to %q: %w", modeLabel, acpMode, err)
+	}
+	return state.ConfigOptions, nil
+}
+
+func claudePermissionModeErrorLabel(permissionMode string) string {
+	switch permissionMode {
+	case permissionYolo:
+		return "YOLO"
+	case "", permissionManual:
+		return "manual"
+	default:
+		return permissionMode
+	}
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {

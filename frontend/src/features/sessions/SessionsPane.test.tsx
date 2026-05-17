@@ -273,6 +273,35 @@ describe("SessionsPane", () => {
     expect(html).not.toContain("active-state-badge idle");
   });
 
+  test("shows Claude YOLO warning in the session list from persisted permission mode", async () => {
+    const { SessionsPane } = await import("./SessionsPane");
+
+    const html = renderToStaticMarkup(
+      <SessionsPane
+        agents={[agent({ id: "claude", title: "Claude" })]}
+        loading={false}
+        selectedAgentId="claude"
+        sessions={[
+          sessionItem({
+            session: {
+              ...sessionItem().session,
+              id: "session-claude-yolo",
+              agentId: "claude",
+              agentName: "Claude",
+              permissionMode: "yolo"
+            }
+          })
+        ]}
+        workspace={workspace()}
+      />
+    );
+
+    expect(html).toContain("Claude");
+    expect(html).toContain("permission-mode-badge permission-mode-yolo");
+    expect(html).toContain("YOLO");
+    expect(html).toContain("No approvals / no sandbox");
+  });
+
   test("links new session to the workspace compose route", async () => {
     localStorage.setItem(
       "lastSessionProfile",
