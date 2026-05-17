@@ -195,6 +195,7 @@ function setContext(context: Partial<AppRouterContext> = {}) {
       openDiffFallback: vi.fn(),
       openReviewArtifact: vi.fn(),
       resolvePermission: vi.fn(),
+      runQueuedPrompts: vi.fn(),
       restoreSession: vi.fn(),
       sendPrompt: vi.fn(),
       setSessionConfigOption: vi.fn(),

@@ -144,6 +144,150 @@ func TestHandleCancelClearQueuedPromptsOption(t *testing.T) {
 	}
 }
 
+func TestHandleCancelClearsQueuedPromptsWithoutActiveWork(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "clear-queued-without-active-work"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.UpdateSessionStatus(ctx, session.ID, statusIdle); err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, queuedPromptQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/cancel", strings.NewReader(`{"clearQueuedPrompts":true}`))
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	queued, err := storage.ListQueuedPrompts(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued prompts = %#v, want none", queued)
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusIdle {
+		t.Fatalf("session status = %s, want %s", updated.Status, statusIdle)
+	}
+}
+
+func TestHandleRunQueuedPromptsStartsNextQueuedPrompt(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	runtime := newReadySessionListRuntime(t, storage, false)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	acpSessionID := "run-queued-acp-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.RegisterSession(acpSessionID, session.ID)
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, queuedPromptQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/queued-prompts/run", nil)
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusRunning {
+		t.Fatalf("session status = %s, want %s", updated.Status, statusRunning)
+	}
+	if queued, err := storage.ListQueuedPrompts(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	} else if len(queued) != 0 {
+		t.Fatalf("queued prompts = %#v, want none pending", queued)
+	}
+	updatedMessage, err := storage.GetMessage(ctx, message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedMessage.Status != queuedPromptSubmitted {
+		t.Fatalf("message status = %s, want %s", updatedMessage.Status, queuedPromptSubmitted)
+	}
+	respondToPromptRequest(t, decoder, runtime, acpSessionID, "queued prompt")
+}
+
+func TestHandleRunQueuedPromptsRejectsActiveSessionStatus(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "run-queued-active-session"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.UpdateSessionStatus(ctx, session.ID, statusRunning); err != nil {
+		t.Fatal(err)
+	}
+	message, err := storage.CreateMessage(ctx, session.ID, roleUser, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}, queuedPromptQueued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.CreateQueuedPrompt(ctx, session.ID, message.ID, "queued prompt", []MessageContentBlock{textBlock("queued prompt")}); err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true}, storage, &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/queued-prompts/run", nil)
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestServerRejectsDisallowedAPIOrigin(t *testing.T) {
 	server := newServer(Config{DisableAuth: true, BindHost: "127.0.0.1", BindPort: 7635}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
 	request := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)

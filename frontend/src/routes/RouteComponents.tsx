@@ -240,6 +240,7 @@ export function SessionDetailRoute() {
       onOpenReviewArtifact={actions.openReviewArtifact}
       onRestoreSession={actions.restoreSession}
       onResolvePermission={actions.resolvePermission}
+      onRunQueuedPrompts={actions.runQueuedPrompts}
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}
@@ -308,6 +309,7 @@ export function WorkspaceAgentSessionDetailRoute() {
       onOpenReviewArtifact={actions.openReviewArtifact}
       onRestoreSession={actions.restoreSession}
       onResolvePermission={actions.resolvePermission}
+      onRunQueuedPrompts={actions.runQueuedPrompts}
       onSendPrompt={actions.sendPrompt}
       onSetSessionConfigOption={actions.setSessionConfigOption}
       onStopSession={actions.cancelApproval}

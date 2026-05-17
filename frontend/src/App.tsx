@@ -1010,6 +1010,15 @@ export function App() {
     });
   }, [runBusy, state.currentSession?.session.id]);
 
+  const runQueuedPrompts = useCallback(async () => {
+    const sessionId = state.currentSession?.session.id;
+    if (!sessionId) return;
+    await runBusy(async () => {
+      const detail = await api.runQueuedPrompts(sessionId);
+      setState((current) => replaceSessionInState(current, detail));
+    });
+  }, [runBusy, state.currentSession?.session.id]);
+
   const updateCurrentSessionTitle = useCallback(
     async (title: string) => {
       const sessionId = state.currentSession?.session.id;
@@ -1101,6 +1110,7 @@ export function App() {
         openDiffFallback,
         openReviewArtifact,
         resolvePermission,
+        runQueuedPrompts,
         restoreSession,
         sendPrompt,
         setSessionConfigOption,
@@ -1124,6 +1134,7 @@ export function App() {
       openDiffFallback,
       openReviewArtifact,
       resolvePermission,
+      runQueuedPrompts,
       restoreSession,
       selectedWorkspace,
       sendPrompt,

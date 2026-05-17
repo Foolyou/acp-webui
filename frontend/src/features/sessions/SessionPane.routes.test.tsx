@@ -80,6 +80,7 @@ describe("SessionPane route links", () => {
         onOpenReviewArtifact={vi.fn()}
         onRestoreSession={vi.fn()}
         onResolvePermission={vi.fn()}
+        onRunQueuedPrompts={vi.fn()}
         onSendPrompt={vi.fn()}
         onSetSessionConfigOption={vi.fn()}
         onStopSession={vi.fn()}

@@ -81,6 +81,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{sessionId}/review-artifacts/{artifactId}", s.handleReviewArtifact)
 	s.mux.HandleFunc("GET /api/sessions/{sessionId}/review-diff", s.handleReviewDiff)
 	s.mux.HandleFunc("POST /api/sessions/{sessionId}/prompt", s.handlePrompt)
+	s.mux.HandleFunc("POST /api/sessions/{sessionId}/queued-prompts/run", s.handleRunQueuedPrompts)
 	s.mux.HandleFunc("POST /api/sessions/{sessionId}/cancel", s.handleCancel)
 	s.mux.HandleFunc("POST /api/permission-requests/{permissionId}/resolve", s.handleResolvePermission)
 	s.mux.HandleFunc("GET /api/ws", s.handleWebSocket)
@@ -971,6 +972,69 @@ func (s *Server) drainQueuedPrompts(ctx context.Context, runtime *AgentRuntime, 
 	}
 }
 
+func (s *Server) handleRunQueuedPrompts(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionId")
+	session, err := s.storage.GetSession(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, notFound("Session not found"))
+		return
+	}
+	continuity := s.sessionContinuity(r.Context(), session)
+	if !continuity.Continuable {
+		writeError(w, conflict(valueOr(continuity.Reason, viewOnlyReason(session.AgentName))))
+		return
+	}
+	if pending, _ := s.storage.PendingPermissionForSession(r.Context(), sessionID); pending != nil {
+		writeError(w, conflict("Resolve the pending approval before running queued prompts."))
+		return
+	}
+	if session.Status == statusRunning || session.Status == statusWaitingApproval || session.Status == statusStopping {
+		writeError(w, conflict("This session already has active work."))
+		return
+	}
+	if active, _ := s.storage.ActiveTurnForSession(r.Context(), sessionID); active != nil {
+		writeError(w, conflict("This session already has active work."))
+		return
+	}
+	next, _ := s.storage.NextQueuedPrompt(r.Context(), sessionID)
+	if next == nil {
+		writeError(w, conflict("This session does not have queued prompts to run."))
+		return
+	}
+	agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID)
+	if agentSessionID == nil {
+		writeError(w, conflict("Session is missing an ACP session id"))
+		return
+	}
+	runtime, err := s.agents.runtimeForSession(r.Context(), session, true)
+	if err != nil {
+		writeError(w, unavailable(err.Error()))
+		return
+	}
+	if err := s.startQueuedPromptTurn(r.Context(), runtime, sessionID, *agentSessionID, *next); err != nil {
+		writeError(w, err)
+		return
+	}
+	detail, _ := s.sessionDetail(r.Context(), sessionID)
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) startQueuedPromptTurn(ctx context.Context, runtime *AgentRuntime, sessionID, acpSessionID string, next QueuedPrompt) error {
+	if err := s.storage.MarkQueuedPromptSubmitted(ctx, next.ID); err != nil {
+		return err
+	}
+	active, err := s.storage.StartActiveTurn(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	queued, _ := s.storage.ListQueuedPrompts(ctx, sessionID)
+	s.events.Publish(map[string]any{"type": "queued_prompts_updated", "sessionId": sessionID, "queuedPrompts": nonNilSlice(queued)})
+	s.events.Publish(map[string]any{"type": "session_status", "sessionId": sessionID, "status": statusRunning})
+	s.events.Publish(map[string]any{"type": "active_turn_updated", "sessionId": sessionID, "status": statusRunning, "activeTurn": active})
+	go s.runPromptTurn(context.Background(), runtime, sessionID, acpSessionID, next.ContentBlocks)
+	return nil
+}
+
 func (s *Server) failQueuedPromptBacklog(ctx context.Context, sessionID string) {
 	if err := s.storage.MarkQueuedPromptsFailed(ctx, sessionID); err != nil {
 		return
@@ -1046,18 +1110,21 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pending, _ := s.storage.PendingPermissionForSession(r.Context(), sessionID)
-	if pending == nil && session.Status != statusRunning && session.Status != statusWaitingApproval && session.Status != statusStopping {
+	hasActiveWork := pending != nil || session.Status == statusRunning || session.Status == statusWaitingApproval || session.Status == statusStopping
+	if !hasActiveWork && !payload.ClearQueuedPrompts {
 		writeError(w, conflict("This session does not have active work to stop."))
 		return
 	}
-	runtime, err := s.agents.runtimeForSession(r.Context(), session, false)
-	if err == nil {
-		_ = runtime.CancelPendingPermissionsForSession(r.Context(), sessionID)
-		if agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID); agentSessionID != nil {
-			_ = runtime.StopSessionTurn(r.Context(), *agentSessionID)
+	if hasActiveWork {
+		runtime, err := s.agents.runtimeForSession(r.Context(), session, false)
+		if err == nil {
+			_ = runtime.CancelPendingPermissionsForSession(r.Context(), sessionID)
+			if agentSessionID := firstStringPtr(session.ACPSessionID, session.ExternalSessionID); agentSessionID != nil {
+				_ = runtime.StopSessionTurn(r.Context(), *agentSessionID)
+			}
 		}
+		_ = s.storage.FinishActiveTurn(r.Context(), sessionID, statusStopped)
 	}
-	_ = s.storage.FinishActiveTurn(r.Context(), sessionID, statusStopped)
 	if payload.ClearQueuedPrompts {
 		if _, err := s.storage.ClearQueuedPrompts(r.Context(), sessionID); err != nil {
 			writeError(w, err)

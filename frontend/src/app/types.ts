@@ -59,6 +59,7 @@ export type AppActions = {
   openDiffFallback: () => Promise<void>;
   openReviewArtifact: (artifactId: string) => Promise<void>;
   resolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
+  runQueuedPrompts: () => Promise<void>;
   restoreSession: (sessionId: string) => Promise<void>;
   sendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
   setSessionConfigOption: (configId: string, value: string) => Promise<void>;

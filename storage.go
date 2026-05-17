@@ -1173,8 +1173,25 @@ func (s *Storage) NextQueuedPrompt(ctx context.Context, sessionID string) (*Queu
 
 func (s *Storage) MarkQueuedPromptSubmitted(ctx context.Context, id string) error {
 	now := nowString()
-	_, err := s.db.ExecContext(ctx, `UPDATE queued_prompts SET status = ?, submitted_at = ? WHERE id = ?`, queuedPromptSubmitted, now, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE queued_prompts SET status = ?, submitted_at = ? WHERE id = ?`, queuedPromptSubmitted, now, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE id IN (
+			SELECT message_id
+			FROM queued_prompts
+			WHERE id = ?
+		)`, queuedPromptSubmitted, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Storage) MarkQueuedPromptsFailed(ctx context.Context, sessionID string) error {

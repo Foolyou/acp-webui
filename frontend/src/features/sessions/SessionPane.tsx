@@ -67,6 +67,7 @@ export function SessionPane({
   onOpenReviewArtifact,
   onRestoreSession,
   onResolvePermission,
+  onRunQueuedPrompts,
   onSetSessionConfigOption,
   onStopSession,
   onSendPrompt,
@@ -82,6 +83,7 @@ export function SessionPane({
   onOpenReviewArtifact: (artifactId: string) => void;
   onRestoreSession: (sessionId: string) => Promise<void>;
   onResolvePermission: (permission: PermissionRequest, optionId: string) => Promise<void>;
+  onRunQueuedPrompts: () => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
   onStopSession: (options?: { clearQueuedPrompts?: boolean }) => Promise<void>;
   onSendPrompt: (prompt: string, contentBlocks?: MessageContentBlock[]) => Promise<void>;
@@ -413,6 +415,7 @@ export function SessionPane({
         queuedPromptCount={currentSession.queuedPrompts?.length ?? 0}
         canStop={canStop}
         stoppingTurn={stoppingTurn}
+        onRunQueuedPrompts={onRunQueuedPrompts}
         onStopSession={onStopSession}
         waitingApproval={waitingApproval}
         onSendPrompt={onSendPrompt}
@@ -893,6 +896,7 @@ function PromptComposer({
   queuedPromptCount,
   canStop,
   stoppingTurn,
+  onRunQueuedPrompts,
   onStopSession,
   waitingApproval,
   workspaceId,
@@ -915,6 +919,7 @@ function PromptComposer({
   queuedPromptCount: number;
   canStop: boolean;
   stoppingTurn: boolean;
+  onRunQueuedPrompts: () => Promise<void>;
   onStopSession: (options?: { clearQueuedPrompts?: boolean }) => Promise<void>;
   waitingApproval: boolean;
   workspaceId: string;
@@ -1375,6 +1380,17 @@ function PromptComposer({
               }}
             >
               Stop
+            </Button>
+          ) : queuedPromptCount > 0 ? (
+            <Button
+              className="secondary small stop-button"
+              isDisabled={busy}
+              onPress={() => {
+                void onRunQueuedPrompts();
+              }}
+              type="button"
+            >
+              Run queue
             </Button>
           ) : null}
           {restoreButtonLabel ? (

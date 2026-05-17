@@ -197,6 +197,10 @@ export const api = {
       method: "POST",
       body: options ? JSON.stringify(options) : undefined
     }),
+  runQueuedPrompts: (sessionId: string) =>
+    request<SessionDetail>(`/api/sessions/${sessionId}/queued-prompts/run`, {
+      method: "POST"
+    }),
   resolvePermission: (permissionId: string, optionId: string) =>
     request<PermissionRequest>(`/api/permission-requests/${permissionId}/resolve`, {
       method: "POST",

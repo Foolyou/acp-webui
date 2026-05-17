@@ -30,6 +30,7 @@ export const placeholderContext: AppRouterContext = {
     openDiffFallback: noopAsync,
     openReviewArtifact: noopAsync,
     resolvePermission: noopAsync,
+    runQueuedPrompts: noopAsync,
     restoreSession: noopAsync,
     sendPrompt: noopAsync,
     setSessionConfigOption: noopAsync,
