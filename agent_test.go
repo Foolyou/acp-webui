@@ -269,6 +269,38 @@ func TestAgentRuntimePersistsLateAssistantChunkIdleWithoutActiveTurn(t *testing.
 	}
 }
 
+func TestAgentRuntimePreservesWhitespaceOnlyAssistantChunks(t *testing.T) {
+	ctx := context.Background()
+	storage, session := testRuntimeSession(t)
+	runtime := newAgentRuntime(AgentConfig{ID: codexAgentID, Title: "Codex"}, permissionManual, storage, newEventHub())
+	runtime.RegisterSession("acp-session", session.ID)
+
+	for _, chunk := range []string{"```powershell", "\n", "cd <project-path>", "\n", "```"} {
+		runtime.handleSessionUpdate(sessionUpdate(t, "acp-session", map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content":       map[string]any{"type": "text", "text": chunk},
+		}))
+	}
+
+	messages, err := storage.ListMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one assistant message", messages)
+	}
+	want := "```powershell\ncd <project-path>\n```"
+	if messages[0].Content != want {
+		t.Fatalf("message content = %q, want %q", messages[0].Content, want)
+	}
+	if len(messages[0].ContentBlocks) != 5 {
+		t.Fatalf("content blocks = %#v, want five chunks", messages[0].ContentBlocks)
+	}
+	if messages[0].ContentBlocks[1].Text != "\n" || messages[0].ContentBlocks[3].Text != "\n" {
+		t.Fatalf("content blocks = %#v, want newline-only chunks preserved", messages[0].ContentBlocks)
+	}
+}
+
 func TestAgentRuntimeNormalizesToolCallUpdates(t *testing.T) {
 	ctx := context.Background()
 	storage, session := testRuntimeSession(t)

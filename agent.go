@@ -1844,7 +1844,7 @@ func contentBlocksFromAny(value any) []MessageContentBlock {
 	case nil:
 		return nil
 	case string:
-		if strings.TrimSpace(typed) == "" {
+		if typed == "" {
 			return nil
 		}
 		return []MessageContentBlock{textBlock(typed)}
@@ -1857,7 +1857,7 @@ func contentBlocksFromAny(value any) []MessageContentBlock {
 	case map[string]any:
 		switch typed["type"] {
 		case "text":
-			if text, ok := typed["text"].(string); ok && strings.TrimSpace(text) != "" {
+			if text, ok := typed["text"].(string); ok && text != "" {
 				return []MessageContentBlock{textBlock(text)}
 			}
 			return nil
