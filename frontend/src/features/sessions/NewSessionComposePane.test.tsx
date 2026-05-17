@@ -144,22 +144,25 @@ describe("NewSessionComposePane", () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
-  test("opens manual configuration directly and blocks empty prompts without a workspace profile", async () => {
+  test("opens manual configuration directly and allows empty prompts without a workspace profile", async () => {
+    const onCreate = vi.fn();
     const { NewSessionComposePane } = await import("./NewSessionComposePane");
 
     const html = renderToStaticMarkup(
       <NewSessionComposePane
         agents={[agent()]}
         busy={false}
-        onCreate={vi.fn()}
+        onCreate={onCreate}
         workspace={workspace()}
         workspaceId="workspace-a"
       />
     );
 
-    expect(html).toContain("Initial prompt");
+    expect(html).toContain("First prompt");
     expect(html).toContain("Permission mode");
     expect(html).not.toContain("Start last profile");
-    expect(mocks.buttons.find((button) => button.label.includes("Create session"))?.isDisabled).toBe(true);
+    expect(mocks.buttons.find((button) => button.label.includes("Create session"))?.isDisabled).toBe(false);
+    await mocks.buttons.find((button) => button.label.includes("Create session"))?.onPress?.();
+    expect(onCreate).toHaveBeenCalledWith("codex", "manual", { model: "fast", permission: "manual" }, "");
   });
 });

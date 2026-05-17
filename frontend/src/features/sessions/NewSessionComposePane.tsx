@@ -83,7 +83,7 @@ export function NewSessionComposePane({
   const selectedMode = modes.find((mode) => mode.id === activeModeId) ?? modes[0] ?? null;
   const selectedLaunchable = selectedAgent && selectedMode ? canLaunchPermissionMode(selectedAgent, selectedMode) : false;
   const trimmedPrompt = initialPrompt.trim();
-  const createDisabled = busy || !selectedAgent || !selectedMode || !selectedLaunchable || !trimmedPrompt;
+  const createDisabled = busy || !selectedAgent || !selectedMode || !selectedLaunchable;
 
   useEffect(() => {
     if (!templatesOpen || !selectedAgent) return;
@@ -184,11 +184,11 @@ export function NewSessionComposePane({
       <PageHeader eyebrow="New Session" title={workspace?.name ?? "New session"} />
       <form className="new-session-compose" onSubmit={(event) => void submit(event)}>
         <label className="initial-prompt-field">
-          <span>Initial prompt</span>
+          <span>First prompt</span>
           <textarea
-            aria-label="Initial prompt"
+            aria-label="First prompt"
             onChange={(event) => setInitialPrompt(event.target.value)}
-            placeholder="Ask the agent what to do first"
+            placeholder="Optional first prompt"
             value={initialPrompt}
           />
         </label>
@@ -203,7 +203,6 @@ export function NewSessionComposePane({
             Create session
           </Button>
         </div>
-        {!trimmedPrompt ? <div className="composer-status">Initial prompt is required.</div> : null}
         {templatesOpen ? (
           <div className="prompt-template-panel">
             {templatesError ? <div className="composer-error">{templatesError}</div> : null}
