@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReactNode } from "react";
+import type { ElementType, ReactNode } from "react";
+import type { JSXSource } from "react/jsx-dev-runtime";
 import type { AgentRuntimeStatus, Workspace } from "../../types";
 
 const mocks = vi.hoisted(() => ({
@@ -249,18 +250,18 @@ describe("NewSessionComposePane", () => {
     });
     vi.doMock("react/jsx-runtime", async () => {
       const actual = await vi.importActual<typeof import("react/jsx-runtime")>("react/jsx-runtime");
-      function capture(type: unknown, props: Record<string, unknown> | null) {
+      function capture(type: ElementType, props: Record<string, unknown> | null) {
         if (type === "select" && props) {
           selects.push(props);
         }
       }
       return {
         ...actual,
-        jsx: (type: unknown, props: Record<string, unknown> | null, key?: string) => {
+        jsx: (type: ElementType, props: Record<string, unknown> | null, key?: string) => {
           capture(type, props);
           return actual.jsx(type, props, key);
         },
-        jsxs: (type: unknown, props: Record<string, unknown> | null, key?: string) => {
+        jsxs: (type: ElementType, props: Record<string, unknown> | null, key?: string) => {
           capture(type, props);
           return actual.jsxs(type, props, key);
         }
@@ -271,11 +272,11 @@ describe("NewSessionComposePane", () => {
       return {
         ...actual,
         jsxDEV: (
-          type: unknown,
+          type: ElementType,
           props: Record<string, unknown> | null,
           key: string | undefined,
           isStaticChildren: boolean,
-          source: unknown,
+          source: JSXSource | undefined,
           self: unknown
         ) => {
           if (type === "select" && props) {
