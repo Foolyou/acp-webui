@@ -28,18 +28,18 @@ export function currentModelLabel(option: SessionConfigOption | null | undefined
   return selectValues(option).find((item) => item.value === value)?.name ?? value;
 }
 
-export function modelSwitchDisabledReason(
+export function sessionConfigDisabledReason(
   session: SessionDetail,
   agentConnection: ConnectionStatus | null
 ): string | null {
   if (session.session.status === "running") {
-    return "Model switching is disabled while the session is running.";
+    return "Configuration changes are disabled while the session is running.";
   }
   if (session.session.status === "waiting_approval" || session.pendingPermission) {
-    return "Resolve the pending approval before changing models.";
+    return "Resolve the pending approval before changing configuration.";
   }
   if (!session.continuable) {
-    return session.viewOnlyReason ?? session.continuity.reason ?? "Restore this session before changing models.";
+    return session.viewOnlyReason ?? session.continuity.reason ?? "Restore this session before changing configuration.";
   }
   if (agentConnection && agentConnection.state !== "ready") {
     return agentConnection.message ?? `${session.session.agentName} is ${agentConnection.state}.`;

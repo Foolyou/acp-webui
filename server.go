@@ -657,12 +657,9 @@ func ensureClaudeSessionACPMode(ctx context.Context, runtime *AgentRuntime, acpS
 		return nil, err
 	}
 	modeLabel := claudePermissionModeErrorLabel(permissionMode)
-	modeOption, ok := claudeACPModeOption(configOptions)
-	if !ok {
-		return nil, fmt.Errorf("Claude %s mode requires ACP config option %q, but this Claude adapter did not advertise it", modeLabel, claudeACPModeConfigID)
-	}
-	if !sessionConfigOptionValueExists(modeOption.Options, acpMode) {
-		return nil, fmt.Errorf("Claude %s mode requires ACP mode %q, but this Claude adapter did not advertise it", modeLabel, acpMode)
+	modeOption, err := requireClaudeACPModeOption(configOptions, acpMode, modeLabel, "this Claude adapter")
+	if err != nil {
+		return nil, err
 	}
 	if stringPtrValue(modeOption.CurrentValue) == acpMode {
 		return configOptions, nil
@@ -671,7 +668,25 @@ func ensureClaudeSessionACPMode(ctx context.Context, runtime *AgentRuntime, acpS
 	if err != nil {
 		return nil, fmt.Errorf("failed to set Claude %s mode to %q: %w", modeLabel, acpMode, err)
 	}
+	if _, err := requireClaudeACPModeOption(state.ConfigOptions, acpMode, modeLabel, "session/set_config_option response"); err != nil {
+		return nil, err
+	}
+	updatedModeOption, _ := claudeACPModeOption(state.ConfigOptions)
+	if stringPtrValue(updatedModeOption.CurrentValue) != acpMode {
+		return nil, fmt.Errorf("Claude %s mode update did not activate ACP mode %q; current mode is %q", modeLabel, acpMode, stringPtrValue(updatedModeOption.CurrentValue))
+	}
 	return state.ConfigOptions, nil
+}
+
+func requireClaudeACPModeOption(configOptions []SessionConfigOption, acpMode, modeLabel, source string) (*SessionConfigOption, error) {
+	modeOption, ok := claudeACPModeOption(configOptions)
+	if !ok {
+		return nil, fmt.Errorf("Claude %s mode requires ACP config option %q, but %s did not include it", modeLabel, claudeACPModeConfigID, source)
+	}
+	if !sessionConfigOptionValueExists(modeOption.Options, acpMode) {
+		return nil, fmt.Errorf("Claude %s mode requires ACP mode %q, but %s did not advertise it", modeLabel, acpMode, source)
+	}
+	return modeOption, nil
 }
 
 func claudePermissionModeErrorLabel(permissionMode string) string {

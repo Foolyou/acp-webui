@@ -1026,6 +1026,62 @@ func TestHandleCreateClaudeYoloSessionFailsWhenBypassModeUnavailable(t *testing.
 	}
 }
 
+func TestHandleCreateClaudeYoloSessionFailsWhenModeUpdateResponseIsStale(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, profile, runtime := testClaudeSessionManager(t, storage, permissionYolo)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, claudeAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		body := bytes.NewBufferString(`{"agentId":"claude","permissionMode":"yolo","initialPrompt":"Do it"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+workspace.ID+"/sessions", body)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, nativePathString(workspace.Path), "claude-yolo-stale-mode", claudeModeConfigOptions("default", "default", "bypassPermissions"))
+	respondToSetConfigOptionRequest(t, decoder, runtime, "claude-yolo-stale-mode", "mode", "bypassPermissions", SessionConfigState{
+		ConfigOptions: claudeModeConfigOptions("default", "default", "bypassPermissions"),
+	})
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "Claude YOLO mode") || !strings.Contains(recorder.Body.String(), "bypassPermissions") {
+		t.Fatalf("error body = %s", recorder.Body.String())
+	}
+	items, err := storage.ListSessionItems(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("persisted sessions = %#v, want none", items)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var unexpected map[string]any
+	if err := decoder.Decode(&unexpected); err == nil {
+		t.Fatalf("unexpected prompt request after failed creation: %#v", unexpected)
+	}
+}
+
 func TestHandleCreateClaudeSessionDoesNotSetModeWhenAlreadyCurrent(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)

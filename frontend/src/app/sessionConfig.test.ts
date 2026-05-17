@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { applySessionListRealtime, sessionDetailToListItem } from "./sessionList";
 import { applyRealtimeEvent } from "../realtime";
-import { modelConfigOption, modelSwitchDisabledReason, selectValues, sessionConfigSelectOptions } from "./sessionConfig";
+import { modelConfigOption, selectValues, sessionConfigDisabledReason, sessionConfigSelectOptions } from "./sessionConfig";
 import type { ConnectionStatus, SessionDetail } from "../types";
 
 const continuity = {
@@ -85,11 +85,11 @@ describe("session config helpers", () => {
     expect(selectValues(option).map((value) => value.value)).toEqual(["fast", "pro"]);
   });
 
-  test("reports model switching disabled states", () => {
-    expect(modelSwitchDisabledReason(detail(), connection("ready"))).toBeNull();
-    expect(modelSwitchDisabledReason(detail({ session: { ...detail().session, status: "running" } }), connection("ready"))).toContain("running");
+  test("reports session config disabled states", () => {
+    expect(sessionConfigDisabledReason(detail(), connection("ready"))).toBeNull();
+    expect(sessionConfigDisabledReason(detail({ session: { ...detail().session, status: "running" } }), connection("ready"))).toContain("running");
     expect(
-      modelSwitchDisabledReason(
+      sessionConfigDisabledReason(
         detail({
           pendingPermission: {
             id: "permission-1",
@@ -107,9 +107,9 @@ describe("session config helpers", () => {
       )
     ).toContain("approval");
     expect(
-      modelSwitchDisabledReason(detail({ continuable: false, viewOnlyReason: "Restore first" }), connection("ready"))
+      sessionConfigDisabledReason(detail({ continuable: false, viewOnlyReason: "Restore first" }), connection("ready"))
     ).toBe("Restore first");
-    expect(modelSwitchDisabledReason(detail(), connection("failed"))).toBe("Unavailable");
+    expect(sessionConfigDisabledReason(detail(), connection("failed"))).toBe("Unavailable");
   });
 
   test("applies config realtime updates to current session and session list only", () => {

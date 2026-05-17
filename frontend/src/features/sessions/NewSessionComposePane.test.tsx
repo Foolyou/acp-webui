@@ -219,4 +219,133 @@ describe("NewSessionComposePane", () => {
     expect(html).not.toContain("Full auto");
     expect(html).not.toContain('value="full_auto"');
   });
+
+  test("creates Claude YOLO sessions after selecting YOLO", async () => {
+    vi.resetModules();
+    const state: unknown[] = [];
+    let stateIndex = 0;
+    const selects: Array<{
+      "aria-label"?: string;
+      onChange?: (event: { target: { value: string } }) => void;
+      value?: string;
+    }> = [];
+    vi.doMock("react", async () => {
+      const actual = await vi.importActual<typeof import("react")>("react");
+      return {
+        ...actual,
+        useEffect: () => {},
+        useMemo: (factory: () => unknown) => factory(),
+        useState: (initial: unknown) => {
+          const index = stateIndex++;
+          if (state.length <= index) {
+            state[index] = typeof initial === "function" ? (initial as () => unknown)() : initial;
+          }
+          const setState = (next: unknown) => {
+            state[index] = typeof next === "function" ? (next as (current: unknown) => unknown)(state[index]) : next;
+          };
+          return [state[index], setState];
+        }
+      };
+    });
+    vi.doMock("react/jsx-runtime", async () => {
+      const actual = await vi.importActual<typeof import("react/jsx-runtime")>("react/jsx-runtime");
+      function capture(type: unknown, props: Record<string, unknown> | null) {
+        if (type === "select" && props) {
+          selects.push(props);
+        }
+      }
+      return {
+        ...actual,
+        jsx: (type: unknown, props: Record<string, unknown> | null, key?: string) => {
+          capture(type, props);
+          return actual.jsx(type, props, key);
+        },
+        jsxs: (type: unknown, props: Record<string, unknown> | null, key?: string) => {
+          capture(type, props);
+          return actual.jsxs(type, props, key);
+        }
+      };
+    });
+    vi.doMock("react/jsx-dev-runtime", async () => {
+      const actual = await vi.importActual<typeof import("react/jsx-dev-runtime")>("react/jsx-dev-runtime");
+      return {
+        ...actual,
+        jsxDEV: (
+          type: unknown,
+          props: Record<string, unknown> | null,
+          key: string | undefined,
+          isStaticChildren: boolean,
+          source: unknown,
+          self: unknown
+        ) => {
+          if (type === "select" && props) {
+            selects.push(props);
+          }
+          return actual.jsxDEV(type, props, key, isStaticChildren, source, self);
+        }
+      };
+    });
+    const { NewSessionComposePane } = await import("./NewSessionComposePane");
+    const onCreate = vi.fn();
+    const props = {
+      agents: [
+        agent({
+          id: "claude",
+          title: "Claude",
+          permissionModes: [
+            {
+              id: "manual",
+              label: "Manual",
+              description: "Ask before approval-managed actions",
+              riskLevel: "low",
+              status: { state: "ready" }
+            },
+            {
+              id: "yolo",
+              label: "YOLO",
+              description: "No approvals / no sandbox",
+              riskLevel: "high",
+              status: { state: "ready" }
+            }
+          ],
+          launchControls: [
+            {
+              id: "permission",
+              label: "Permission",
+              category: "permission",
+              scope: "launch",
+              type: "select",
+              defaultValue: "manual",
+              options: [
+                { value: "manual", label: "Manual" },
+                { value: "yolo", label: "YOLO" }
+              ]
+            }
+          ]
+        })
+      ],
+      busy: false,
+      onCreate,
+      workspace: workspace(),
+      workspaceId: "workspace-a"
+    };
+
+    stateIndex = 0;
+    selects.length = 0;
+    renderToStaticMarkup(<NewSessionComposePane {...props} />);
+    const permissionSelect = selects.find((select) => select.value === "manual" && typeof select.onChange === "function");
+    expect(permissionSelect).toBeTruthy();
+    permissionSelect?.onChange?.({ target: { value: "yolo" } });
+
+    stateIndex = 0;
+    selects.length = 0;
+    mocks.buttons = [];
+    renderToStaticMarkup(<NewSessionComposePane {...props} />);
+    await mocks.buttons.find((button) => button.label.includes("Create session"))?.onPress?.();
+
+    expect(onCreate).toHaveBeenCalledWith("claude", "yolo", { permission: "yolo" }, "");
+    vi.doUnmock("react");
+    vi.doUnmock("react/jsx-runtime");
+    vi.doUnmock("react/jsx-dev-runtime");
+  });
 });

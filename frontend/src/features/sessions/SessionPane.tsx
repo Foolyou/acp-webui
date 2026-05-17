@@ -11,8 +11,8 @@ import { Button } from "react-aria-components";
 import { api } from "../../api";
 import {
   currentModelLabel,
-  modelSwitchDisabledReason,
   selectValues,
+  sessionConfigDisabledReason,
   sessionConfigSelectOptions
 } from "../../app/sessionConfig";
 import { liveMessage, timelineMessage } from "../../app/timeline";
@@ -157,7 +157,7 @@ export function SessionPane({
       ? "Retry restore"
       : "Restore";
   const sessionSelectOptions = sessionConfigSelectOptions(currentSession.configOptions);
-  const modelDisabledReason = modelSwitchDisabledReason(currentSession, agentConnection);
+  const configDisabledReason = sessionConfigDisabledReason(currentSession, agentConnection);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const programmaticScrollUntilRef = useRef(0);
@@ -379,7 +379,7 @@ export function SessionPane({
         agentName={agentName}
         busy={busy}
         currentSession={currentSession}
-        modelDisabledReason={modelDisabledReason}
+        configDisabledReason={configDisabledReason}
         onOpenDiffFallback={onOpenDiffFallback}
         onDeleteSession={onDeleteSession}
         onSetSessionConfigOption={onSetSessionConfigOption}
@@ -567,7 +567,7 @@ function SessionContextHeader({
   agentName,
   busy,
   currentSession,
-  modelDisabledReason,
+  configDisabledReason,
   onOpenDiffFallback,
   onDeleteSession,
   onSetSessionConfigOption,
@@ -580,7 +580,7 @@ function SessionContextHeader({
   agentName: string;
   busy: boolean;
   currentSession: SessionDetail;
-  modelDisabledReason: string | null;
+  configDisabledReason: string | null;
   onOpenDiffFallback: () => void;
   onDeleteSession: () => Promise<void>;
   onSetSessionConfigOption: (configId: string, value: string) => Promise<void>;
@@ -678,9 +678,9 @@ function SessionContextHeader({
           {sessionSelectOptions.length ? (
             <div className="session-config-controls">
               {sessionSelectOptions.map((option) => (
-                <ModelSelector
+                <SessionConfigSelector
                   busy={busy}
-                  disabledReason={modelDisabledReason}
+                  disabledReason={configDisabledReason}
                   key={option.id}
                   option={option}
                   values={selectValues(option)}
@@ -703,7 +703,7 @@ function SessionContextHeader({
   );
 }
 
-function ModelSelector({
+function SessionConfigSelector({
   busy,
   disabledReason,
   option,
