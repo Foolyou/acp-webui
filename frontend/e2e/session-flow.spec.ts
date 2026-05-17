@@ -902,7 +902,10 @@ test("dictates prompt draft text without auto-submitting", async ({ page }) => {
   await page.locator(".skill-autocomplete-item", { hasText: "$imagegen" }).click();
   await expect(composer).toHaveValue("$imagegen ");
 
-  await page.getByRole("button", { name: "Prompts" }).click();
+  const promptTemplatesButton = page.getByRole("button", { name: "Open prompt templates" });
+  await expect(promptTemplatesButton).toBeVisible();
+  await promptTemplatesButton.click();
+  await expect(page.getByRole("button", { name: "Close prompt templates" })).toBeVisible();
   await page.locator(".prompt-template-item", { hasText: "Review template" }).getByRole("button", { name: "Use" }).click();
   await expect(composer).toHaveValue("$imagegen\n\nTemplate prompt");
 });
@@ -912,6 +915,19 @@ test("renders accessible icon composer actions while preserving prompt submissio
   await mockAudioRecording(page);
 
   const fixture = await mockComposerSession(page, {
+    activeTurn: { startedAt: "2026-04-30T00:00:00Z", status: "running" },
+    queuedPrompts: [
+      {
+        id: "queued-icon-control",
+        sessionId: "voice-session",
+        messageId: "queued-icon-message",
+        prompt: "queued prompt keeps stop scope textual",
+        status: "queued",
+        position: 1,
+        createdAt: "2026-04-30T00:00:01Z"
+      }
+    ],
+    sessionStatus: "running",
     templates: [
       {
         id: "template-compact",
@@ -929,7 +945,9 @@ test("renders accessible icon composer actions while preserving prompt submissio
   });
   await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
 
+  const composerWrap = page.locator(".composer-wrap");
   const composer = page.locator(".composer");
+  await expectComposerIconAction(composerWrap, "Stop", { tooltip: "Stop and choose queue handling" });
   await expectComposerIconAction(composer, "Start voice input");
   await expectComposerIconAction(composer, "Open prompt templates");
   await expectComposerIconAction(composer, "Attach image");
@@ -937,7 +955,32 @@ test("renders accessible icon composer actions while preserving prompt submissio
   await expect(composer.getByRole("button", { name: "Enter fullscreen" })).toHaveCount(0);
   await expect(composer.getByRole("button", { name: "Enable notifications" })).toHaveCount(0);
 
-  const prompt = page.getByPlaceholder("Ask Codex...");
+  await composerWrap.getByRole("button", { name: "Stop" }).click();
+  const stopScope = page.getByRole("dialog", { name: "Stop queued prompts" });
+  await expect(stopScope.getByText("Stop this turn?")).toBeVisible();
+  await expect(stopScope.getByText("1 queued prompt will remain unless cleared.")).toBeVisible();
+  for (const actionName of ["Cancel", "Active only", "Clear queue"]) {
+    const stopScopeAction = stopScope.getByRole("button", { name: actionName });
+    await expect(stopScopeAction).toBeVisible();
+    await expect(stopScopeAction).not.toHaveClass(/composer-icon-button/);
+  }
+  await stopScope.getByRole("button", { name: "Cancel" }).click();
+
+  await page.locator('.composer input[type="file"]').setInputFiles({
+    name: "compact-pixel.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lxL+0wAAAABJRU5ErkJggg==",
+      "base64"
+    )
+  });
+  const attachment = page.locator(".composer-attachment", { hasText: "compact-pixel.png" });
+  await expect(attachment).toBeVisible();
+  await expectComposerIconAction(attachment, "Remove image attachment compact-pixel.png", { tooltip: "Remove attachment" });
+  await attachment.getByRole("button", { name: "Remove image attachment compact-pixel.png" }).click();
+  await expect(attachment).toHaveCount(0);
+
+  const prompt = page.locator(".composer textarea");
   await prompt.fill("Submit from compact composer");
   await composer.getByRole("button", { name: "Send prompt" }).click();
   await expect.poll(() => fixture.promptRequests.length).toBe(1);
@@ -2410,11 +2453,15 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
     .toBeLessThanOrEqual(1);
 }
 
-async function expectComposerIconAction(locator: import("@playwright/test").Locator, name: string) {
+async function expectComposerIconAction(
+  locator: import("@playwright/test").Locator,
+  name: string,
+  options: { tooltip?: string } = {}
+) {
   const button = locator.getByRole("button", { name });
   await expect(button).toBeVisible();
   await expect(button).toHaveClass(/composer-icon-button/);
-  await expect(button).toHaveAttribute("data-tooltip", name);
+  await expect(button).toHaveAttribute("data-tooltip", options.tooltip ?? name);
   const size = await button.evaluate((node) => {
     const rect = (node as HTMLElement).getBoundingClientRect();
     return { height: rect.height, width: rect.width };
@@ -2492,6 +2539,7 @@ async function expectMobileComposerSurfaceLayout(page: import("@playwright/test"
   expect(metrics.topbar!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
   expect(metrics.utilityArea!.left).toBeGreaterThanOrEqual(0);
   expect(metrics.utilityArea!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.timeline!.bottom).toBeLessThanOrEqual(metrics.approval!.top + 1);
   expect(metrics.queued!.bottom).toBeLessThanOrEqual(metrics.approval!.top + 1);
   expect(metrics.approval!.bottom).toBeLessThanOrEqual(metrics.composer!.top + 1);
 }
