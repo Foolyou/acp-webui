@@ -1,5 +1,6 @@
 const textFenceInfos = ["text", "txt", "plaintext"];
 const readableFenceInfos = [...textFenceInfos, "markdown", "md"];
+const readableFenceInfosByLength = [...readableFenceInfos].sort((left, right) => right.length - left.length);
 const fenceLinePattern = /^([ \t]{0,3})(`{3,}|~{3,})(.*)$/;
 const proseGluedOpeningPattern = /^(.+\S)(`{3,}|~{3,})([A-Za-z][A-Za-z0-9_+.-]*)[ \t]*$/;
 
@@ -94,7 +95,9 @@ function unwrapWholeTextFence(content: string) {
   if (!opening) return null;
   const [, , marker, info] = opening;
   const infoText = info.trim().toLowerCase();
-  if (!readableFenceInfos.includes(infoText)) return null;
+  const gluedOpening = readableFenceInfoPrefix(info);
+  const openingIsReadable = readableFenceInfos.includes(infoText);
+  if (!openingIsReadable && !gluedOpening) return null;
 
   const markerChar = marker[0];
   const markerLength = marker.length;
@@ -105,7 +108,6 @@ function unwrapWholeTextFence(content: string) {
     const [, , closingMarker, suffix] = closing;
     if (closingMarker[0] === markerChar && closingMarker.length >= markerLength && suffix.trim() === "") {
       closingIndex = index;
-      break;
     }
   }
 
@@ -113,5 +115,20 @@ function unwrapWholeTextFence(content: string) {
   if (lines.slice(0, firstContentIndex).some((line) => line.trim() !== "")) return null;
   if (lines.slice(closingIndex + 1).some((line) => line.trim() !== "")) return null;
 
-  return lines.slice(firstContentIndex + 1, closingIndex).join("\n");
+  return [
+    ...(gluedOpening ? [gluedOpening.rest.trimStart()] : []),
+    ...lines.slice(firstContentIndex + 1, closingIndex)
+  ].join("\n");
+}
+
+function readableFenceInfoPrefix(info: string) {
+  const trimmedStart = info.trimStart();
+  const normalized = trimmedStart.toLowerCase();
+  for (const fenceInfo of readableFenceInfosByLength) {
+    if (!normalized.startsWith(fenceInfo)) continue;
+    const rest = trimmedStart.slice(fenceInfo.length);
+    if (rest === "" || /^[A-Za-z0-9_+.-]/.test(rest)) continue;
+    return { fenceInfo, rest };
+  }
+  return null;
 }

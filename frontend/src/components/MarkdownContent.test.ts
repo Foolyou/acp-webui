@@ -63,6 +63,90 @@ describe("normalizeMarkdownContent", () => {
     );
   });
 
+  test("unwraps whole-message markdown fences with the first content line glued to the opening", () => {
+    const input = [
+      "````markdown请先确认这一段 opening fence 是否会被正确拆开：```powershell",
+      "cd <project-path>",
+      ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+      "```",
+      "如果正常，上面应该显示成独立 PowerShell 代码块。",
+      "",
+      "再测 closing fence 粘连：",
+      "```textDM private: control mode - workspace / session / agent",
+      "- only respond to explicit bot mentions```",
+      "",
+      "最后测原本正常的代码块：",
+      "```json",
+      "{\"ok\": true, \"mode\": \"markdown-test\"}",
+      "```",
+      "````"
+    ].join("\n");
+
+    expect(normalizeMarkdownContent(input)).toBe(
+      [
+        "请先确认这一段 opening fence 是否会被正确拆开：",
+        "```powershell",
+        "cd <project-path>",
+        ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+        "```",
+        "如果正常，上面应该显示成独立 PowerShell 代码块。",
+        "",
+        "再测 closing fence 粘连：",
+        "```text",
+        "DM private: control mode - workspace / session / agent",
+        "- only respond to explicit bot mentions",
+        "```",
+        "",
+        "最后测原本正常的代码块：",
+        "```json",
+        "{\"ok\": true, \"mode\": \"markdown-test\"}",
+        "```"
+      ].join("\n")
+    );
+  });
+
+  test("unwraps triple-backtick markdown wrappers by using the last matching closing fence", () => {
+    const input = [
+      "```markdown请先确认这一段 opening fence 是否会被正确拆开：```powershell",
+      "cd <project-path>",
+      ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+      "```",
+      "如果正常，上面应该显示成独立 PowerShell 代码块。",
+      "",
+      "再测 closing fence 粘连：",
+      "```textDM private: control mode - workspace / session / agent",
+      "- only respond to explicit bot mentions```",
+      "",
+      "最后测原本正常的代码块：",
+      "```json",
+      "{\"ok\": true, \"mode\": \"markdown-test\"}",
+      "```",
+      "```"
+    ].join("\n");
+
+    expect(normalizeMarkdownContent(input)).toBe(
+      [
+        "请先确认这一段 opening fence 是否会被正确拆开：",
+        "```powershell",
+        "cd <project-path>",
+        ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+        "```",
+        "如果正常，上面应该显示成独立 PowerShell 代码块。",
+        "",
+        "再测 closing fence 粘连：",
+        "```text",
+        "DM private: control mode - workspace / session / agent",
+        "- only respond to explicit bot mentions",
+        "```",
+        "",
+        "最后测原本正常的代码块：",
+        "```json",
+        "{\"ok\": true, \"mode\": \"markdown-test\"}",
+        "```"
+      ].join("\n")
+    );
+  });
+
   test("repairs fenced code closings glued to following prose", () => {
     const input = [
       "Intro",
