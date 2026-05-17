@@ -3,7 +3,15 @@ import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
-import type { MessageContentBlock, PromptTemplate, QueuedPrompt, SessionDetail, SkillSummary, TimelineItem } from "../src/types";
+import type {
+  MessageContentBlock,
+  PermissionRequest,
+  PromptTemplate,
+  QueuedPrompt,
+  SessionDetail,
+  SkillSummary,
+  TimelineItem
+} from "../src/types";
 
 const frontendDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(frontendDir, "../..");
@@ -899,6 +907,44 @@ test("dictates prompt draft text without auto-submitting", async ({ page }) => {
   await expect(composer).toHaveValue("$imagegen\n\nTemplate prompt");
 });
 
+test("renders accessible icon composer actions while preserving prompt submission", async ({ page }) => {
+  await mockConnectedWebSocket(page);
+  await mockAudioRecording(page);
+
+  const fixture = await mockComposerSession(page, {
+    templates: [
+      {
+        id: "template-compact",
+        workspaceId: "voice-workspace",
+        agentId: "codex",
+        title: "Compact prompt",
+        body: "Use concise output",
+        tags: [],
+        position: 1,
+        useCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  });
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+
+  const composer = page.locator(".composer");
+  await expectComposerIconAction(composer, "Start voice input");
+  await expectComposerIconAction(composer, "Open prompt templates");
+  await expectComposerIconAction(composer, "Attach image");
+  await expectComposerIconAction(composer, "Send prompt");
+  await expect(composer.getByRole("button", { name: "Enter fullscreen" })).toHaveCount(0);
+  await expect(composer.getByRole("button", { name: "Enable notifications" })).toHaveCount(0);
+
+  const prompt = page.getByPlaceholder("Ask Codex...");
+  await prompt.fill("Submit from compact composer");
+  await composer.getByRole("button", { name: "Send prompt" }).click();
+  await expect.poll(() => fixture.promptRequests.length).toBe(1);
+  expect(fixture.promptRequests[0].prompt).toBe("Submit from compact composer");
+  await expect(prompt).toHaveValue("");
+});
+
 test("adds pasted and dropped image attachments and previews them before sending", async ({ page }) => {
   await mockConnectedWebSocket(page);
 
@@ -929,6 +975,86 @@ test("adds pasted and dropped image attachments and previews them before sending
     { type: "image", mimeType: "image/png", name: "pasted-pixel.png" },
     { type: "image", mimeType: "image/png", name: "dropped-pixel.png" }
   ]);
+});
+
+test("keeps mobile composer compact around queued prompts and approval surfaces", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 760 });
+  await mockConnectedWebSocket(page);
+
+  const fixture = await mockComposerSession(page, {
+    activeTurn: { startedAt: "2026-04-30T00:00:00Z", status: "running" },
+    pendingApprovalCount: 2,
+    pendingPermission: {
+      id: "permission-compact-mobile",
+      sessionId: "voice-session",
+      acpSessionId: "voice-acp-session",
+      title: "Approve compact mobile command",
+      kind: "execute",
+      status: "pending",
+      toolCall: { content: [{ text: "npm test" }] },
+      options: [
+        { optionId: "allow", name: "Allow", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" }
+      ],
+      createdAt: "2026-04-30T00:00:02Z"
+    },
+    queuedApprovalCount: 1,
+    queuedPrompts: [
+      {
+        id: "queued-compact-mobile",
+        sessionId: "voice-session",
+        messageId: "queued-message-compact-mobile",
+        prompt: "queued prompt remains readable",
+        contentBlocks: [{ type: "text", text: "queued prompt remains readable" }],
+        status: "queued",
+        position: 1,
+        createdAt: "2026-04-30T00:00:01Z"
+      }
+    ],
+    sessionStatus: "waiting_approval",
+    timeline: [
+      {
+        kind: "message",
+        id: "mobile-layout-message",
+        sessionId: "voice-session",
+        timestamp: "2026-04-30T00:00:00Z",
+        status: "completed",
+        role: "assistant",
+        content: "Timeline content remains visible above the compact composer."
+      }
+    ]
+  });
+
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+  await expect(page.locator(".queued-prompts")).toBeVisible();
+  await expect(page.locator(".inline-approval-panel")).toBeVisible();
+  await expect(page.getByText("Waiting for approval")).toBeVisible();
+  await expectMobileComposerSurfaceLayout(page);
+});
+
+test("exposes mobile fullscreen and notification controls from workbench chrome", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 760 });
+  await mockConnectedWebSocket(page);
+  await mockMobileUtilitySupport(page);
+
+  const fixture = await mockComposerSession(page);
+  await page.goto(`/workspaces/${fixture.workspace.id}/sessions/${fixture.session.id}`);
+
+  const topbar = page.locator(".mobile-topbar");
+  await expect(topbar).toBeVisible();
+  await expect(topbar.getByRole("button", { name: "Enter fullscreen" })).toBeVisible();
+  await expect(topbar.getByRole("button", { name: "Enable notifications" })).toBeVisible();
+  await expect(page.locator(".composer-wrap").getByRole("button", { name: "Enter fullscreen" })).toHaveCount(0);
+  await expect(page.locator(".composer-wrap").getByRole("button", { name: "Enable notifications" })).toHaveCount(0);
+
+  await topbar.getByRole("button", { name: "Enter fullscreen" }).click();
+  await expect(topbar.getByRole("button", { name: "Exit fullscreen" })).toBeVisible();
+  await topbar.getByRole("button", { name: "Exit fullscreen" }).click();
+  await expect(topbar.getByRole("button", { name: "Enter fullscreen" })).toBeVisible();
+
+  await topbar.getByRole("button", { name: "Enable notifications" }).click();
+  await expect(topbar.getByRole("button", { name: "Notifications enabled" })).toBeVisible();
+  await expectMobileChromeUtilityLayout(page);
 });
 
 test("keeps text composer usable when voice input is unsupported", async ({ page }) => {
@@ -1721,10 +1847,14 @@ test("shows session review artifacts in the conversation", async ({ page }) => {
 
 type ComposerFixtureOptions = {
   activeTurn?: SessionDetail["activeTurn"];
+  pendingApprovalCount?: number;
+  pendingPermission?: PermissionRequest | null;
   queuedPrompts?: QueuedPrompt[];
+  queuedApprovalCount?: number;
   sessionStatus?: string;
   skills?: SkillSummary[];
   templates?: PromptTemplate[];
+  timeline?: TimelineItem[];
   transcriptionAvailable?: boolean;
   transcriptionText?: string;
 };
@@ -1764,11 +1894,11 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
     queuedPrompts: options.queuedPrompts ?? [],
     activeTurn: options.activeTurn ?? null,
     reviewArtifacts: [],
-    timeline: [],
-    pendingPermission: null,
+    timeline: options.timeline ?? [],
+    pendingPermission: options.pendingPermission ?? null,
     pendingPermissions: [],
-    pendingApprovalCount: 0,
-    queuedApprovalCount: 0,
+    pendingApprovalCount: options.pendingApprovalCount ?? 0,
+    queuedApprovalCount: options.queuedApprovalCount ?? 0,
     failureMessage: null,
     continuity: {
       state: "live",
@@ -2002,6 +2132,53 @@ async function mockAudioRecording(page: Page) {
   });
 }
 
+async function mockMobileUtilitySupport(page: Page) {
+  await page.addInitScript(() => {
+    let fullscreenElement: Element | null = null;
+    Object.defineProperty(document, "fullscreenEnabled", {
+      configurable: true,
+      get: () => true
+    });
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement
+    });
+    Object.defineProperty(Element.prototype, "requestFullscreen", {
+      configurable: true,
+      value: async function requestFullscreen(this: Element) {
+        fullscreenElement = this;
+        document.dispatchEvent(new Event("fullscreenchange"));
+      }
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: async () => {
+        fullscreenElement = null;
+        document.dispatchEvent(new Event("fullscreenchange"));
+      }
+    });
+
+    let notificationPermission: NotificationPermission = "default";
+    class MockNotification {
+      static get permission() {
+        return notificationPermission;
+      }
+
+      static async requestPermission() {
+        notificationPermission = "granted";
+        return notificationPermission;
+      }
+
+      constructor(_title: string, _options?: NotificationOptions) {}
+    }
+
+    Object.defineProperty(globalThis, "Notification", {
+      configurable: true,
+      value: MockNotification
+    });
+  });
+}
+
 async function setMockAudioGetUserMediaError(page: Page, error: string | null) {
   await page.evaluate((value) => {
     const audioWindow = window as typeof window & { __mockAudio?: { getUserMediaError: string | null } };
@@ -2231,6 +2408,92 @@ async function expectPageFitsViewport(page: import("@playwright/test").Page) {
       })
     )
     .toBeLessThanOrEqual(1);
+}
+
+async function expectComposerIconAction(locator: import("@playwright/test").Locator, name: string) {
+  const button = locator.getByRole("button", { name });
+  await expect(button).toBeVisible();
+  await expect(button).toHaveClass(/composer-icon-button/);
+  await expect(button).toHaveAttribute("data-tooltip", name);
+  const size = await button.evaluate((node) => {
+    const rect = (node as HTMLElement).getBoundingClientRect();
+    return { height: rect.height, width: rect.width };
+  });
+  expect(size.width).toBeLessThanOrEqual(48);
+  expect(size.height).toBeLessThanOrEqual(48);
+}
+
+async function expectMobileChromeUtilityLayout(page: import("@playwright/test").Page) {
+  await expectPageFitsViewport(page);
+  const metrics = await page.evaluate(() => {
+    const bounds = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
+    };
+    return {
+      composer: bounds(".composer-wrap"),
+      timeline: bounds(".timeline"),
+      topbar: bounds(".mobile-topbar"),
+      utilityArea: bounds(".mobile-topbar-actions"),
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+
+  expect(metrics.topbar).not.toBeNull();
+  expect(metrics.utilityArea).not.toBeNull();
+  expect(metrics.timeline).not.toBeNull();
+  expect(metrics.composer).not.toBeNull();
+  expect(metrics.utilityArea!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.utilityArea!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.topbar!.top).toBeGreaterThanOrEqual(0);
+  expect(metrics.topbar!.bottom).toBeLessThanOrEqual(metrics.viewportHeight);
+  expect(metrics.topbar!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.topbar!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.timeline!.bottom).toBeLessThanOrEqual(metrics.composer!.top + 1);
+}
+
+async function expectMobileComposerSurfaceLayout(page: import("@playwright/test").Page) {
+  await expectPageFitsViewport(page);
+  const metrics = await page.evaluate(() => {
+    const bounds = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top };
+    };
+    return {
+      approval: bounds(".inline-approval-panel"),
+      composer: bounds(".composer-wrap"),
+      queued: bounds(".queued-prompts"),
+      timeline: bounds(".timeline"),
+      topbar: bounds(".mobile-topbar"),
+      utilityArea: bounds(".mobile-topbar-actions"),
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+
+  expect(metrics.topbar).not.toBeNull();
+  expect(metrics.timeline).not.toBeNull();
+  expect(metrics.queued).not.toBeNull();
+  expect(metrics.approval).not.toBeNull();
+  expect(metrics.composer).not.toBeNull();
+  expect(metrics.utilityArea).not.toBeNull();
+  expect(metrics.composer!.height).toBeLessThanOrEqual(170);
+  expect(metrics.composer!.bottom).toBeLessThanOrEqual(metrics.viewportHeight + 1);
+  expect(metrics.composer!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.composer!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.topbar!.top).toBeGreaterThanOrEqual(0);
+  expect(metrics.topbar!.bottom).toBeLessThanOrEqual(metrics.viewportHeight);
+  expect(metrics.topbar!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.topbar!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.utilityArea!.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.utilityArea!.right).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.queued!.bottom).toBeLessThanOrEqual(metrics.approval!.top + 1);
+  expect(metrics.approval!.bottom).toBeLessThanOrEqual(metrics.composer!.top + 1);
 }
 
 async function expectRedesignedSessionLayout(page: import("@playwright/test").Page, viewport: "desktop" | "mobile") {

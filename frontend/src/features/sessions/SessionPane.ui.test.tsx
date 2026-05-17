@@ -4,26 +4,37 @@ import { describe, expect, test, vi } from "vitest";
 import type { AgentRuntimeStatus, SessionDetail } from "../../types";
 
 const mocks = vi.hoisted(() => ({
-  buttons: [] as Array<{ label: string; onPress?: () => void; type?: "button" | "submit" | "reset" }>,
+  buttons: [] as Array<{
+    ariaLabel?: string;
+    className?: string;
+    label: string;
+    onPress?: () => void;
+    tooltip?: string;
+    type?: "button" | "submit" | "reset";
+  }>,
   link: vi.fn(({ children }: { children: ReactNode }) => <a>{children}</a>),
   button: vi.fn(
     ({
+      "aria-label": ariaLabel,
       children,
       className,
+      "data-tooltip": tooltip,
       isDisabled,
       onPress,
       type
     }: {
+      "aria-label"?: string;
       children: ReactNode;
       className?: string;
+      "data-tooltip"?: string;
       isDisabled?: boolean;
       onPress?: () => void;
       type?: "button" | "submit" | "reset";
     }) => {
       const label = textFromNode(children);
-      mocks.buttons.push({ label, onPress, type });
+      mocks.buttons.push({ ariaLabel, className, label, onPress, tooltip, type });
       return (
-        <button className={className} disabled={isDisabled} type={type}>
+        <button aria-label={ariaLabel} className={className} data-tooltip={tooltip} disabled={isDisabled} type={type}>
           {children}
         </button>
       );
@@ -206,11 +217,55 @@ describe("SessionPane inline approval", () => {
     );
 
     expect(html).toContain("2 queued");
-    expect(html).toContain("Run queue");
+    expect(html).toContain("Run queued prompts");
     expect(html).not.toContain(">Stop</button>");
-    const runQueue = mocks.buttons.find((button) => button.label === "Run queue");
+    const runQueue = mocks.buttons.find((button) => button.ariaLabel === "Run queued prompts");
+    expect(runQueue?.className).toContain("composer-icon-button");
+    expect(runQueue?.tooltip).toBe("Run queued prompts");
     expect(runQueue?.type).toBe("button");
     runQueue?.onPress?.();
     expect(onRunQueuedPrompts).toHaveBeenCalledTimes(1);
+  });
+
+  test("renders common composer actions as labelled icon controls while keeping state text readable", async () => {
+    mocks.buttons = [];
+    const { SessionPane } = await import("./SessionPane");
+    const detail = sessionDetail();
+    detail.session.status = "idle";
+    detail.activeTurn = null;
+    detail.pendingPermission = null;
+    detail.pendingApprovalCount = 0;
+    detail.queuedApprovalCount = 0;
+    detail.queuedPrompts = [];
+
+    const html = renderToStaticMarkup(
+      <SessionPane
+        agentStatus={agentStatus()}
+        busy={false}
+        currentSession={detail}
+        liveAssistant=""
+        onOpenDiffFallback={vi.fn()}
+        onOpenReviewArtifact={vi.fn()}
+        onRestoreSession={vi.fn()}
+        onResolvePermission={vi.fn()}
+        onRunQueuedPrompts={vi.fn()}
+        onSendPrompt={vi.fn()}
+        onSetSessionConfigOption={vi.fn()}
+        onStopSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onUpdateSessionTitle={vi.fn()}
+        transcriptionAvailable={false}
+      />
+    );
+
+    for (const name of ["Open prompt templates", "Attach image", "Send prompt"]) {
+      const action = mocks.buttons.find((button) => button.ariaLabel === name);
+      expect(action?.className).toContain("composer-icon-button");
+      expect(action?.tooltip).toBe(name);
+    }
+    expect(html).toContain("Ask Codex");
+    expect(html).not.toContain(">Prompts</button>");
+    expect(html).not.toContain(">Image</button>");
+    expect(html).not.toContain(">Send</button>");
   });
 });

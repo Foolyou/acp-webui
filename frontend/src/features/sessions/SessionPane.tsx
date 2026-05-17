@@ -57,6 +57,45 @@ type ImageAttachment = Extract<MessageContentBlock, { type: "image" }> & {
 };
 
 type VoiceState = "idle" | "recording" | "transcribing";
+type ComposerIconName = "attach-image" | "microphone" | "play" | "remove" | "send" | "stop" | "templates" | "transcribing";
+
+function ComposerIconButton({
+  ariaExpanded,
+  ariaPressed,
+  className,
+  icon,
+  isDisabled,
+  label,
+  onPress,
+  tooltip = label,
+  type = "button"
+}: {
+  ariaExpanded?: boolean;
+  ariaPressed?: boolean;
+  className?: string;
+  icon: ComposerIconName;
+  isDisabled?: boolean;
+  label: string;
+  onPress?: () => void;
+  tooltip?: string;
+  type?: "button" | "submit" | "reset";
+}) {
+  return (
+    <Button
+      aria-expanded={ariaExpanded}
+      aria-label={label}
+      aria-pressed={ariaPressed}
+      className={`icon-button composer-icon-button ${className ?? ""}`.trim()}
+      data-tooltip={tooltip}
+      isDisabled={isDisabled}
+      onPress={onPress}
+      type={type}
+    >
+      <span aria-hidden="true" className={`composer-action-icon ${icon}`} />
+      <span className="visually-hidden">{label}</span>
+    </Button>
+  );
+}
 
 export function SessionPane({
   agentStatus,
@@ -1320,6 +1359,12 @@ function PromptComposer({
     stoppingTurn,
     waitingApproval
   });
+  const voiceControlLabel = voiceTranscribing
+    ? "Transcribing voice input"
+    : voiceRecording
+      ? "Finish voice input"
+      : "Start voice input";
+  const promptTemplatesLabel = templatesOpen ? "Close prompt templates" : "Open prompt templates";
 
   return (
     <div className="composer-wrap">
@@ -1368,9 +1413,11 @@ function PromptComposer({
           {status ? <div className={`composer-status ${continuityReason ? "warning" : ""}`}>{status}</div> : <span />}
           {queuedPromptCount > 0 ? <span className="queued-count">{queuedPromptCount} queued</span> : null}
           {canStop ? (
-            <Button
-              className="secondary small stop-button"
+            <ComposerIconButton
+              className="stop-button"
+              icon="stop"
               isDisabled={busy}
+              label="Stop"
               onPress={() => {
                 if (queuedPromptCount > 0) {
                   setStopChoiceOpen(true);
@@ -1378,20 +1425,18 @@ function PromptComposer({
                 }
                 void onStopSession();
               }}
-            >
-              Stop
-            </Button>
+              tooltip={queuedPromptCount > 0 ? "Stop and choose queue handling" : "Stop"}
+            />
           ) : queuedPromptCount > 0 ? (
-            <Button
-              className="secondary small stop-button"
+            <ComposerIconButton
+              className="run-queue-button"
+              icon="play"
               isDisabled={busy}
+              label="Run queued prompts"
               onPress={() => {
                 void onRunQueuedPrompts();
               }}
-              type="button"
-            >
-              Run queue
-            </Button>
+            />
           ) : null}
           {restoreButtonLabel ? (
             <Button
@@ -1593,16 +1638,16 @@ function PromptComposer({
                   <img alt={attachment.name ?? "Attached image"} src={imageDataUrl(attachment)} />
                 </Button>
                 <span>{attachment.name ?? attachment.mimeType}</span>
-                <Button
-                  className="secondary small"
+                <ComposerIconButton
+                  className="composer-attachment-remove"
+                  icon="remove"
+                  label={`Remove image attachment ${attachment.name ?? attachment.mimeType}`}
                   onPress={() => {
                     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
                     setPreviewAttachmentId((current) => (current === attachment.id ? null : current));
                   }}
-                  type="button"
-                >
-                  Remove
-                </Button>
+                  tooltip="Remove attachment"
+                />
               </div>
             ))}
           </div>
@@ -1612,37 +1657,29 @@ function PromptComposer({
         <div className="composer-actions">
           <span className="shortcut-hint">Ctrl Enter</span>
           {voiceSupported ? (
-            <Button
-              aria-label={
-                voiceTranscribing ? "Transcribing voice input" : voiceRecording ? "Finish voice input" : "Start voice input"
-              }
-              aria-pressed={voiceRecording}
-              className={`secondary voice-control ${voiceRecording ? "listening" : ""}`}
+            <ComposerIconButton
+              ariaPressed={voiceRecording}
+              className={`voice-control ${voiceRecording ? "listening" : ""} ${voiceTranscribing ? "transcribing" : ""}`}
+              icon={voiceTranscribing ? "transcribing" : "microphone"}
               isDisabled={disabled || busy || voiceTranscribing}
+              label={voiceControlLabel}
               onPress={toggleVoiceInput}
-              type="button"
-            >
-              {voiceTranscribing ? "..." : voiceRecording ? "On" : "Mic"}
-            </Button>
+            />
           ) : null}
-          <Button
-            className="secondary"
+          <ComposerIconButton
+            ariaExpanded={templatesOpen}
+            className={templatesOpen ? "active" : undefined}
+            icon="templates"
+            label={promptTemplatesLabel}
             onPress={() => setTemplatesOpen((open) => !open)}
-            type="button"
-          >
-            Prompts
-          </Button>
-          <Button
-            className="secondary"
+          />
+          <ComposerIconButton
+            icon="attach-image"
             isDisabled={disabled || busy || !imagePromptSupported}
+            label="Attach image"
             onPress={() => fileInputRef.current?.click()}
-            type="button"
-          >
-            Image
-          </Button>
-          <Button className="primary" isDisabled={disabled || busy} type="submit">
-            Send
-          </Button>
+          />
+          <ComposerIconButton className="composer-send-button" icon="send" isDisabled={disabled || busy} label="Send prompt" type="submit" />
         </div>
       </form>
       {previewAttachment ? (
