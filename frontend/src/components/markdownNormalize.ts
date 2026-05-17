@@ -1,10 +1,11 @@
 const textFenceInfos = ["text", "txt", "plaintext"];
+const readableFenceInfos = [...textFenceInfos, "markdown", "md"];
 const fenceLinePattern = /^([ \t]{0,3})(`{3,}|~{3,})(.*)$/;
 const proseGluedOpeningPattern = /^(.+\S)(`{3,}|~{3,})([A-Za-z][A-Za-z0-9_+.-]*)[ \t]*$/;
 
 export function normalizeMarkdownContent(content: string) {
   const wholeTextFence = unwrapWholeTextFence(content);
-  if (wholeTextFence !== null) return wholeTextFence;
+  const source = wholeTextFence ?? content;
 
   const output: string[] = [];
   let openFence: { markerChar: string; markerLength: number } | null = null;
@@ -76,7 +77,7 @@ export function normalizeMarkdownContent(content: string) {
     openFence = { markerChar: marker[0], markerLength: marker.length };
   }
 
-  for (const line of content.replace(/\r\n/g, "\n").split("\n")) {
+  for (const line of source.replace(/\r\n/g, "\n").split("\n")) {
     consumeLine(line);
   }
 
@@ -93,7 +94,7 @@ function unwrapWholeTextFence(content: string) {
   if (!opening) return null;
   const [, , marker, info] = opening;
   const infoText = info.trim().toLowerCase();
-  if (!textFenceInfos.includes(infoText)) return null;
+  if (!readableFenceInfos.includes(infoText)) return null;
 
   const markerChar = marker[0];
   const markerLength = marker.length;

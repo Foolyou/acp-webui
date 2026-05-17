@@ -31,6 +31,38 @@ describe("normalizeMarkdownContent", () => {
     expect(normalizeMarkdownContent(["```txt", "- item", "```"].join("\n"))).toBe("- item");
   });
 
+  test("unwraps whole-message markdown fences before repairing nested fences", () => {
+    const input = [
+      "````markdown",
+      "请先确认这一段 opening fence 是否会被正确拆开：```powershell",
+      "cd <project-path>",
+      ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+      "```",
+      "",
+      "再测 closing fence 粘连：",
+      "```text",
+      "DM private: control mode - workspace / session / agent",
+      "- only respond to explicit bot mentions```",
+      "````"
+    ].join("\n");
+
+    expect(normalizeMarkdownContent(input)).toBe(
+      [
+        "请先确认这一段 opening fence 是否会被正确拆开：",
+        "```powershell",
+        "cd <project-path>",
+        ".\\scripts\\build-run-release.ps1 -TailscaleServer -NoRun",
+        "```",
+        "",
+        "再测 closing fence 粘连：",
+        "```text",
+        "DM private: control mode - workspace / session / agent",
+        "- only respond to explicit bot mentions",
+        "```"
+      ].join("\n")
+    );
+  });
+
   test("repairs fenced code closings glued to following prose", () => {
     const input = [
       "Intro",
