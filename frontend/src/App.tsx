@@ -18,6 +18,7 @@ import {
   type ProjectionRecoveryToken
 } from "./app/projectionRecovery";
 import { canApplySessionListLoad } from "./app/sessionListLoad";
+import { createSessionFromCompose } from "./app/sessionComposeCreation";
 import {
   beginScopedSessionListRefresh,
   canApplyScopedSessionListRefresh,
@@ -729,6 +730,95 @@ export function App() {
     [runBusy, state.currentWorkspaceId]
   );
 
+  const submitPromptToSession = useCallback(
+    async (
+      sessionId: string,
+      prompt: string,
+      contentBlocks: MessageContentBlock[] | undefined,
+      previousStatus: string
+    ) => {
+      const activeBeforeSubmit = ["running", "waiting_approval", "stopping"].includes(previousStatus);
+      setState((current) =>
+        current.currentSession?.session.id === sessionId
+          ? {
+              ...current,
+              currentSession: {
+                ...current.currentSession,
+                session: {
+                  ...current.currentSession.session,
+                  status: activeBeforeSubmit ? current.currentSession.session.status : "running"
+                }
+              },
+              sessions: activeBeforeSubmit ? current.sessions : updateSessionListStatus(current.sessions, sessionId, "running"),
+              liveAssistant: ""
+            }
+          : current
+      );
+      let response: Awaited<ReturnType<typeof api.prompt>>;
+      try {
+        response = await api.prompt(sessionId, prompt, contentBlocks);
+      } catch (error) {
+        setState((current) =>
+          current.currentSession?.session.id === sessionId && current.currentSession.session.status === "running"
+            ? {
+                ...current,
+                currentSession: {
+                  ...current.currentSession,
+                  session: { ...current.currentSession.session, status: previousStatus }
+                },
+                sessions: updateSessionListStatus(current.sessions, sessionId, previousStatus)
+              }
+            : current
+        );
+        throw error;
+      }
+      const reconciledDetail = await waitForPromptSessionDetail(sessionId, Boolean(response.queuedPrompt)).catch(
+        () => null
+      );
+      if (reconciledDetail) {
+        setState((current) =>
+          current.currentSession?.session.id === sessionId
+            ? {
+                ...current,
+                currentSession: reconciledDetail,
+                sessions: [
+                  sessionDetailToListItem(reconciledDetail),
+                  ...current.sessions.filter((item) => item.session.id !== reconciledDetail.session.id)
+                ],
+                liveAssistant: liveAssistantAfterSessionReconcile(current.liveAssistant, reconciledDetail)
+              }
+            : current
+        );
+        return;
+      }
+      setState((current) =>
+        current.currentSession?.session.id === sessionId
+          ? {
+              ...current,
+              currentSession: {
+                ...current.currentSession,
+                messages: mergeChatMessage(current.currentSession.messages, response.message),
+                timeline: mergeTimelineItem(current.currentSession.timeline, messageToTimelineItem(response.message)),
+                queuedPrompts: response.queuedPrompts ?? current.currentSession.queuedPrompts,
+                activeTurn:
+                  response.activeTurn === undefined ? current.currentSession.activeTurn : response.activeTurn
+              },
+              sessions:
+                response.queuedPrompts !== undefined
+                  ? current.sessions.map((item) =>
+                      item.session.id === sessionId
+                        ? { ...item, queuedPromptCount: response.queuedPrompts?.length ?? 0 }
+                        : item
+                    )
+                  : current.sessions,
+              liveAssistant: ""
+            }
+          : current
+      );
+    },
+    []
+  );
+
   const createSession = useCallback(async (
     workspaceId: string,
     agentId?: string,
@@ -746,26 +836,38 @@ export function App() {
     }));
     await router.navigate(createSessionCreatingRouteTarget(workspaceId, agentId));
     try {
-      const detail = await api.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt, contentBlocks);
-      writeLastWorkspaceSessionProfile(detail.workspace.id, {
-        agentId: detail.session.agentId,
-        permissionMode: detail.session.permissionMode,
-        launchControlValues: launchControlValues ?? { permission: detail.session.permissionMode }
+      await createSessionFromCompose({
+        workspaceId,
+        agentId,
+        permissionMode,
+        launchControlValues,
+        initialPrompt,
+        contentBlocks,
+        createSession: api.createSession,
+        onSessionCreated: async (detail) => {
+          writeLastWorkspaceSessionProfile(detail.workspace.id, {
+            agentId: detail.session.agentId,
+            permissionMode: detail.session.permissionMode,
+            launchControlValues: launchControlValues ?? { permission: detail.session.permissionMode }
+          });
+          localStorage.setItem("currentWorkspaceId", detail.workspace.id);
+          localStorage.setItem("currentSessionId", detail.session.id);
+          setState((current) => ({
+            ...current,
+            currentSession: detail,
+            currentWorkspaceId: detail.workspace.id,
+            currentAgentId: detail.session.agentId,
+            creatingSessionWorkspaceId: null,
+            creatingSessionAgentId: null,
+            creatingSessionPermissionMode: null,
+            sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
+            liveAssistant: ""
+          }));
+          await router.navigate(createSessionDetailRouteTarget(agentId, detail));
+        },
+        submitPrompt: (detail, prompt, blocks) =>
+          submitPromptToSession(detail.session.id, prompt, blocks, detail.session.status)
       });
-      localStorage.setItem("currentWorkspaceId", detail.workspace.id);
-      localStorage.setItem("currentSessionId", detail.session.id);
-      setState((current) => ({
-        ...current,
-        currentSession: detail,
-        currentWorkspaceId: detail.workspace.id,
-        currentAgentId: detail.session.agentId,
-        creatingSessionWorkspaceId: null,
-        creatingSessionAgentId: null,
-        creatingSessionPermissionMode: null,
-        sessions: [sessionDetailToListItem(detail), ...current.sessions.filter((item) => item.session.id !== detail.session.id)],
-        liveAssistant: ""
-      }));
-      await router.navigate(createSessionDetailRouteTarget(agentId, detail));
     } catch (error) {
       if (isUnauthorized(error)) {
         await markUnauthorized();
@@ -779,7 +881,7 @@ export function App() {
         error: errorMessage(error)
       }));
     }
-  }, [markUnauthorized]);
+  }, [markUnauthorized, submitPromptToSession]);
 
   const sendPrompt = useCallback(
     async (prompt: string, contentBlocks?: MessageContentBlock[]) => {
@@ -787,87 +889,10 @@ export function App() {
       const previousStatus = state.currentSession?.session.status ?? "idle";
       if (!sessionId) return;
       await runBusy(async () => {
-        const activeBeforeSubmit = ["running", "waiting_approval", "stopping"].includes(previousStatus);
-        setState((current) =>
-          current.currentSession?.session.id === sessionId
-            ? {
-                ...current,
-                currentSession: {
-                  ...current.currentSession,
-                  session: {
-                    ...current.currentSession.session,
-                    status: activeBeforeSubmit ? current.currentSession.session.status : "running"
-                  }
-                },
-                sessions: activeBeforeSubmit ? current.sessions : updateSessionListStatus(current.sessions, sessionId, "running"),
-                liveAssistant: ""
-              }
-            : current
-        );
-        let response: Awaited<ReturnType<typeof api.prompt>>;
-        try {
-          response = await api.prompt(sessionId, prompt, contentBlocks);
-        } catch (error) {
-          setState((current) =>
-            current.currentSession?.session.id === sessionId && current.currentSession.session.status === "running"
-              ? {
-                  ...current,
-                  currentSession: {
-                    ...current.currentSession,
-                    session: { ...current.currentSession.session, status: previousStatus }
-                  },
-                  sessions: updateSessionListStatus(current.sessions, sessionId, previousStatus)
-                }
-              : current
-          );
-          throw error;
-        }
-        const reconciledDetail = await waitForPromptSessionDetail(sessionId, Boolean(response.queuedPrompt)).catch(
-          () => null
-        );
-        if (reconciledDetail) {
-          setState((current) =>
-            current.currentSession?.session.id === sessionId
-              ? {
-                  ...current,
-                  currentSession: reconciledDetail,
-                  sessions: [
-                    sessionDetailToListItem(reconciledDetail),
-                    ...current.sessions.filter((item) => item.session.id !== reconciledDetail.session.id)
-                  ],
-                  liveAssistant: liveAssistantAfterSessionReconcile(current.liveAssistant, reconciledDetail)
-                }
-              : current
-          );
-          return;
-        }
-        setState((current) =>
-          current.currentSession?.session.id === sessionId
-            ? {
-                ...current,
-                currentSession: {
-                  ...current.currentSession,
-                  messages: mergeChatMessage(current.currentSession.messages, response.message),
-                  timeline: mergeTimelineItem(current.currentSession.timeline, messageToTimelineItem(response.message)),
-                  queuedPrompts: response.queuedPrompts ?? current.currentSession.queuedPrompts,
-                  activeTurn:
-                    response.activeTurn === undefined ? current.currentSession.activeTurn : response.activeTurn
-                },
-                sessions:
-                  response.queuedPrompts !== undefined
-                    ? current.sessions.map((item) =>
-                        item.session.id === sessionId
-                          ? { ...item, queuedPromptCount: response.queuedPrompts?.length ?? 0 }
-                          : item
-                      )
-                    : current.sessions,
-                liveAssistant: ""
-              }
-            : current
-        );
+        await submitPromptToSession(sessionId, prompt, contentBlocks, previousStatus);
       });
     },
-    [runBusy, state.currentSession?.session.id, state.currentSession?.session.status]
+    [runBusy, state.currentSession?.session.id, state.currentSession?.session.status, submitPromptToSession]
   );
 
   const setSessionConfigOption = useCallback(

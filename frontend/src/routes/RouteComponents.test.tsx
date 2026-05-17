@@ -337,6 +337,23 @@ describe("workspace-agent route components", () => {
     expect("scopedAgentId" in result.props).toBe(false);
   });
 
+  test("passes workspace-scoped compose prompt to the create-session action", async () => {
+    const context = setContext();
+    const { NewSessionRoute } = await import("./RouteComponents");
+
+    const result = NewSessionRoute();
+
+    await result.props.onCreate("agent-selected", "manual", { permission: "manual" }, "start here");
+
+    expect(context.actions.createSession).toHaveBeenCalledWith(
+      "workspace-route",
+      "agent-selected",
+      "manual",
+      { permission: "manual" },
+      "start here"
+    );
+  });
+
   test("renders canonical workspace detail route after loading the session", async () => {
     const context = setContext({
       state: {

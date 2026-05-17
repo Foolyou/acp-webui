@@ -65,4 +65,43 @@ describe("api", () => {
       })
     });
   });
+
+  test("creates empty sessions when compose prompt dispatch is handled separately", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ session: { id: "session-a" }, workspace: { id: "workspace/a" } })
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await api.createSession("workspace/a", "codex", "manual", { model: "fast", permission: "manual" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/workspaces/workspace%2Fa/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" },
+      body: JSON.stringify({
+        agentId: "codex",
+        permissionMode: "manual",
+        launchControlValues: { model: "fast", permission: "manual" }
+      })
+    });
+  });
+
+  test("submits prompt content through the prompt endpoint", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ message: { id: "message-a" } })
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await api.prompt("session/a", "Plan the fix", [{ type: "image", mimeType: "image/png", data: "abcd" }]);
+
+    expect(fetch).toHaveBeenCalledWith("/api/sessions/session/a/prompt", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" },
+      body: JSON.stringify({
+        prompt: "Plan the fix",
+        contentBlocks: [{ type: "image", mimeType: "image/png", data: "abcd" }]
+      })
+    });
+  });
 });

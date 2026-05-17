@@ -32,6 +32,13 @@ The system SHALL allow the user to create an agent-backed session for a workspac
 - **AND** the browser SHALL show an optimistic chat loading state until the new session detail is available
 - **AND** the browser SHALL navigate to or display the new session detail view
 
+#### Scenario: New-session compose prompt is dispatched after session creation
+
+- **WHEN** the browser submits New Session compose with an entered initial prompt
+- **THEN** the browser SHALL create the session without sending the prompt content in the session creation request
+- **AND** it SHALL submit that prompt to the newly created session through the normal prompt submission API after session creation succeeds
+- **AND** the first prompt SHALL use the same persistence, timeline, and dispatch behavior as a prompt submitted to an idle existing session
+
 #### Scenario: Session creation is requested while selected agent is starting or disabled
 
 - **WHEN** the user tries to create a session while the selected agent connection is already starting or the selected agent is disabled
