@@ -1880,12 +1880,18 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		       s.title, s.native_title, s.native_updated_at, s.acp_session_id, s.external_session_id, s.status,
 		       s.import_source, s.imported_at, s.created_at, s.updated_at,
 		       CASE
+		           WHEN s.native_updated_at IS NOT NULL
+		                AND s.external_session_id IS NOT NULL
+		                AND s.external_session_id <> ''
+		                AND (s.acp_session_id IS NULL OR s.acp_session_id = '')
+		                AND s.continuation_state = ?
+		               THEN s.native_updated_at
 		           WHEN s.native_updated_at IS NOT NULL AND s.native_updated_at > s.updated_at THEN s.native_updated_at
 		           ELSE s.updated_at
 		       END AS last_activity_at,
 		       w.id, w.name, w.path, w.created_at
 		FROM sessions s JOIN workspaces w ON w.id = s.workspace_id`
-	args := []any{}
+	args := []any{continuityViewOnly}
 	var conditions []string
 	if workspaceID != nil {
 		conditions = append(conditions, `s.workspace_id = ?`)

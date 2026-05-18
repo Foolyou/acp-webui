@@ -286,6 +286,57 @@ func TestStorageImportNativeSessionReportsMaterialProjectionChanges(t *testing.T
 	}
 }
 
+func TestStorageListSessionItemsOrdersFreshNativeImportsByNativeActivity(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testLaunchProfile()
+	newerNativeUpdated := "2026-05-15T12:00:00Z"
+	newer, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-newer",
+		Title:             stringPtr("Newer native activity"),
+		NativeUpdatedAt:   &newerNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderNativeUpdated := "2026-05-01T12:00:00Z"
+	older, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-older",
+		Title:             stringPtr("Older native activity"),
+		NativeUpdatedAt:   &olderNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(items), []string{newer.ID, older.ID}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("items = %v, want native activity order %v", got, want)
+	}
+	if items[0].LastActivityAt != newerNativeUpdated || items[1].LastActivityAt != olderNativeUpdated {
+		t.Fatalf("last activity = [%s %s], want native timestamps [%s %s]", items[0].LastActivityAt, items[1].LastActivityAt, newerNativeUpdated, olderNativeUpdated)
+	}
+}
+
 func TestStorageReimportPreservesLocalUpdatedAtAndProjectsNativeActivity(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
