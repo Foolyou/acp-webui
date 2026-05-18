@@ -112,7 +112,7 @@ describe("NewSessionComposePane", () => {
     mocks.button.mockClear();
   });
 
-  test("offers remembered workspace profile without creating a session", async () => {
+  test("starts remembered workspace profile directly", async () => {
     localStorage.setItem(
       "lastSessionProfilesByWorkspace",
       JSON.stringify({
@@ -141,11 +141,11 @@ describe("NewSessionComposePane", () => {
 
     expect(html).toContain("Start last profile");
     expect(html).toContain("Configure manually");
-    mocks.buttons.find((button) => button.label.includes("Start last profile"))?.onPress?.();
-    expect(onCreate).not.toHaveBeenCalled();
+    await mocks.buttons.find((button) => button.label.includes("Start last profile"))?.onPress?.();
+    expect(onCreate).toHaveBeenCalledWith("codex", "manual", { model: "pro", permission: "manual" });
   });
 
-  test("opens manual configuration directly and allows empty prompts without a workspace profile", async () => {
+  test("opens manual configuration directly and creates without first-prompt UI", async () => {
     const onCreate = vi.fn();
     const { NewSessionComposePane } = await import("./NewSessionComposePane");
 
@@ -159,12 +159,13 @@ describe("NewSessionComposePane", () => {
       />
     );
 
-    expect(html).toContain("First prompt");
+    expect(html).not.toContain("First prompt");
+    expect(html).not.toContain("Templates");
     expect(html).toContain("Permission mode");
     expect(html).not.toContain("Start last profile");
     expect(mocks.buttons.find((button) => button.label.includes("Create session"))?.isDisabled).toBe(false);
     await mocks.buttons.find((button) => button.label.includes("Create session"))?.onPress?.();
-    expect(onCreate).toHaveBeenCalledWith("codex", "manual", { model: "fast", permission: "manual" }, "");
+    expect(onCreate).toHaveBeenCalledWith("codex", "manual", { model: "fast", permission: "manual" });
   });
 
   test("offers Claude YOLO creation without unsupported full auto mode", async () => {
@@ -344,7 +345,7 @@ describe("NewSessionComposePane", () => {
     renderToStaticMarkup(<NewSessionComposePane {...props} />);
     await mocks.buttons.find((button) => button.label.includes("Create session"))?.onPress?.();
 
-    expect(onCreate).toHaveBeenCalledWith("claude", "yolo", { permission: "yolo" }, "");
+    expect(onCreate).toHaveBeenCalledWith("claude", "yolo", { permission: "yolo" });
     vi.doUnmock("react");
     vi.doUnmock("react/jsx-runtime");
     vi.doUnmock("react/jsx-dev-runtime");

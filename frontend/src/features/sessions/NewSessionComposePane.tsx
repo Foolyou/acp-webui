@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Button } from "react-aria-components";
-import { api, errorMessage } from "../../api";
 import {
   normalizeLaunchControlValues,
   readLastWorkspaceSessionProfile,
   resolveLastSessionProfile
 } from "../../app/lastSessionProfile";
 import { PageHeader } from "../../components/common";
-import type { AgentRuntimeStatus, PermissionModeId, PromptTemplate, Workspace } from "../../types";
+import type { AgentRuntimeStatus, PermissionModeId, Workspace } from "../../types";
 import { fallbackPermissionModes } from "../../utils/permissionMode";
-import { defaultPromptTemplateTitle, insertPromptTemplateBody } from "./sessionPaneHelpers";
 import { canLaunchPermissionMode, resolveActiveCreateModeId } from "./sessionCreateMode";
 
 type ComposeStep = "entry" | "compose";
@@ -28,8 +26,7 @@ export function NewSessionComposePane({
   onCreate: (
     agentId: string,
     permissionMode: PermissionModeId,
-    launchControlValues: Record<string, string>,
-    initialPrompt: string
+    launchControlValues: Record<string, string>
   ) => Promise<void>;
   scopedAgentId?: string | null;
   workspace: Workspace | null;
@@ -55,11 +52,6 @@ export function NewSessionComposePane({
   const [controlValues, setControlValues] = useState<Record<string, Record<string, string>>>(
     resolvedLastProfile ? { [resolvedLastProfile.agent.id]: resolvedLastProfile.launchControlValues } : {}
   );
-  const [initialPrompt, setInitialPrompt] = useState("");
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
-  const [templatesLoading, setTemplatesLoading] = useState(false);
-  const [templatesError, setTemplatesError] = useState<string | null>(null);
 
   useEffect(() => {
     if (resolvedLastProfile) {
@@ -82,29 +74,7 @@ export function NewSessionComposePane({
   const modes = selectedAgent ? fallbackPermissionModes(selectedAgent) : [];
   const selectedMode = modes.find((mode) => mode.id === activeModeId) ?? modes[0] ?? null;
   const selectedLaunchable = selectedAgent && selectedMode ? canLaunchPermissionMode(selectedAgent, selectedMode) : false;
-  const trimmedPrompt = initialPrompt.trim();
   const createDisabled = busy || !selectedAgent || !selectedMode || !selectedLaunchable;
-
-  useEffect(() => {
-    if (!templatesOpen || !selectedAgent) return;
-    let cancelled = false;
-    setTemplatesLoading(true);
-    setTemplatesError(null);
-    api
-      .promptTemplates(workspaceId, selectedAgent.id)
-      .then((items) => {
-        if (!cancelled) setTemplates(items);
-      })
-      .catch((error) => {
-        if (!cancelled) setTemplatesError(errorMessage(error));
-      })
-      .finally(() => {
-        if (!cancelled) setTemplatesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAgent?.id, templatesOpen, workspaceId]);
 
   function selectAgent(agent: AgentRuntimeStatus) {
     setSelectedAgentId(agent.id);
@@ -119,16 +89,18 @@ export function NewSessionComposePane({
     return normalizeLaunchControlValues(agent, controlValues[agent.id] ?? {});
   }
 
-  function startLastProfile() {
-    if (!resolvedLastProfile) return;
+  async function startLastProfile() {
+    if (!resolvedLastProfile || busy) return;
     setSelectedAgentId(resolvedLastProfile.agent.id);
     setSelectedModeId(resolvedLastProfile.permissionMode);
     setControlValues((current) => ({
       ...current,
       [resolvedLastProfile.agent.id]: resolvedLastProfile.launchControlValues
     }));
-    setConfigExpanded(false);
-    setStep("compose");
+    await onCreate(resolvedLastProfile.agent.id, resolvedLastProfile.permissionMode, {
+      ...resolvedLastProfile.launchControlValues,
+      permission: resolvedLastProfile.permissionMode
+    });
   }
 
   function configureManually() {
@@ -143,18 +115,7 @@ export function NewSessionComposePane({
       ...selectedValues(selectedAgent),
       permission: selectedMode.id
     };
-    await onCreate(selectedAgent.id, selectedMode.id, launchControlValues, trimmedPrompt);
-  }
-
-  async function applyPromptTemplate(template: PromptTemplate) {
-    setInitialPrompt((current) => insertPromptTemplateBody(current, template.body));
-    setTemplatesError(null);
-    try {
-      const updated = await api.usePromptTemplate(template.id);
-      setTemplates((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-    } catch (error) {
-      setTemplatesError(errorMessage(error));
-    }
+    await onCreate(selectedAgent.id, selectedMode.id, launchControlValues);
   }
 
   if (resolvedLastProfile && step === "entry") {
@@ -163,7 +124,7 @@ export function NewSessionComposePane({
         <PageHeader eyebrow="New Session" title={workspace?.name ?? "New session"} />
         <div className="session-create-panel">
           <div className="agent-create-controls">
-            <Button className="agent-choice last-profile" onPress={startLastProfile}>
+            <Button className="agent-choice last-profile" isDisabled={busy} onPress={() => void startLastProfile()}>
               <strong>Start last profile</strong>
               <span>
                 {resolvedLastProfile.agent.title} / {resolvedLastProfile.modeLabel}
@@ -183,19 +144,7 @@ export function NewSessionComposePane({
     <section className="page-surface">
       <PageHeader eyebrow="New Session" title={workspace?.name ?? "New session"} />
       <form className="new-session-compose" onSubmit={(event) => void submit(event)}>
-        <label className="initial-prompt-field">
-          <span>First prompt</span>
-          <textarea
-            aria-label="First prompt"
-            onChange={(event) => setInitialPrompt(event.target.value)}
-            placeholder="Optional first prompt"
-            value={initialPrompt}
-          />
-        </label>
         <div className="composer-actions">
-          <Button className="secondary" onPress={() => setTemplatesOpen((open) => !open)} type="button">
-            Templates
-          </Button>
           <Button className="secondary" onPress={() => setConfigExpanded((expanded) => !expanded)} type="button">
             {configExpanded ? "Hide configuration" : "Configure"}
           </Button>
@@ -203,32 +152,6 @@ export function NewSessionComposePane({
             Create session
           </Button>
         </div>
-        {templatesOpen ? (
-          <div className="prompt-template-panel">
-            {templatesError ? <div className="composer-error">{templatesError}</div> : null}
-            {templatesLoading ? <div className="prompt-template-empty">Loading prompts...</div> : null}
-            {!templatesLoading && templates.length === 0 ? (
-              <div className="prompt-template-empty">No saved prompts for this workspace and agent.</div>
-            ) : null}
-            {templates.length ? (
-              <div className="prompt-template-list">
-                {templates.map((template) => (
-                  <div className="prompt-template-item" key={template.id}>
-                    <div className="prompt-template-copy">
-                      <strong>{template.title || defaultPromptTemplateTitle(template.body)}</strong>
-                      <span>{template.body}</span>
-                    </div>
-                    <div className="prompt-template-actions">
-                      <Button className="secondary small" onPress={() => void applyPromptTemplate(template)} type="button">
-                        Use
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         {configExpanded ? (
           <AgentConfiguration
             activeModeId={activeModeId}

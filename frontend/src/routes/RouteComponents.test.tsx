@@ -338,20 +338,19 @@ describe("workspace-agent route components", () => {
     expect("scopedAgentId" in result.props).toBe(false);
   });
 
-  test("passes workspace-scoped compose prompt to the create-session action", async () => {
+  test("passes workspace-scoped launch profile to the create-session action", async () => {
     const context = setContext();
     const { NewSessionRoute } = await import("./RouteComponents");
 
     const result = NewSessionRoute();
 
-    await result.props.onCreate("agent-selected", "manual", { permission: "manual" }, "start here");
+    await result.props.onCreate("agent-selected", "manual", { permission: "manual" });
 
     expect(context.actions.createSession).toHaveBeenCalledWith(
       "workspace-route",
       "agent-selected",
       "manual",
-      { permission: "manual" },
-      "start here"
+      { permission: "manual" }
     );
   });
 
@@ -425,7 +424,7 @@ describe("workspace-agent route components", () => {
 
     const result = NewWorkspaceAgentSessionRoute();
 
-    await result.props.onCreate("agent-other", "full_auto", { permission: "full_auto" }, "start here");
+    await result.props.onCreate("agent-other", "full_auto", { permission: "full_auto" });
 
     expect(result).toMatchObject({
       type: mocks.newSessionComposePane,
@@ -438,8 +437,7 @@ describe("workspace-agent route components", () => {
       "workspace-route",
       "agent-route",
       "full_auto",
-      { permission: "full_auto" },
-      "start here"
+      { permission: "full_auto" }
     );
   });
 

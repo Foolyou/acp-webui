@@ -32,19 +32,18 @@ The system SHALL allow the user to create an agent-backed session for a workspac
 - **AND** the browser SHALL show an optimistic chat loading state until the new session detail is available
 - **AND** the browser SHALL navigate to or display the new session detail view
 
-#### Scenario: New-session compose creates an empty session without a prompt
+#### Scenario: New Session creates an empty session without a prompt
 
-- **WHEN** the browser submits New Session compose without an initial prompt
+- **WHEN** the browser submits New Session creation for a selected launch profile
 - **THEN** the browser SHALL create the session without sending prompt content in the session creation request
 - **AND** it SHALL NOT submit a prompt request after session creation succeeds
 - **AND** the created session SHALL remain available for later prompt submission from Session Detail
 
-#### Scenario: New-session compose prompt is dispatched after session creation
+#### Scenario: First prompt is dispatched from Session Detail after creation
 
-- **WHEN** the browser submits New Session compose with an entered initial prompt
-- **THEN** the browser SHALL create the session without sending the prompt content in the session creation request
-- **AND** it SHALL submit that prompt to the newly created session through the normal prompt submission API after session creation succeeds
-- **AND** the first prompt SHALL use the same persistence, timeline, and dispatch behavior as a prompt submitted to an idle existing session
+- **WHEN** the browser submits a first prompt from Session Detail after New Session creation succeeds
+- **THEN** it SHALL submit that prompt to the created session through the normal prompt submission API
+- **AND** the first prompt SHALL use the same persistence, timeline, and dispatch behavior as a prompt submitted to any idle existing session
 
 #### Scenario: Session creation is requested while selected agent is starting or disabled
 

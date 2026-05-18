@@ -1,4 +1,4 @@
-import type { MessageContentBlock, PermissionModeId, SessionDetail } from "../types";
+import type { PermissionModeId, SessionDetail } from "../types";
 
 type CreateSession = (
   workspaceId: string,
@@ -12,15 +12,8 @@ type SessionComposeCreationOptions = {
   agentId?: string;
   permissionMode?: PermissionModeId;
   launchControlValues?: Record<string, string>;
-  initialPrompt?: string;
-  contentBlocks?: MessageContentBlock[];
   createSession: CreateSession;
   onSessionCreated: (detail: SessionDetail) => Promise<void>;
-  submitPrompt: (
-    detail: SessionDetail,
-    prompt: string,
-    contentBlocks?: MessageContentBlock[]
-  ) => Promise<void>;
 };
 
 export async function createSessionFromCompose({
@@ -28,18 +21,11 @@ export async function createSessionFromCompose({
   agentId,
   permissionMode,
   launchControlValues,
-  initialPrompt,
-  contentBlocks,
   createSession,
-  onSessionCreated,
-  submitPrompt
+  onSessionCreated
 }: SessionComposeCreationOptions): Promise<SessionDetail> {
   const detail = await createSession(workspaceId, agentId, permissionMode, launchControlValues);
   await onSessionCreated(detail);
-
-  if (initialPrompt?.trim() || contentBlocks?.length) {
-    await submitPrompt(detail, initialPrompt ?? "", contentBlocks);
-  }
 
   return detail;
 }

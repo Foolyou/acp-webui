@@ -172,8 +172,8 @@ export function NewSessionRoute() {
     <NewSessionComposePane
       agents={state.agents}
       busy={state.busy || state.creatingSessionWorkspaceId === workspaceId}
-      onCreate={(agentId, permissionMode, launchControlValues, initialPrompt) =>
-        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt)
+      onCreate={(agentId, permissionMode, launchControlValues) =>
+        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
       workspace={workspace}
       workspaceId={workspaceId}
@@ -195,8 +195,8 @@ export function NewWorkspaceAgentSessionRoute() {
     <NewSessionComposePane
       agents={state.agents}
       busy={state.busy || state.creatingSessionWorkspaceId === workspaceId}
-      onCreate={(_agentId, permissionMode, launchControlValues, initialPrompt) =>
-        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues, initialPrompt)
+      onCreate={(_agentId, permissionMode, launchControlValues) =>
+        actions.createSession(workspaceId, agentId, permissionMode, launchControlValues)
       }
       scopedAgentId={agentId}
       workspace={workspace}

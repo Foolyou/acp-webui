@@ -823,9 +823,7 @@ export function App() {
     workspaceId: string,
     agentId?: string,
     permissionMode?: PermissionModeId,
-    launchControlValues?: Record<string, string>,
-    initialPrompt?: string,
-    contentBlocks?: MessageContentBlock[]
+    launchControlValues?: Record<string, string>
   ) => {
     setState((current) => ({
       ...current,
@@ -841,8 +839,6 @@ export function App() {
         agentId,
         permissionMode,
         launchControlValues,
-        initialPrompt,
-        contentBlocks,
         createSession: api.createSession,
         onSessionCreated: async (detail) => {
           writeLastWorkspaceSessionProfile(detail.workspace.id, {
@@ -864,9 +860,7 @@ export function App() {
             liveAssistant: ""
           }));
           await router.navigate(createSessionDetailRouteTarget(agentId, detail));
-        },
-        submitPrompt: (detail, prompt, blocks) =>
-          submitPromptToSession(detail.session.id, prompt, blocks, detail.session.status)
+        }
       });
     } catch (error) {
       if (isUnauthorized(error)) {
@@ -881,7 +875,7 @@ export function App() {
         error: errorMessage(error)
       }));
     }
-  }, [markUnauthorized, submitPromptToSession]);
+  }, [markUnauthorized]);
 
   const sendPrompt = useCallback(
     async (prompt: string, contentBlocks?: MessageContentBlock[]) => {

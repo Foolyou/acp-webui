@@ -37,7 +37,7 @@ function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
 }
 
 describe("createSessionFromCompose", () => {
-  test("creates an empty session before submitting the compose prompt", async () => {
+  test("creates an empty session without submitting a compose prompt", async () => {
     const calls: string[] = [];
     const created = detail();
     const createSession = vi.fn(async () => {
@@ -47,48 +47,34 @@ describe("createSessionFromCompose", () => {
     const onSessionCreated = vi.fn(async () => {
       calls.push("created-callback");
     });
-    const submitPrompt = vi.fn(async () => {
-      calls.push("prompt");
-    });
-
     await createSessionFromCompose({
       workspaceId: "workspace-a",
       agentId: "codex",
       permissionMode: "manual",
       launchControlValues: { model: "fast", permission: "manual" },
-      initialPrompt: "Plan the fix",
-      contentBlocks: [{ type: "image", mimeType: "image/png", data: "abcd" }],
       createSession,
-      onSessionCreated,
-      submitPrompt
+      onSessionCreated
     });
 
-    expect(calls).toEqual(["create", "created-callback", "prompt"]);
+    expect(calls).toEqual(["create", "created-callback"]);
     expect(createSession).toHaveBeenCalledWith("workspace-a", "codex", "manual", {
       model: "fast",
       permission: "manual"
     });
     expect(onSessionCreated).toHaveBeenCalledWith(created);
-    expect(submitPrompt).toHaveBeenCalledWith(created, "Plan the fix", [
-      { type: "image", mimeType: "image/png", data: "abcd" }
-    ]);
   });
 
-  test("skips prompt submission when no prompt content is present", async () => {
+  test("creates sessions without launch overrides", async () => {
     const createSession = vi.fn(async () => detail());
     const onSessionCreated = vi.fn(async () => {});
-    const submitPrompt = vi.fn(async () => {});
 
     await createSessionFromCompose({
       workspaceId: "workspace-a",
-      initialPrompt: "   ",
       createSession,
-      onSessionCreated,
-      submitPrompt
+      onSessionCreated
     });
 
     expect(createSession).toHaveBeenCalledWith("workspace-a", undefined, undefined, undefined);
     expect(onSessionCreated).toHaveBeenCalledOnce();
-    expect(submitPrompt).not.toHaveBeenCalled();
   });
 });
