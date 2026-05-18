@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"acp-webui/migrations"
 	"github.com/google/uuid"
@@ -1895,20 +1896,23 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 	query := `
 		SELECT s.id, s.workspace_id, s.agent_id, s.agent_name, s.permission_mode, s.launch_profile_id, s.launch_profile_key,
 		       s.title, s.native_title, s.native_updated_at, s.acp_session_id, s.external_session_id, s.status,
-		       s.import_source, s.imported_at, s.created_at, s.updated_at,
-		       CASE
-		           WHEN s.native_updated_at IS NOT NULL
-		                AND s.external_session_id IS NOT NULL
-		                AND s.external_session_id <> ''
-		                AND (s.acp_session_id IS NULL OR s.acp_session_id = '')
-		                AND s.continuation_state = ?
-		               THEN s.native_updated_at
-		           WHEN s.native_updated_at IS NOT NULL AND s.native_updated_at > s.updated_at THEN s.native_updated_at
-		           ELSE s.updated_at
-		       END AS last_activity_at,
+		       s.import_source, s.imported_at, s.created_at, s.updated_at, s.active_turn_started_at,
+		       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id), '') AS last_message_at,
+		       COALESCE((SELECT MAX(t.updated_at) FROM tool_calls t WHERE t.session_id = s.id), '') AS last_tool_at,
+		       COALESCE((SELECT MAX(r.created_at) FROM review_artifacts r WHERE r.session_id = s.id), '') AS last_review_at,
+		       COALESCE((
+		           SELECT MAX(CASE WHEN p.resolved_at IS NOT NULL AND p.resolved_at > p.created_at THEN p.resolved_at ELSE p.created_at END)
+		           FROM permission_requests p
+		           WHERE p.session_id = s.id
+		       ), '') AS last_permission_at,
+		       COALESCE((
+		           SELECT MAX(CASE WHEN q.submitted_at IS NOT NULL AND q.submitted_at > q.created_at THEN q.submitted_at ELSE q.created_at END)
+		           FROM queued_prompts q
+		           WHERE q.session_id = s.id
+		       ), '') AS last_queued_prompt_at,
 		       w.id, w.name, w.path, w.created_at
 		FROM sessions s JOIN workspaces w ON w.id = s.workspace_id`
-	args := []any{continuityViewOnly}
+	args := []any{}
 	var conditions []string
 	if workspaceID != nil {
 		conditions = append(conditions, `s.workspace_id = ?`)
@@ -1921,7 +1925,6 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
-	query += ` ORDER BY last_activity_at DESC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1935,12 +1938,12 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 	for rows.Next() {
 		var session Session
 		var workspace Workspace
-		var title, nativeTitle, nativeUpdatedAt, acpID, externalID, importSource, importedAt sql.NullString
-		var lastActivityAt string
+		var title, nativeTitle, nativeUpdatedAt, acpID, externalID, importSource, importedAt, activeTurnStartedAt sql.NullString
+		var lastMessageAt, lastToolAt, lastReviewAt, lastPermissionAt, lastQueuedPromptAt string
 		if err := rows.Scan(
 			&session.ID, &session.WorkspaceID, &session.AgentID, &session.AgentName, &session.PermissionMode, &session.LaunchProfileID, &session.LaunchProfileKey,
 			&title, &nativeTitle, &nativeUpdatedAt, &acpID, &externalID, &session.Status, &importSource, &importedAt, &session.CreatedAt, &session.UpdatedAt,
-			&lastActivityAt,
+			&activeTurnStartedAt, &lastMessageAt, &lastToolAt, &lastReviewAt, &lastPermissionAt, &lastQueuedPromptAt,
 			&workspace.ID, &workspace.Name, &workspace.Path, &workspace.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1968,6 +1971,7 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 		if importedAt.Valid {
 			session.ImportedAt = &importedAt.String
 		}
+		lastActivityAt := sessionActivityAt(session, nullableStringValue(activeTurnStartedAt), lastMessageAt, lastToolAt, lastReviewAt, lastPermissionAt, lastQueuedPromptAt)
 		bases = append(bases, sessionListBase{session: session, workspace: workspace, lastActivityAt: lastActivityAt})
 	}
 	if err := rows.Err(); err != nil {
@@ -1977,6 +1981,15 @@ func (s *Storage) listSessionItems(ctx context.Context, workspaceID *string, age
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	sort.SliceStable(bases, func(i, j int) bool {
+		if timestampAfter(bases[i].lastActivityAt, bases[j].lastActivityAt) {
+			return true
+		}
+		if timestampAfter(bases[j].lastActivityAt, bases[i].lastActivityAt) {
+			return false
+		}
+		return bases[i].session.ID < bases[j].session.ID
+	})
 	var items []SessionListItem
 	for _, base := range bases {
 		session := base.session
@@ -2027,6 +2040,78 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func nullableStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func sessionActivityAt(session Session, extraCandidates ...string) string {
+	var candidates []string
+	if session.NativeUpdatedAt != nil {
+		candidates = append(candidates, *session.NativeUpdatedAt)
+	}
+	candidates = append(candidates, extraCandidates...)
+	if len(nonBlankStrings(candidates)) == 0 || session.ExternalSessionID == nil || session.NativeUpdatedAt == nil {
+		candidates = append(candidates, session.CreatedAt)
+	}
+	if latest := latestTimestamp(candidates...); latest != "" {
+		return latest
+	}
+	return session.UpdatedAt
+}
+
+func nonBlankStrings(values []string) []string {
+	var out []string
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func latestTimestamp(values ...string) string {
+	var best string
+	var bestTime time.Time
+	bestParsed := false
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			if !bestParsed && value > best {
+				best = value
+			}
+			continue
+		}
+		if !bestParsed || parsed.After(bestTime) || (parsed.Equal(bestTime) && value > best) {
+			best = value
+			bestTime = parsed
+			bestParsed = true
+		}
+	}
+	return best
+}
+
+func timestampAfter(left, right string) bool {
+	leftTime, leftErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(left))
+	rightTime, rightErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(right))
+	if leftErr == nil && rightErr == nil {
+		return leftTime.After(rightTime)
+	}
+	if leftErr == nil {
+		return true
+	}
+	if rightErr == nil {
+		return false
+	}
+	return left > right
 }
 
 func (s *Storage) ListInboxItems(ctx context.Context) ([]InboxItem, error) {

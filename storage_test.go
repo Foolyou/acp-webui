@@ -337,6 +337,104 @@ func TestStorageListSessionItemsOrdersFreshNativeImportsByNativeActivity(t *test
 	}
 }
 
+func TestStorageListSessionItemsIgnoresRestoreMetadataForActivityOrder(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testLaunchProfile()
+	newerNativeUpdated := "2026-05-15T12:00:00Z"
+	newer, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-newer-restore",
+		Title:             stringPtr("Newer native activity"),
+		NativeUpdatedAt:   &newerNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderNativeUpdated := "2026-05-01T12:00:00Z"
+	older, err := storage.ImportNativeSession(ctx, NativeSessionImport{
+		WorkspaceID:       workspace.ID,
+		AgentID:           codexAgentID,
+		AgentName:         "Codex",
+		ExternalSessionID: "external-older-restore",
+		Title:             stringPtr("Older native activity"),
+		NativeUpdatedAt:   &olderNativeUpdated,
+		PermissionMode:    permissionManual,
+		LaunchProfile:     profile,
+		ImportSource:      importSourceACPSessionList,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.MarkSessionRestoreFailed(ctx, older.ID, "restore failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(items), []string{newer.ID, older.ID}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("items = %v, want activity order %v", got, want)
+	}
+	if items[1].LastActivityAt != olderNativeUpdated {
+		t.Fatalf("older last activity = %s, want native activity %s", items[1].LastActivityAt, olderNativeUpdated)
+	}
+}
+
+func TestStorageListSessionItemsUsesToolActivityForLastActivity(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpA := "tool-activity-a"
+	withTool, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpA, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpB := "metadata-newer-b"
+	metadataNewer, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpB, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET created_at = ?, updated_at = ? WHERE id = ?`, "2026-05-01T00:00:00Z", "2026-05-01T00:00:00Z", withTool.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.db.ExecContext(ctx, `UPDATE sessions SET created_at = ?, updated_at = ? WHERE id = ?`, "2026-05-10T00:00:00Z", "2026-05-10T00:00:00Z", metadataNewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	toolUpdatedAt := "2026-05-15T00:00:00Z"
+	if _, err := storage.db.ExecContext(ctx, `
+		INSERT INTO tool_calls(id, session_id, acp_tool_call_id, kind, title, summary, status, input_json, output_json, created_at, updated_at, completed_at)
+		VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+		"tool-activity", withTool.ID, "shell", "Run command", "Completed command", statusIdle, "{}", toolUpdatedAt, toolUpdatedAt, toolUpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := storage.ListSessionItemsForAgent(ctx, workspace.ID, codexAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionListItemIDs(items), []string{withTool.ID, metadataNewer.ID}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("items = %v, want tool activity order %v", got, want)
+	}
+	if items[0].LastActivityAt != toolUpdatedAt {
+		t.Fatalf("last activity = %s, want tool activity %s", items[0].LastActivityAt, toolUpdatedAt)
+	}
+}
+
 func TestStorageReimportPreservesLocalUpdatedAtAndProjectsNativeActivity(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
@@ -548,7 +646,8 @@ func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.CreateReviewArtifact(ctx, session.ID, nil, "markdown", "Review", "summary", map[string]any{"markdown": "# ok"}, "tool_call"); err != nil {
+	review, err := storage.CreateReviewArtifact(ctx, session.ID, nil, "markdown", "Review", "summary", map[string]any{"markdown": "# ok"}, "tool_call")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := storage.MarkSessionRestoreFailed(ctx, session.ID, "restore failed"); err != nil {
@@ -594,8 +693,8 @@ func TestStorageSessionListProjectionsIncludeNativeMetadataAndPreserveSummaries(
 		if item.Session.ImportedAt == nil || *item.Session.ImportedAt != importedAt {
 			t.Fatalf("imported at = %#v, want %s", item.Session.ImportedAt, importedAt)
 		}
-		if item.LastActivityAt != nativeUpdatedAt {
-			t.Fatalf("last activity = %s, want native updated_at %s", item.LastActivityAt, nativeUpdatedAt)
+		if item.LastActivityAt != review.CreatedAt {
+			t.Fatalf("last activity = %s, want review activity %s", item.LastActivityAt, review.CreatedAt)
 		}
 		if item.CurrentModel == nil || item.CurrentModel.Value != modelValue || item.CurrentModel.Name == nil || *item.CurrentModel.Name != modelName {
 			t.Fatalf("current model = %#v", item.CurrentModel)

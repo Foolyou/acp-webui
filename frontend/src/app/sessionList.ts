@@ -10,7 +10,7 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
   return {
     session: detail.session,
     workspace: detail.workspace,
-    lastActivityAt: detail.session.updatedAt,
+    lastActivityAt: sessionDetailActivityAt(detail),
     currentModel: detail.currentModel ?? null,
     launchControlSummary: detail.launchControlSummary ?? [],
     queuedPromptCount: detail.queuedPrompts?.length ?? 0,
@@ -30,6 +30,28 @@ export function sessionDetailToListItem(detail: SessionDetail): SessionListItem 
     continuable: detail.continuable,
     viewOnlyReason: detail.viewOnlyReason ?? null
   };
+}
+
+function sessionDetailActivityAt(detail: SessionDetail) {
+  const activityCandidates = [
+    detail.session.nativeUpdatedAt,
+    detail.activeTurn?.startedAt,
+    ...detail.timeline.map((item) => item.timestamp),
+    ...detail.reviewArtifacts.map((artifact) => artifact.createdAt),
+    ...(detail.pendingPermissions ?? []).map((permission) => permission.resolvedAt ?? permission.createdAt),
+    ...(detail.queuedPrompts ?? []).map((prompt) => prompt.submittedAt ?? prompt.createdAt)
+  ];
+  const candidates = [...activityCandidates];
+  if (
+    !activityCandidates.some((value) => value?.trim()) ||
+    !detail.session.externalSessionId ||
+    !detail.session.nativeUpdatedAt
+  ) {
+    candidates.push(detail.session.createdAt);
+  }
+  return (
+    latestTimestamp(candidates) ?? detail.session.updatedAt
+  );
 }
 
 export function applySessionListRealtime(
@@ -93,11 +115,10 @@ export function updateSessionListStatus(sessions: SessionListItem[], sessionId: 
     item.session.id === sessionId
       ? {
           ...item,
-          lastActivityAt: now,
+          lastActivityAt: status === "running" ? latestTimestamp([item.lastActivityAt, now]) ?? item.lastActivityAt : item.lastActivityAt,
           session: {
             ...item.session,
-            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission)),
-            updatedAt: now
+            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission))
           }
         }
       : item
@@ -169,16 +190,16 @@ function updateSessionListActiveTurn(
   activeTurn: SessionListItem["activeTurn"]
 ) {
   const now = new Date().toISOString();
+  const activityAt = activeTurn?.startedAt ?? (status === "running" ? now : null);
   return sessions.map((item) =>
     item.session.id === sessionId
       ? {
           ...item,
           activeTurn,
-          lastActivityAt: now,
+          lastActivityAt: activityAt ? latestTimestamp([item.lastActivityAt, activityAt]) ?? item.lastActivityAt : item.lastActivityAt,
           session: {
             ...item.session,
-            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission)),
-            updatedAt: now
+            status: normalizeSessionListStatus(status, Boolean(item.pendingPermission))
           }
         }
       : item
@@ -201,17 +222,11 @@ export function updateSessionListModel(
   sessionId: string,
   currentModel: SessionListItem["currentModel"]
 ) {
-  const now = new Date().toISOString();
   return sessions.map((item) =>
     item.session.id === sessionId
       ? {
           ...item,
-          currentModel,
-          lastActivityAt: now,
-          session: {
-            ...item.session,
-            updatedAt: now
-          }
+          currentModel
         }
       : item
   );
@@ -222,22 +237,37 @@ function updateSessionListContinuity(
   sessionId: string,
   continuity: SessionContinuity
 ) {
-  const now = new Date().toISOString();
   return sessions.map((item) =>
     item.session.id === sessionId
       ? {
           ...item,
           continuity,
           continuable: continuity.continuable,
-          viewOnlyReason: continuity.continuable ? null : (continuity.reason ?? null),
-          lastActivityAt: now,
-          session: {
-            ...item.session,
-            updatedAt: now
-          }
+          viewOnlyReason: continuity.continuable ? null : (continuity.reason ?? null)
         }
       : item
   );
+}
+
+function latestTimestamp(values: Array<string | null | undefined>) {
+  let bestValue: string | null = null;
+  let bestTime = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed) continue;
+    const time = Date.parse(trimmed);
+    if (Number.isNaN(time)) {
+      if (bestValue === null) {
+        bestValue = trimmed;
+      }
+      continue;
+    }
+    if (time > bestTime || (time === bestTime && (!bestValue || trimmed > bestValue))) {
+      bestValue = trimmed;
+      bestTime = time;
+    }
+  }
+  return bestValue;
 }
 
 function restoringContinuity(): SessionContinuity {
