@@ -1364,6 +1364,64 @@ func receiveEventType(t *testing.T, ch <-chan any, eventType string) map[string]
 	}
 }
 
+func TestHandleRestoreSessionRecordsFailureAfterRequestCancel(t *testing.T) {
+	ctx := t.Context()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "restore-cancel-acp"
+	manager, profile := testSessionSyncManager(t, storage, "unused-acp")
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newReadySessionListRuntime(t, storage, false)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	caps := AgentSessionCapabilities{LoadSession: true}
+	runtime.mu.Lock()
+	runtime.stdin = writer
+	runtime.sessionCaps = caps
+	runtime.statusValue = readyStatus(nil, AgentPromptCapabilities{}, caps)
+	runtime.mu.Unlock()
+	installManagerRuntime(manager, codexAgentID, profile, runtime)
+	decoder := json.NewDecoder(reader)
+	server := newServer(Config{DisableAuth: true}, storage, manager, newAuthService(Config{DisableAuth: true}), manager.events)
+
+	requestCtx, cancel := context.WithCancel(ctx)
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/restore", nil).WithContext(requestCtx)
+		server.ServeHTTP(recorder, request)
+		responseCh <- recorder
+	}()
+
+	loadRequest := receiveLoadSessionRequest(t, decoder, acpSessionID, nativePathString(workspace.Path))
+	cancel()
+	failRuntimeRequest(runtime, loadRequest.ID, "agent load failed")
+	recorder := receiveHTTPResponse(t, responseCh)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	continuity, err := storage.SessionContinuityRow(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity.State != continuityRestoreFailed {
+		t.Fatalf("continuity = %#v, want restore_failed", continuity)
+	}
+	if continuity.FailureMessage == nil || !strings.Contains(*continuity.FailureMessage, "Failed to restore session") {
+		t.Fatalf("failure message = %#v", continuity.FailureMessage)
+	}
+}
+
 func TestRunPromptTurnClearsQueuedPromptsAfterFailure(t *testing.T) {
 	ctx := t.Context()
 	storage := testStorage(t)
@@ -1528,6 +1586,15 @@ type setConfigOptionRequest struct {
 	} `json:"params"`
 }
 
+type loadSessionRequest struct {
+	ID     int64  `json:"id"`
+	Method string `json:"method"`
+	Params struct {
+		SessionID string `json:"sessionId"`
+		CWD       string `json:"cwd"`
+	} `json:"params"`
+}
+
 func respondToNewSessionRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantCWD string, sessionID string) {
 	t.Helper()
 	respondToNewSessionRequestWithConfigOptions(t, decoder, runtime, wantCWD, sessionID, nil)
@@ -1627,6 +1694,53 @@ func respondToSetConfigOptionRequest(t *testing.T, decoder *json.Decoder, runtim
 		t.Fatalf("pending request %s not found", key)
 	}
 	ch <- rpcResponse{Result: data}
+}
+
+func receiveLoadSessionRequest(t *testing.T, decoder *json.Decoder, wantSessionID string, wantCWD string) loadSessionRequest {
+	t.Helper()
+	requestCh := make(chan struct {
+		request loadSessionRequest
+		err     error
+	}, 1)
+	go func() {
+		var request loadSessionRequest
+		err := decoder.Decode(&request)
+		requestCh <- struct {
+			request loadSessionRequest
+			err     error
+		}{request: request, err: err}
+	}()
+	var request loadSessionRequest
+	select {
+	case result := <-requestCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		request = result.request
+	case <-time.After(sessionListTestTimeout):
+		t.Fatal("timed out waiting for session/load request")
+	}
+	if request.Method != "session/load" {
+		t.Fatalf("method = %q, want session/load", request.Method)
+	}
+	if request.Params.SessionID != wantSessionID {
+		t.Fatalf("sessionId = %q, want %q", request.Params.SessionID, wantSessionID)
+	}
+	if request.Params.CWD != wantCWD {
+		t.Fatalf("cwd = %q, want %q", request.Params.CWD, wantCWD)
+	}
+	return request
+}
+
+func failRuntimeRequest(runtime *AgentRuntime, requestID int64, message string) {
+	key := strconv.FormatInt(requestID, 10)
+	runtime.mu.Lock()
+	ch := runtime.pending[key]
+	delete(runtime.pending, key)
+	runtime.mu.Unlock()
+	if ch != nil {
+		ch <- rpcResponse{Error: &rpcError{Message: message}}
+	}
 }
 
 func respondToPromptRequest(t *testing.T, decoder *json.Decoder, runtime *AgentRuntime, wantSessionID string, wantPrompt string) {

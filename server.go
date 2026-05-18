@@ -778,21 +778,22 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
+	restoreCtx := context.WithoutCancel(r.Context())
 	sessionID := r.PathValue("sessionId")
-	session, err := s.storage.GetSession(r.Context(), sessionID)
+	session, err := s.storage.GetSession(restoreCtx, sessionID)
 	if err != nil {
 		writeError(w, notFound("Session not found"))
 		return
 	}
-	workspace, _ := s.storage.GetWorkspace(r.Context(), session.WorkspaceID)
-	runtime, err := s.agents.runtimeForSession(r.Context(), session, true)
+	workspace, _ := s.storage.GetWorkspace(restoreCtx, session.WorkspaceID)
+	runtime, err := s.agents.runtimeForSession(restoreCtx, session, true)
 	if err != nil {
 		writeError(w, unavailable(err.Error()))
 		return
 	}
-	continuity := s.sessionContinuity(r.Context(), session)
+	continuity := s.sessionContinuity(restoreCtx, session)
 	if continuity.Continuable {
-		detail, _ := s.storage.SessionDetail(r.Context(), sessionID, continuity)
+		detail, _ := s.storage.SessionDetail(restoreCtx, sessionID, continuity)
 		writeJSON(w, http.StatusOK, detail)
 		return
 	}
@@ -808,22 +809,22 @@ func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, conflict("Session is missing an agent session id."))
 		return
 	}
-	_ = s.storage.MarkSessionRestoreStarted(r.Context(), sessionID)
+	_ = s.storage.MarkSessionRestoreStarted(restoreCtx, sessionID)
 	s.events.Publish(map[string]any{"type": "session_restore_started", "sessionId": sessionID})
-	outcome, err := runtime.LoadSession(r.Context(), *externalID, sessionID, nativePathString(workspace.Path))
+	outcome, err := runtime.LoadSession(restoreCtx, *externalID, sessionID, nativePathString(workspace.Path))
 	if err != nil {
 		message := "Failed to restore session: " + err.Error()
-		_ = s.storage.MarkSessionRestoreFailed(r.Context(), sessionID, message)
+		_ = s.storage.MarkSessionRestoreFailed(restoreCtx, sessionID, message)
 		s.events.Publish(map[string]any{"type": "session_restore_failed", "sessionId": sessionID, "message": message})
 		writeError(w, conflict(message))
 		return
 	}
 	if outcome.ConfigOptions != nil {
-		_, _ = s.storage.UpdateSessionConfigOptions(r.Context(), sessionID, outcome.ConfigOptions)
+		_, _ = s.storage.UpdateSessionConfigOptions(restoreCtx, sessionID, outcome.ConfigOptions)
 	}
-	_ = s.storage.MarkSessionRestoreSucceeded(r.Context(), sessionID, &outcome.SessionID)
+	_ = s.storage.MarkSessionRestoreSucceeded(restoreCtx, sessionID, &outcome.SessionID)
 	s.events.Publish(map[string]any{"type": "session_restore_succeeded", "sessionId": sessionID})
-	detail, _ := s.sessionDetail(r.Context(), sessionID)
+	detail, _ := s.sessionDetail(restoreCtx, sessionID)
 	writeJSON(w, http.StatusOK, detail)
 }
 

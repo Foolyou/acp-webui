@@ -24,6 +24,7 @@ type Storage struct {
 }
 
 const approvalExpiredMessage = "Approval expired because the backend restarted. Start a new turn to continue."
+const restoreInterruptedMessage = "Previous restore attempt did not finish. Retry restore when the agent is ready."
 
 type NewPermissionRequest struct {
 	SessionID    string
@@ -285,6 +286,22 @@ func (s *Storage) repairRestoredRunningSessionsOnStartup(ctx context.Context) (i
 		        AND permission_requests.status = ?
 		  )`,
 		statusIdle, nowString(), continuityRestored, statusRunning, permissionPending,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *Storage) repairInterruptedRestoresOnStartup(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET continuation_state = ?,
+		    restore_failure_message = ?,
+		    status = ?,
+		    updated_at = ?
+		WHERE continuation_state = ?`,
+		continuityRestoreFailed, restoreInterruptedMessage, statusIdle, nowString(), continuityRestoring,
 	)
 	if err != nil {
 		return 0, err

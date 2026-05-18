@@ -983,6 +983,48 @@ func TestStorageRepairsOnlyRestoredRunningSessionsWithoutPendingApproval(t *test
 	}
 }
 
+func TestStorageRepairsInterruptedRestoresOnStartup(t *testing.T) {
+	ctx := context.Background()
+	storage := testStorage(t)
+	workspace, err := storage.CreateWorkspace(ctx, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acpSessionID := "interrupted-restore"
+	session, err := storage.CreateSession(ctx, workspace.ID, codexAgentID, "Codex", &acpSessionID, permissionManual, testLaunchProfile(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.MarkSessionRestoreStarted(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := storage.repairInterruptedRestoresOnStartup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", repaired)
+	}
+	continuity, err := storage.SessionContinuityRow(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity.State != continuityRestoreFailed {
+		t.Fatalf("continuity = %#v, want restore_failed", continuity)
+	}
+	if continuity.FailureMessage == nil || !strings.Contains(*continuity.FailureMessage, "Previous restore attempt did not finish") {
+		t.Fatalf("failure message = %#v", continuity.FailureMessage)
+	}
+	updated, err := storage.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != statusIdle {
+		t.Fatalf("status = %s, want idle", updated.Status)
+	}
+}
+
 func TestStorageFinalizesRunningAssistantMessagesForSession(t *testing.T) {
 	ctx := context.Background()
 	storage := testStorage(t)
