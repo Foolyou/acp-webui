@@ -64,6 +64,28 @@ type ImageAttachment = Extract<MessageContentBlock, { type: "image" }> & {
 type VoiceState = "idle" | "recording" | "transcribing";
 type ComposerIconName = "attach-image" | "microphone" | "play" | "remove" | "send" | "stop" | "templates" | "transcribing";
 
+function ComposerActionIcon({ icon }: { icon: ComposerIconName }) {
+  if (icon === "send") {
+    return (
+      <svg
+        aria-hidden="true"
+        className="composer-action-icon composer-action-svg send"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M22 2 11 13" />
+        <path d="m22 2-7 20-4-9-9-4 20-7Z" />
+      </svg>
+    );
+  }
+
+  return <span aria-hidden="true" className={`composer-action-icon ${icon}`} />;
+}
+
 function ComposerIconButton({
   ariaExpanded,
   ariaPressed,
@@ -96,7 +118,7 @@ function ComposerIconButton({
       onPress={onPress}
       type={type}
     >
-      <span aria-hidden="true" className={`composer-action-icon ${icon}`} />
+      <ComposerActionIcon icon={icon} />
       <span className="visually-hidden">{label}</span>
     </Button>
   );

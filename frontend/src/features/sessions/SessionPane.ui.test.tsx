@@ -263,6 +263,8 @@ describe("SessionPane inline approval", () => {
       expect(action?.className).toContain("composer-icon-button");
       expect(action?.tooltip).toBe(name);
     }
+    expect(html).toContain('class="composer-action-icon composer-action-svg send"');
+    expect(html).toContain('viewBox="0 0 24 24"');
     expect(html).toContain("Ask Codex");
     expect(html).not.toContain(">Prompts</button>");
     expect(html).not.toContain(">Image</button>");

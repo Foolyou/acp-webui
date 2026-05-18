@@ -2304,30 +2304,8 @@ pre {
   color: currentColor;
 }
 
-.composer-action-icon.send::before {
-  position: absolute;
-  top: 0.08rem;
-  left: 0.15rem;
-  width: 0;
-  height: 0;
-  border-top: 0.45rem solid transparent;
-  border-bottom: 0.45rem solid transparent;
-  border-left: 0.8rem solid currentColor;
-  content: "";
-  transform: rotate(-32deg);
-}
-
-.composer-action-icon.send::after {
-  position: absolute;
-  right: 0.14rem;
-  bottom: 0.1rem;
-  width: 0.42rem;
-  height: 0.14rem;
-  border-radius: 999px;
-  background: currentColor;
-  content: "";
-  transform: rotate(-32deg);
-  transform-origin: right center;
+.composer-action-svg {
+  overflow: visible;
 }
 
 .composer-action-icon.attach-image {
