@@ -2,6 +2,7 @@ import { createRootRouteWithContext, createRoute, createRouter } from "@tanstack
 import type { AppRouterContext } from "../app/types";
 import { initialState } from "../app/types";
 import { WorkbenchShell } from "../components/WorkbenchShell";
+import { frontendBasePath } from "../publicPath";
 import {
   AgentsRoute,
   NewWorkspaceAgentSessionRoute,
@@ -128,7 +129,7 @@ const routeTree = rootRoute.addChildren([
   workspaceAgentSessionDetailRoute
 ]);
 
-export const router = createRouter({ routeTree, context: placeholderContext });
+export const router = createRouter({ routeTree, context: placeholderContext, basepath: frontendBasePath });
 
 declare module "@tanstack/react-router" {
   interface Register {

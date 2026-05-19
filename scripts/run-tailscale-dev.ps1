@@ -22,7 +22,6 @@ param(
     [switch]$InstallFrontendDeps,
     [switch]$NoRun,
     [string]$WorkDir,
-    [string]$PairingToken,
     [string]$CodexAcpCommand = "codex-acp",
     [string[]]$CodexAcpArgs = @(),
     [string]$ClaudeAcpCommand = "npx",
@@ -53,6 +52,12 @@ function Test-TailscaleIPv4 {
 
     $Bytes = $Parsed.GetAddressBytes()
     return $Bytes.Length -eq 4 -and $Bytes[0] -eq 100 -and $Bytes[1] -ge 64 -and $Bytes[1] -le 127
+}
+
+function Write-DeviceApprovalHelp {
+    Write-Host "Device approval:"
+    Write-Host "  List pending devices: acp-webui devices pending"
+    Write-Host "  Approve a device:     acp-webui approve <CODE>"
 }
 
 function Get-TailscaleIPv4 {
@@ -432,10 +437,6 @@ foreach ($Arg in $ClaudeAcpArgs) {
     $BackendArgs += @("--claude-acp-arg", $Arg)
 }
 
-if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
-    $BackendArgs += @("--pairing-token", $PairingToken)
-}
-
 $FrontendArgs = @("run", "dev", "--", "--host", $BindHost, "--port", "$FrontendPort", "--strictPort")
 
 Write-Host "Backend command:"
@@ -479,6 +480,7 @@ try {
 Wait-ForHttpOk -Url "$BackendUrl/api/auth/status" -TimeoutSeconds $StartupTimeoutSeconds
 Wait-ForHttpOk -Url $FrontendUrl -TimeoutSeconds $StartupTimeoutSeconds
 
+Write-DeviceApprovalHelp
 Write-Host "Backend dev server:  $BackendUrl"
 Write-Host "Frontend dev server: $FrontendUrl"
 Write-Host "Backend PID:  $($BackendProcess.Id)"

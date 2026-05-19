@@ -35,7 +35,6 @@ param(
     [switch]$NoStopExisting,
     [switch]$SkipHealthCheck,
     [string]$RemoteWorkDir,
-    [string]$PairingToken,
     [string]$CodexAcpCommand = "codex-acp",
     [string[]]$CodexAcpArgs = @(),
     [string]$ClaudeAcpCommand = "npx",
@@ -301,10 +300,6 @@ function New-RunArguments {
 
     foreach ($Arg in $ClaudeAcpArgs) {
         $Arguments += @("--claude-acp-arg", $Arg)
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
-        $Arguments += @("--pairing-token", $PairingToken)
     }
 
     if ($DisableAuth) {
@@ -919,15 +914,8 @@ try {
         Invoke-Command -Session $Session -ScriptBlock $ConfigureRemoteScript -ArgumentList $ConfigureConfig
     }
 
-    $DisplayArgs = @($RunArgs)
-    for ($Index = 0; $Index -lt $DisplayArgs.Count; $Index++) {
-        if ($DisplayArgs[$Index] -eq "--pairing-token" -and $Index + 1 -lt $DisplayArgs.Count) {
-            $DisplayArgs[$Index + 1] = "<redacted>"
-        }
-    }
-
     Write-Host "Remote command:"
-    Write-Host ("  " + (Format-CommandForDisplay $RemotePaths.Binary $DisplayArgs))
+    Write-Host ("  " + (Format-CommandForDisplay $RemotePaths.Binary $RunArgs))
 
     if ($NoRun) {
         Write-Host "NoRun set; copied binary and wrote launcher without starting the scheduled task."
@@ -959,6 +947,11 @@ try {
         Write-Host "Remote health check: $($Health.Url) returned $($Health.StatusCode)"
     } else {
         Write-Host "Remote health check skipped."
+    }
+    if (-not $DisableAuth) {
+        Write-Host "Device approval:"
+        Write-Host "  On the remote host, list pending devices: acp-webui devices pending"
+        Write-Host "  On the remote host, approve a device:     acp-webui approve <CODE>"
     }
     Write-Host "Remote log: $($RemotePaths.Log)"
 } finally {

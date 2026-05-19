@@ -17,6 +17,14 @@ func main() {
 		return
 	}
 
+	ctx := context.Background()
+	if handled, err := runAdminCommand(ctx, os.Stdout, os.Args[1:]); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	config, err := parseConfig(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
@@ -36,7 +44,6 @@ func main() {
 		log.Fatal(err)
 	}
 	defer storage.Close()
-	ctx := context.Background()
 	if err := storage.Migrate(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -58,7 +65,7 @@ func main() {
 
 	events := newEventHub()
 	agents := newAgentRuntimeManager(config, storage, events)
-	auth := newAuthService(config)
+	auth := newAuthService(config, storage)
 	server := newServer(config, storage, agents, auth, events)
 
 	listener, err := net.Listen("tcp", config.bindAddr())
@@ -66,11 +73,7 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("ACP Web UI listening on http://%s\n", listener.Addr())
-	if token := auth.pairingTokenForStartupLog(); token != nil {
-		fmt.Printf("Pairing token generated for this daemon session: token=%s\n", *token)
-	} else {
-		fmt.Println("Pairing token loaded from configuration")
-	}
+	fmt.Println("Device approval enabled. Run `acp-webui devices pending` and `acp-webui approve <CODE>` to approve browsers.")
 	if err := http.Serve(listener, server); err != nil {
 		log.Fatal(err)
 	}

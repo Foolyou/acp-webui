@@ -30,7 +30,6 @@ Options:
   --no-stop-existing             Fail instead of stopping an occupied remote port.
   --skip-health-check            Do not wait for /api/auth/status after startup.
   --work-dir DIR                 Pass --work-dir to the remote binary.
-  --pairing-token TOKEN          Pass --pairing-token to the remote binary.
   --codex-acp-command COMMAND    Codex ACP command. Default: codex-acp.
   --codex-acp-arg ARG            Repeatable Codex ACP argument.
   --claude-acp-command COMMAND   Claude ACP command. Default: npx.
@@ -65,7 +64,6 @@ no_run=0
 no_stop_existing=0
 skip_health_check=0
 work_dir=""
-pairing_token=""
 codex_acp_command="codex-acp"
 claude_acp_command="npx"
 opencode_acp_enabled=""
@@ -204,11 +202,6 @@ parse_args() {
       --work-dir)
         (($# >= 2)) || die "--work-dir requires a value."
         work_dir="$2"
-        shift 2
-        ;;
-      --pairing-token)
-        (($# >= 2)) || die "--pairing-token requires a value."
-        pairing_token="$2"
         shift 2
         ;;
       --codex-acp-command)
@@ -362,9 +355,6 @@ done
 
 if [[ -n "$work_dir" ]]; then
   append_arg_pair --work-dir "$work_dir"
-fi
-if [[ -n "$pairing_token" ]]; then
-  append_arg_pair --pairing-token "$pairing_token"
 fi
 if ((disable_auth)); then
   append_arg --disable-auth
@@ -638,3 +628,8 @@ echo "  stderr: $stderr_log"
 REMOTE_SCRIPT
 
 echo "Deploy complete."
+if ! ((disable_auth)); then
+  echo "Device approval:"
+  echo "  On the remote host, list pending devices: acp-webui devices pending"
+  echo "  On the remote host, approve a device:     acp-webui approve <CODE>"
+fi

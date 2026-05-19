@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -17,7 +16,6 @@ const backendBinary =
     ? path.join(repoRoot, "target", "release", "acp-webui.exe")
     : path.join(repoRoot, "target", "release", "acp-webui"));
 const codexAcpCommand = process.env.ACP_WEBUI_REAL_CODEX_COMMAND ?? "codex-acp";
-const pairingToken = process.env.ACP_WEBUI_REAL_CODEX_PAIRING_TOKEN ?? `real-codex-${randomUUID()}`;
 const responseMarker = "REAL_CODEX_ACP_E2E_OK";
 
 let backend: ChildProcessWithoutNullStreams | undefined;
@@ -44,8 +42,6 @@ test.describe("real codex-acp browser flow", () => {
         backendUrlParts.port || "7635",
         "--database-url",
         `sqlite://${databasePath}`,
-        "--pairing-token",
-        pairingToken,
         "--codex-acp-command",
         codexAcpCommand
       ],
@@ -68,9 +64,15 @@ test.describe("real codex-acp browser flow", () => {
   test("pairs, creates a Codex session, receives a real reply, and restores after refresh", async ({ page }) => {
     await page.goto(backendUrl);
 
-    await expect(page.getByRole("heading", { name: "Pair this browser" })).toBeVisible();
-    await page.getByPlaceholder("Pairing token").fill(pairingToken);
-    await page.getByRole("button", { name: "Pair" }).click();
+    await expect(page.getByRole("heading", { name: "Approve this browser" })).toBeVisible();
+    const codeLocator = page.getByLabel("Device approval code");
+    await expect(codeLocator).toContainText(/[A-Z2-9]{4}\s[A-Z2-9]{4}\s[A-Z2-9]{4}/);
+    const code = (await codeLocator.innerText()).replace(/\s+/g, "");
+    const approval = spawnSync(backendBinary, ["approve", code, "--database-url", `sqlite://${databasePath}`], {
+      cwd: repoRoot,
+      encoding: "utf-8"
+    });
+    expect(approval.status, approval.stderr || approval.stdout).toBe(0);
 
     await expect(page.getByRole("heading", { name: "Local workspaces" })).toBeVisible({ timeout: 60_000 });
     await page.getByLabel("Workspace path").fill(repoRoot);

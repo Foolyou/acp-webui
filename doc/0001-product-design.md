@@ -85,7 +85,7 @@ The backend should expose a service on a user-selected local IP address and port
 
 The user already has Tailscale networking available, but ACP Web UI should not need to understand Tailscale directly. At startup, the backend should let the user choose which network interface or IP address to bind.
 
-The backend should not default to broad, unsafe exposure. Pairing token authentication is acceptable as the first version's access control.
+The backend should not default to broad, unsafe exposure. Device approval authentication is acceptable as the first version's access control.
 
 ### 3.4 Agent Support Strategy
 
@@ -482,7 +482,7 @@ Potential backend modules:
 
 - `server`: HTTP, WebSocket, static frontend hosting
 - `net`: network interface enumeration and bind address selection
-- `auth`: pairing token authentication
+- `auth`: device approval authentication
 - `agents`: agent definitions and launch configuration
 - `acp`: ACP runtime and stdio JSON-RPC bridge
 - `sessions`: session lifecycle and prompt turns
@@ -515,7 +515,7 @@ These are not yet decided:
 - Whether `git diff` fallback should support unstaged only, staged plus unstaged, or configurable modes.
 - How cancellation maps to ACP and individual agent behavior across Codex, Claude Code, and OpenCode.
 - Whether Workspaces should remain a first-level navigation surface after Settings is introduced.
-- Whether persistent paired-device management is needed after the first process-scoped pairing-token implementation.
+- Whether persistent paired-device management needs revocation and audit history beyond one-week approved device cookies.
 
 ## 8. Current Decisions Summary
 
@@ -527,9 +527,10 @@ Product architecture decisions:
 - Support Codex through `codex-acp`.
 - Support optional Claude sessions through `@agentclientprotocol/claude-agent-acp`.
 - Keep agent selection session-scoped inside each workspace.
-- Use pairing token authentication in the first version.
-- Use opaque HttpOnly browser session cookies after successful pairing.
-- Require pairing-token authentication for all browser clients by default, including loopback and Tailscale access; do not trust forwarded headers in the first version.
+- Use device approval authentication in the first version.
+- Let admins list pending browser requests with `acp-webui devices pending` and approve a request with `acp-webui approve <CODE>`.
+- Use opaque HttpOnly browser cookies that keep approved devices signed in for one week.
+- Require device approval for all browser clients by default, including loopback and Tailscale access; do not trust forwarded headers in the first version.
 - Let the user select bind IP/interface and port at startup.
 - Prioritize Linux/WSL first, then Windows and macOS.
 - Use SQLite for local persistence.

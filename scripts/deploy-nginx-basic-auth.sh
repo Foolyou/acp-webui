@@ -7,7 +7,7 @@ Usage: scripts/deploy-nginx-basic-auth.sh --server-name NAME --basic-user USER [
 
 Deploys the local ACP Web UI single-binary release behind Nginx with Basic Auth.
 The ACP Web UI daemon is always started on loopback, and Nginx is the external
-entrypoint for browser access. The deployment disables ACP Web UI pairing-token
+entrypoint for browser access. The deployment disables ACP Web UI device approval
 auth on the loopback-only daemon because Nginx Basic Auth is the access boundary.
 
 Options:

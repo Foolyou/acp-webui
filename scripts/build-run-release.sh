@@ -26,14 +26,16 @@ Options:
   --bind-port PORT              Release server port. Default: 7635.
   --frontend-port PORT          Frontend dev port to stop. Default: 5777.
   --release-timeout SECONDS     Wait for stopped ports to clear. Default: 30.
+  --port-release-retries COUNT  Retry stopping occupied ports. Default: 3.
   --startup-timeout SECONDS     Wait for the release server. Default: 180.
   --skip-build                  Reuse the existing release binary.
   --install-frontend-deps       Run npm install before frontend build.
+  --public-path PATH            Frontend public path for proxy subpath deploys.
+                                Also configurable with ACP_WEBUI_PUBLIC_PATH.
   --no-run                      Stop existing listeners, build, and exit.
   --no-stop-existing            Fail instead of stopping occupied ports.
   --foreground                  Run the release binary in the foreground.
   --work-dir DIR                Pass --work-dir to the release binary.
-  --pairing-token TOKEN         Pass --pairing-token to the release binary.
   --disable-auth                Only allowed with loopback bind hosts.
   --codex-acp-command COMMAND   Codex ACP command. Default: codex-acp.
   --codex-acp-arg ARG           Repeatable Codex ACP argument.
@@ -60,14 +62,15 @@ tailscale_ip=""
 bind_port=7635
 frontend_port=5777
 release_timeout=30
+port_release_retries=3
 startup_timeout=180
 skip_build=0
 install_frontend_deps=0
+public_path="${ACP_WEBUI_PUBLIC_PATH:-}"
 no_run=0
 no_stop_existing=0
 foreground=0
 work_dir=""
-pairing_token=""
 disable_auth=0
 codex_acp_command="codex-acp"
 claude_acp_command="npx"
@@ -208,6 +211,11 @@ parse_args() {
         startup_timeout="$2"
         shift 2
         ;;
+      --port-release-retries)
+        (($# >= 2)) || die "--port-release-retries requires a value."
+        port_release_retries="$2"
+        shift 2
+        ;;
       --skip-build)
         skip_build=1
         shift
@@ -215,6 +223,11 @@ parse_args() {
       --install-frontend-deps)
         install_frontend_deps=1
         shift
+        ;;
+      --public-path)
+        (($# >= 2)) || die "--public-path requires a value."
+        public_path="$2"
+        shift 2
         ;;
       --no-run)
         no_run=1
@@ -231,11 +244,6 @@ parse_args() {
       --work-dir)
         (($# >= 2)) || die "--work-dir requires a value."
         work_dir="$2"
-        shift 2
-        ;;
-      --pairing-token)
-        (($# >= 2)) || die "--pairing-token requires a value."
-        pairing_token="$2"
         shift 2
         ;;
       --disable-auth)
@@ -469,6 +477,46 @@ wait_for_port_release() {
   die "Port $host:$port is still listening after $timeout seconds ($(format_port_listeners "$port" "$host" "$all_addresses"))."
 }
 
+wait_for_port_release_once() {
+  local port="$1"
+  local host="$2"
+  local timeout="$3"
+  local all_addresses="${4:-0}"
+  local deadline=$((SECONDS + timeout))
+
+  while ((SECONDS < deadline)); do
+    if [[ -z "$(list_port_pids "$port" "$host" "$all_addresses")" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  return 1
+}
+
+wait_for_project_ports_release() {
+  local host="$1"
+  local timeout="$2"
+  local retries="$3"
+  local attempt
+
+  for ((attempt = 1; attempt <= retries; attempt++)); do
+    if wait_for_port_release_once "$bind_port" "$host" "$timeout" 1 &&
+      wait_for_port_release_once "$frontend_port" "$host" "$timeout" 1; then
+      return
+    fi
+
+    if ((attempt >= retries)); then
+      die "Ports did not release after $retries attempt(s). Backend listeners: $(format_port_listeners "$bind_port" "$host" 1). Frontend listeners: $(format_port_listeners "$frontend_port" "$host" 1)."
+    fi
+
+    echo "warning: ports did not release on attempt $attempt of $retries. Retrying the same ports..." >&2
+    stop_port_listeners "$bind_port" "$host" 1
+    stop_port_listeners "$frontend_port" "$host" 1
+    sleep 1
+  done
+}
+
 wait_for_http_ok() {
   local url="$1"
   local timeout="$2"
@@ -530,34 +578,14 @@ start_tailscale_serve() {
   tailscale serve status || true
 }
 
-print_pairing_token() {
-  if [[ -n "$pairing_token" ]]; then
-    echo "Pairing token: $pairing_token"
-    return
-  fi
-  if [[ -n "${ACP_WEBUI_PAIRING_TOKEN-}" ]]; then
-    echo "Pairing token: $ACP_WEBUI_PAIRING_TOKEN"
+print_device_approval_help() {
+  if ((disable_auth)); then
     return
   fi
 
-  local generated_token=""
-  local log_path
-  for log_path in "$release_out" "$release_err"; do
-    if [[ -f "$log_path" ]]; then
-      generated_token="$(
-        sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g' "$log_path" |
-          sed -n 's/.*Pairing token generated for this daemon session .*token=\([^ ]*\).*/\1/p' |
-          tail -n 1
-      )"
-      [[ -n "$generated_token" ]] && break
-    fi
-  done
-
-  if [[ -n "$generated_token" ]]; then
-    echo "Pairing token: $generated_token"
-  else
-    echo "Pairing token: unavailable; see logs: $release_out and $release_err"
-  fi
+  echo "Device approval:"
+  echo "  List pending devices: acp-webui devices pending"
+  echo "  Approve a device:     acp-webui approve <CODE>"
 }
 
 parse_args "$@"
@@ -566,8 +594,10 @@ validate_port "--bind-port" "$bind_port"
 validate_port "--frontend-port" "$frontend_port"
 validate_port "--tailscale-serve-https-port" "$tailscale_serve_https_port"
 is_uint "$release_timeout" || die "--release-timeout must be a number."
+is_uint "$port_release_retries" || die "--port-release-retries must be a number."
 is_uint "$startup_timeout" || die "--startup-timeout must be a number."
 ((release_timeout > 0)) || die "--release-timeout must be greater than 0."
+((port_release_retries > 0)) || die "--port-release-retries must be at least 1."
 ((startup_timeout > 0)) || die "--startup-timeout must be greater than 0."
 
 if ((tailscale_serve)) && ((use_tailscale)); then
@@ -607,8 +637,7 @@ if ((no_stop_existing)); then
   fi
 else
   stop_project_services "$bind_host"
-  wait_for_port_release "$bind_port" "$bind_host" "$release_timeout" 1
-  wait_for_port_release "$frontend_port" "$bind_host" "$release_timeout" 1
+  wait_for_project_ports_release "$bind_host" "$release_timeout" "$port_release_retries"
   if ((tailscale_serve)); then
     clear_tailscale_serve_config
   fi
@@ -624,7 +653,11 @@ if ! ((skip_build)); then
   fi
 
   echo "Building frontend..."
-  (cd "$frontend_dir" && npm run build)
+  if [[ -n "$public_path" ]]; then
+    (cd "$frontend_dir" && ACP_WEBUI_PUBLIC_PATH="$public_path" npm run build)
+  else
+    (cd "$frontend_dir" && npm run build)
+  fi
 
   echo "Building embedded release binary..."
   (cd "$repo_root" && go build -tags embedded_frontend -o "$binary" .)
@@ -652,9 +685,6 @@ for arg in "${claude_acp_args[@]}"; do
   run_args+=(--claude-acp-arg "$arg")
 done
 
-if [[ -n "$pairing_token" ]]; then
-  run_args+=(--pairing-token "$pairing_token")
-fi
 if ((disable_auth)); then
   run_args+=(--disable-auth)
 fi
@@ -689,7 +719,7 @@ release_pid="$(start_background "$repo_root" "$release_out" "$release_err" "$bin
 printf '%s\n' "$release_pid" >"$release_pid_file"
 
 wait_for_http_ok "$url/api/auth/status" "$startup_timeout"
-print_pairing_token
+print_device_approval_help
 echo "Release server: $url"
 if ((tailscale_serve)); then
   start_tailscale_serve "$url"

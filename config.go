@@ -38,7 +38,6 @@ type Config struct {
 	OpenCodeACPCommand         string
 	OpenCodeACPArgs            []string
 	FrontendDist               string
-	PairingToken               string
 	DisableAuth                bool
 	TranscriptionProvider      string
 	TranscriptionBaseURL       string
@@ -161,7 +160,6 @@ func parseConfig(args []string) (Config, error) {
 		OpenCodeACPCommand:         defaulted(first(raw, "opencode-acp-command", env("ACP_WEBUI_OPENCODE_ACP_COMMAND")), "opencode"),
 		OpenCodeACPArgs:            opencodeArgs,
 		FrontendDist:               defaulted(first(raw, "frontend-dist", env("ACP_WEBUI_FRONTEND_DIST")), defaultFrontendDist),
-		PairingToken:               first(raw, "pairing-token", env("ACP_WEBUI_PAIRING_TOKEN")),
 		DisableAuth:                boolValue(first(raw, "disable-auth", env("ACP_WEBUI_DISABLE_AUTH")), false),
 		TranscriptionProvider:      transcriptionProvider,
 		TranscriptionBaseURL:       transcriptionBaseURL,

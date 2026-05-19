@@ -83,8 +83,8 @@ function formatAuthStatus(value?: string) {
   switch (value) {
     case "auth_disabled":
       return "Auth disabled";
-    case "paired_session":
-      return "Paired session";
+    case "approved_device":
+      return "Approved device";
     case "anonymous":
       return "Pairing required";
     default:

@@ -8,7 +8,7 @@ function access(overrides: Partial<AccessObservability> = {}): AccessObservabili
     bindHost: "127.0.0.1",
     bindPort: 7635,
     accessUrl: "http://127.0.0.1:7635/",
-    auth: { access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" },
+    auth: { access: "approved_device", pairingRequired: false, clientIp: "127.0.0.1" },
     exposureMode: "loopback",
     tailscaleServeUrl: null,
     ...overrides
@@ -66,7 +66,7 @@ describe("SettingsPane", () => {
     expect(html).toContain("127.0.0.1");
     expect(html).toContain("7635");
     expect(html).toContain("https://acp-webui.tailnet.test/");
-    expect(html).toContain("Paired session");
+    expect(html).toContain("Approved device");
     expect(html).toContain("Tailscale Serve");
     expect(html).toContain("Codex");
     expect(html).toContain("Reasoning");

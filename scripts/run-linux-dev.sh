@@ -22,7 +22,6 @@ Options:
   --install-frontend-deps       Run npm install before startup.
   --no-run                      Stop existing listeners and exit.
   --work-dir DIR                Pass --work-dir to the backend.
-  --pairing-token TOKEN         Pass --pairing-token to the backend.
   --codex-acp-command COMMAND   Codex ACP command. Default: codex-acp.
   --codex-acp-arg ARG           Repeatable Codex ACP argument.
   --claude-acp-command COMMAND  Claude ACP command. Default: npx.
@@ -50,7 +49,6 @@ startup_timeout=180
 install_frontend_deps=0
 no_run=0
 work_dir=""
-pairing_token=""
 codex_acp_command="codex-acp"
 claude_acp_command="npx"
 claude_code_executable=""
@@ -188,11 +186,6 @@ parse_args() {
       --work-dir)
         (($# >= 2)) || die "--work-dir requires a value."
         work_dir="$2"
-        shift 2
-        ;;
-      --pairing-token)
-        (($# >= 2)) || die "--pairing-token requires a value."
-        pairing_token="$2"
         shift 2
         ;;
       --codex-acp-command)
@@ -389,38 +382,10 @@ start_background() {
   )
 }
 
-print_pairing_token() {
-  if [[ -n "$pairing_token" ]]; then
-    echo "Pairing token: $pairing_token"
-    return
-  fi
-  if [[ -n "${ACP_WEBUI_PAIRING_TOKEN-}" ]]; then
-    echo "Pairing token: $ACP_WEBUI_PAIRING_TOKEN"
-    return
-  fi
-
-  local generated_token=""
-  local log_path
-  for log_path in "$backend_out" "$backend_err"; do
-    if [[ -f "$log_path" ]]; then
-      generated_token="$(
-        sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g' "$log_path" |
-          sed -n 's/.*Pairing token generated for this daemon session .*token=\([^ ]*\).*/\1/p' |
-          tail -n 1
-      )"
-      [[ -n "$generated_token" ]] && break
-    fi
-  done
-
-  if [[ -z "$generated_token" && -f "$backend_out" ]]; then
-    generated_token="$(sed -n 's/.*token=\([0-9a-fA-F]\{32\}\).*/\1/p' "$backend_out" | tail -n 1)"
-  fi
-
-  if [[ -n "$generated_token" ]]; then
-    echo "Pairing token: $generated_token"
-  else
-    echo "Pairing token: unavailable; see backend logs: $backend_out and $backend_err"
-  fi
+print_device_approval_help() {
+  echo "Device approval:"
+  echo "  List pending devices: acp-webui devices pending"
+  echo "  Approve a device:     acp-webui approve <CODE>"
 }
 
 parse_args "$@"
@@ -493,10 +458,6 @@ for arg in "${claude_acp_args[@]}"; do
   backend_args+=(--claude-acp-arg "$arg")
 done
 
-if [[ -n "$pairing_token" ]]; then
-  backend_args+=(--pairing-token "$pairing_token")
-fi
-
 frontend_args=(run dev -- --host "$bind_host" --port "$frontend_port" --strictPort)
 
 echo "Backend command:"
@@ -523,7 +484,7 @@ frontend_pid="$(start_background "$frontend_dir" "$frontend_out" "$frontend_err"
 wait_for_http_ok "$backend_url/api/auth/status" "$startup_timeout"
 wait_for_http_ok "$frontend_url" "$startup_timeout"
 
-print_pairing_token
+print_device_approval_help
 echo "Backend dev server:  $backend_url"
 echo "Frontend dev server: $frontend_url"
 echo "Backend PID:  $backend_pid"

@@ -32,11 +32,11 @@ param(
     [int]$StartupTimeoutSeconds = 180,
     [switch]$SkipBuild,
     [switch]$InstallFrontendDeps,
+    [string]$PublicPath = $env:ACP_WEBUI_PUBLIC_PATH,
     [switch]$NoRun,
     [switch]$NoStopExisting,
     [switch]$Foreground,
     [string]$WorkDir,
-    [string]$PairingToken,
     [switch]$DisableAuth,
     [string]$CodexAcpCommand = "codex-acp",
     [string[]]$CodexAcpArgs = @(),
@@ -87,6 +87,16 @@ function Test-WildcardBindHost {
     )
 
     return $Address -eq "0.0.0.0" -or $Address -eq "::" -or $Address -eq "[::]" -or $Address -eq "*"
+}
+
+function Write-DeviceApprovalHelp {
+    if ($DisableAuth) {
+        return
+    }
+
+    Write-Host "Device approval:"
+    Write-Host "  List pending devices: acp-webui devices pending"
+    Write-Host "  Approve a device:     acp-webui approve <CODE>"
 }
 
 function Get-TailscaleIPv4 {
@@ -648,7 +658,17 @@ if (-not $SkipBuild) {
     Write-Host "Building frontend..."
     Push-Location $FrontendDir
     try {
-        npm run build
+        if ($PublicPath) {
+            $PreviousPublicPath = $env:ACP_WEBUI_PUBLIC_PATH
+            try {
+                $env:ACP_WEBUI_PUBLIC_PATH = $PublicPath
+                npm run build
+            } finally {
+                $env:ACP_WEBUI_PUBLIC_PATH = $PreviousPublicPath
+            }
+        } else {
+            npm run build
+        }
     } finally {
         Pop-Location
     }
@@ -681,10 +701,6 @@ $RunArgs += @("--claude-acp-command", $ClaudeAcpCommand)
 
 foreach ($Arg in $ClaudeAcpArgs) {
     $RunArgs += @("--claude-acp-arg", $Arg)
-}
-
-if (-not [string]::IsNullOrWhiteSpace($PairingToken)) {
-    $RunArgs += @("--pairing-token", $PairingToken)
 }
 
 if ($DisableAuth) {
@@ -729,6 +745,7 @@ $ReleaseProcess = Start-Process `
     -PassThru
 
 Wait-ForHttpOk -Url "$Url/api/auth/status" -TimeoutSeconds $StartupTimeoutSeconds
+Write-DeviceApprovalHelp
 Write-Host "Release server: $Url"
 if ($TailscaleServe) {
     $ServeStatus = Start-TailscaleServe -TargetUrl $Url -HttpsPort $TailscaleServeHttpsPort

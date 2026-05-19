@@ -1,5 +1,7 @@
 /.data/
 /frontend/.data/
+/frontend/.env
+/frontend/.env.*
 /target/
 /frontend/dist/
 /frontend/node_modules/

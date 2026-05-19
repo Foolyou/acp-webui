@@ -2,6 +2,7 @@ import type {
   AppData,
   AuthStatus,
   ChatMessage,
+  DeviceRequest,
   PermissionRequest,
   PermissionModeId,
   PromptTemplate,
@@ -16,6 +17,7 @@ import type {
   Workspace,
   WorkspaceDeletePlan
 } from "./types";
+import { publicPath } from "./publicPath";
 
 export class UnauthorizedError extends Error {
   constructor(message: string) {
@@ -25,7 +27,7 @@ export class UnauthorizedError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(publicPath(path), {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -52,7 +54,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function requestForm<T>(path: string, form: FormData): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(publicPath(path), {
     method: "POST",
     headers: {
       "x-acp-webui-request": "1"
@@ -79,11 +81,12 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
 
 export const api = {
   authStatus: () => request<AuthStatus>("/api/auth/status"),
-  pair: (token: string) =>
-    request<AuthStatus>("/api/auth/pair", {
-      method: "POST",
-      body: JSON.stringify({ token })
+  createDeviceRequest: () =>
+    request<DeviceRequest>("/api/auth/device-requests", {
+      method: "POST"
     }),
+  deviceRequest: (code: string) =>
+    request<DeviceRequest>(`/api/auth/device-requests/${encodeURIComponent(code)}`),
   appState: () => request<AppData>("/api/app-state"),
   transcribeAudio: (audio: Blob, fileName = "recording.webm") => {
     const form = new FormData();

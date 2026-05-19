@@ -416,7 +416,17 @@ export type SocketState = "connecting" | "connected" | "disconnected";
 export type View = "inbox" | "sessions" | "session";
 
 export type AuthStatus = {
-  access: "anonymous" | "paired_session" | "auth_disabled" | string;
+  access: "anonymous" | "approved_device" | "auth_disabled" | string;
   pairingRequired: boolean;
   clientIp?: string | null;
+};
+
+export type DeviceRequestStatus = "pending" | "approved" | "expired";
+
+export type DeviceRequest = {
+  code: string;
+  status: DeviceRequestStatus;
+  expiresAt: string;
+  clientIp?: string | null;
+  auth?: AuthStatus;
 };

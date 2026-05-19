@@ -14,7 +14,7 @@ All unrecognized arguments are forwarded to build-run-release.ps1.
 .\scripts\restart-release-detached.ps1
 
 .EXAMPLE
-.\scripts\restart-release-detached.ps1 -PairingToken <pairing-token> -CodexAcpCommand codex-acp
+.\scripts\restart-release-detached.ps1 -CodexAcpCommand codex-acp
 #>
 [CmdletBinding()]
 param(

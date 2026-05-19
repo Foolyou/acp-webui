@@ -17,7 +17,7 @@ This slice connects a Go local daemon to ACP agents over stdio. Users can create
 - Inbox view for sessions waiting on approval
 - Session review artifact cards for ACP tool call evidence
 - Full-screen review drill-downs for artifact details and on-demand workspace diffs
-- Pairing token access control for browser access
+- Device approval access control for browser access
 - SQLite persistence
 - Per-agent runtime status, launch profile status, and WebSocket live updates
 - Prompt composer `$skill` autocomplete from discovered local Codex skills
@@ -119,14 +119,7 @@ go run . -- \
 
 Claude is listed in the browser without an extra startup flag and starts when the user creates a Claude session.
 
-The backend protects `/api/*` and `/api/ws` with pairing-token access control. Every browser must pair with the token shown in the backend terminal unless auth is explicitly disabled with `--disable-auth`. Loopback clients, Tailscale peers, and Tailscale Serve proxy requests do not bypass pairing.
-
-To use a stable pairing token:
-
-```bash
-go run . -- \
-  --pairing-token your-local-token
-```
+The backend protects `/api/*` and `/api/ws` with device approval access control unless auth is explicitly disabled with `--disable-auth`. Loopback clients, Tailscale peers, and Tailscale Serve proxy requests do not bypass approval. New browsers submit a short device code, an admin lists pending requests with `acp-webui devices pending`, and approves a browser with `acp-webui approve <CODE>`. Approved devices receive an opaque HttpOnly browser cookie that is valid for one week.
 
 `X-Forwarded-For` and `Forwarded` headers are ignored for authentication decisions in this version. Do not bind to a broad network interface; use `127.0.0.1` for local-only access or the machine's explicit Tailscale IP for tailnet access.
 
@@ -199,7 +192,6 @@ The script restarts any listeners on the configured dev ports, then starts the b
 Useful variants:
 
 ```powershell
-.\scripts\run-tailscale-dev.ps1 -PairingToken your-local-token
 .\scripts\run-tailscale-dev.ps1 -InstallFrontendDeps
 ```
 
@@ -215,6 +207,21 @@ go build -tags embedded_frontend -o target/release/acp-webui .
 ```
 
 The resulting binary at `target/release/acp-webui` or `target/release/acp-webui.exe` serves the frontend without a runtime `frontend/dist` directory.
+
+For reverse proxies that publish ACP Web UI under a path prefix, set the
+frontend public path at build time. The value is baked into the embedded
+frontend so static assets, API calls, WebSocket connections, and SPA links use
+the same prefix:
+
+```bash
+ACP_WEBUI_PUBLIC_PATH=/acp/ npm run build
+```
+
+The release runner accepts the same setting:
+
+```bash
+./scripts/build-run-release.sh --public-path /acp/
+```
 
 On Windows, run the embedded frontend smoke test:
 
@@ -243,7 +250,25 @@ Useful variants:
 ./scripts/build-run-release.sh --foreground
 ./scripts/build-run-release.sh --tailscale
 ./scripts/build-run-release.sh --tailscale-serve
+./scripts/build-run-release.sh --public-path /acp/
 ./scripts/build-run-release.sh --no-run
+```
+
+When restarting the Linux release that is serving your current browser session,
+use the detached wrapper so the restart continues after the old backend
+disconnects the browser:
+
+```bash
+./scripts/restart-release-detached.sh
+```
+
+The wrapper launches `build-run-release.sh` in a separate background process and
+writes worker logs under `.data/release-restart`. Extra arguments are forwarded:
+
+```bash
+./scripts/restart-release-detached.sh --skip-build
+./scripts/restart-release-detached.sh --tailscale-serve --skip-build
+./scripts/restart-release-detached.sh --no-run --bind-port 7635
 ```
 
 To expose the Linux release through Nginx with HTTPS and Basic Auth:
@@ -329,7 +354,7 @@ To bind only to the local Tailscale IPv4 address:
 .\scripts\build-run-release.ps1 -BindTailscale
 ```
 
-In Tailscale mode (`-BindTailscale`, or the shorter `-Tailscale` alias) the script detects the local `100.64.0.0/10` address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>`. Pairing-token auth remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
+In Tailscale mode (`-BindTailscale`, or the shorter `-Tailscale` alias) the script detects the local `100.64.0.0/10` address, refuses non-Tailscale bind addresses, and starts the server with `--bind-host <tailscale-ip>`. Device approval remains enabled by default; Tailscale ACLs still control which tailnet peers can reach the node.
 
 To publish the local release through Tailscale Serve:
 
@@ -345,6 +370,7 @@ Useful variants:
 .\scripts\build-run-release.ps1 -SkipBuild
 .\scripts\build-run-release.ps1 -TailscaleServe -SkipBuild
 .\scripts\build-run-release.ps1 -TailscaleIp 100.x.y.z
+.\scripts\build-run-release.ps1 -PublicPath /acp/
 .\scripts\build-run-release.ps1 -NoRun
 ```
 
@@ -380,7 +406,6 @@ Useful variants:
 .\scripts\deploy-windows.ps1 -ComputerName <host> -SkipBuild
 .\scripts\deploy-windows.ps1 -ComputerName <host> -NoRun
 .\scripts\deploy-windows.ps1 -ComputerName <user>@<host> -BindTailscale
-.\scripts\deploy-windows.ps1 -ComputerName <host> -BindTailscale -PairingToken <token>
 .\scripts\deploy-windows.ps1 -ComputerName <host> -TailscaleIp 100.x.y.z
 ```
 
@@ -428,7 +453,8 @@ The suite also exercises a fake ACP tool call review artifact, opens its session
 
 - `GET /api/app-state`
 - `GET /api/auth/status`
-- `POST /api/auth/pair`
+- `POST /api/auth/device-requests`
+- `GET /api/auth/device-requests/:code`
 - `GET /api/inbox`
 - `GET /api/sessions`
 - `GET /api/workspaces`

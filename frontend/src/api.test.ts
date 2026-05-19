@@ -37,6 +37,25 @@ describe("api", () => {
     });
   });
 
+  test("creates and fetches device approval requests", async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ code: "ABC123", status: "pending", expiresAt: "2026-05-20T12:00:00.000Z" })
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await api.createDeviceRequest();
+    await api.deviceRequest("ABC/123");
+
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/auth/device-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" }
+    });
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/auth/device-requests/ABC%2F123", {
+      headers: { "content-type": "application/json", "x-acp-webui-request": "1" }
+    });
+  });
+
   test("creates sessions with optional initial prompt and content blocks", async () => {
     const fetch = vi.fn(async () => ({
       ok: true,

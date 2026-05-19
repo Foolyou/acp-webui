@@ -96,39 +96,51 @@ async function restartBackend() {
   await startBackend();
 }
 
-test("pairs an anonymous browser before loading app state", async ({ page }) => {
-  let paired = false;
+test("approves an anonymous browser before loading app state", async ({ page }) => {
+  let approved = false;
+  let pollCount = 0;
 
   await page.route("**/api/auth/status", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       status: 200,
       body: JSON.stringify({
-        access: paired ? "paired_session" : "anonymous",
-        pairingRequired: !paired,
+        access: approved ? "approved_device" : "anonymous",
+        pairingRequired: !approved,
         clientIp: "192.168.1.23"
       })
     });
   });
-  await page.route("**/api/auth/pair", async (route) => {
-    const body = route.request().postDataJSON() as { token: string };
-    if (body.token !== "test-token") {
-      await route.fulfill({
-        contentType: "application/json",
-        status: 401,
-        body: JSON.stringify({ error: "Invalid pairing token" })
-      });
-      return;
-    }
-    paired = true;
+  await page.route("**/api/auth/device-requests", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       status: 200,
-      headers: { "set-cookie": "acp_webui_session=fake; Path=/; HttpOnly; SameSite=Lax" },
       body: JSON.stringify({
-        access: "paired_session",
-        pairingRequired: false,
+        code: "ABC123",
+        status: "pending",
+        expiresAt: "2099-01-01T00:00:00.000Z",
         clientIp: "192.168.1.23"
+      })
+    });
+  });
+  await page.route("**/api/auth/device-requests/ABC123", async (route) => {
+    pollCount += 1;
+    approved = pollCount > 1;
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      ...(approved ? { headers: { "set-cookie": "acp_webui_device=fake; Path=/; HttpOnly; SameSite=Lax" } } : {}),
+      body: JSON.stringify({
+        code: "ABC123",
+        status: approved ? "approved" : "pending",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        auth: approved
+          ? {
+              access: "approved_device",
+              pairingRequired: false,
+              clientIp: "192.168.1.23"
+            }
+          : undefined
       })
     });
   });
@@ -166,15 +178,9 @@ test("pairs an anonymous browser before loading app state", async ({ page }) => 
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Pair this browser" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Approve this browser" })).toBeVisible();
   await expect(page.getByText("Client: 192.168.1.23")).toBeVisible();
-
-  await page.getByPlaceholder("Pairing token").fill("wrong");
-  await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.getByText("Invalid pairing token")).toBeVisible();
-
-  await page.getByPlaceholder("Pairing token").fill("test-token");
-  await page.getByRole("button", { name: "Pair" }).click();
+  await expect(page.getByText("ABC 123")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Local workspaces" })).toBeVisible();
 });
 
@@ -455,7 +461,7 @@ test("keeps ready agents selectable when another agent has failed", async ({ pag
       contentType: "application/json",
       status: 200,
       body: JSON.stringify({
-        access: "paired_session",
+        access: "approved_device",
         pairingRequired: false,
         clientIp: "127.0.0.1"
       })
@@ -622,7 +628,7 @@ test("keeps prompt input responsive with a long rendered timeline", async ({ pag
       contentType: "application/json",
       status: 200,
       body: JSON.stringify({
-        access: "paired_session",
+        access: "approved_device",
         pairingRequired: false,
         clientIp: "127.0.0.1"
       })
@@ -784,7 +790,7 @@ test("shows mobile skill suggestions for symbol keyboard triggers", async ({ pag
     await route.fulfill({
       contentType: "application/json",
       status: 200,
-      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+      body: JSON.stringify({ access: "approved_device", pairingRequired: false, clientIp: "127.0.0.1" })
     });
   });
   await page.route("**/api/app-state", async (route) => {
@@ -1225,7 +1231,7 @@ test("recovers missed mobile session messages on visibility return without refre
     await route.fulfill({
       contentType: "application/json",
       status: 200,
-      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+      body: JSON.stringify({ access: "approved_device", pairingRequired: false, clientIp: "127.0.0.1" })
     });
   });
   await page.route("**/api/app-state", async (route) => {
@@ -1475,7 +1481,7 @@ test("renders compact mobile tool activity rows with evidence and diagnostics", 
     await route.fulfill({
       contentType: "application/json",
       status: 200,
-        body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "test-client" })
+        body: JSON.stringify({ access: "approved_device", pairingRequired: false, clientIp: "test-client" })
     });
   });
   await page.route("**/api/app-state", async (route) => {
@@ -1965,7 +1971,7 @@ async function mockComposerSession(page: Page, options: ComposerFixtureOptions =
     await route.fulfill({
       contentType: "application/json",
       status: 200,
-      body: JSON.stringify({ access: "paired_session", pairingRequired: false, clientIp: "127.0.0.1" })
+      body: JSON.stringify({ access: "approved_device", pairingRequired: false, clientIp: "127.0.0.1" })
     });
   });
   await page.route("**/api/app-state", async (route) => {

@@ -86,8 +86,8 @@ func TestStorageImportsSQLxMigrationState(t *testing.T) {
 	if err := storage.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 13 {
-		t.Fatalf("schema migration count = %d, want 13", count)
+	if count != 14 {
+		t.Fatalf("schema migration count = %d, want 14", count)
 	}
 }
 

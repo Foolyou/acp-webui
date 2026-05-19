@@ -41,6 +41,7 @@ import {
 } from "./app/workspaceAgentNavigation";
 import { api, errorMessage, isUnauthorized } from "./api";
 import { PairingView } from "./features/auth/PairingView";
+import { publicPath } from "./publicPath";
 import { applyRealtimeEvent } from "./realtime";
 import { placeholderContext, router } from "./routes/router";
 import type {
@@ -462,7 +463,7 @@ export function App() {
       reconnectTimer.current = undefined;
       setState((current) => ({ ...current, socketState: "connecting" }));
       const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-      const nextSocket = new WebSocket(`${scheme}://${window.location.host}/api/ws`);
+      const nextSocket = new WebSocket(`${scheme}://${window.location.host}${publicPath("/api/ws")}`);
       socket = nextSocket;
 
       nextSocket.addEventListener("open", () => {
@@ -1083,14 +1084,6 @@ export function App() {
     }));
   }, []);
 
-  const pairBrowser = useCallback(
-    async (token: string) => {
-      const auth = await api.pair(token);
-      await loadInitialState(auth);
-    },
-    [loadInitialState]
-  );
-
   const context = useMemo<AppRouterContext>(
     () => ({
       actions: {
@@ -1142,7 +1135,7 @@ export function App() {
   );
 
   if (state.auth?.access === "anonymous") {
-    return <PairingView auth={state.auth} onPair={pairBrowser} />;
+    return <PairingView auth={state.auth} onApproved={loadInitialState} />;
   }
 
   return (

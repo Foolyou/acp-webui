@@ -73,6 +73,45 @@ type SessionDeleteBlockers struct {
 	BlockingSessionStatus *string `json:"blockingSessionStatus,omitempty"`
 }
 
+type DevicePairingRequest struct {
+	Code       string
+	ClientIP   *string
+	UserAgent  *string
+	CreatedAt  string
+	ExpiresAt  string
+	ApprovedAt *string
+	ConsumedAt *string
+}
+
+type NewDevicePairingRequest struct {
+	Code      string
+	ClientIP  *string
+	UserAgent *string
+	CreatedAt string
+	ExpiresAt string
+}
+
+type ApprovedDevice struct {
+	ID          string
+	TokenHash   string
+	PairingCode *string
+	ClientIP    *string
+	UserAgent   *string
+	CreatedAt   string
+	ExpiresAt   string
+	LastSeenAt  *string
+}
+
+type NewApprovedDevice struct {
+	ID          string
+	TokenHash   string
+	PairingCode *string
+	ClientIP    *string
+	UserAgent   *string
+	CreatedAt   string
+	ExpiresAt   string
+}
+
 func (b SessionDeleteBlockers) Blocked() bool {
 	return b.ActiveTurnStatus != nil || b.PendingApprovalCount > 0 || b.QueuedPromptCount > 0 || b.BlockingSessionStatus != nil
 }
@@ -211,6 +250,237 @@ func (s *Storage) importSQLxMigrationState(ctx context.Context, entries []fs.Dir
 		}
 	}
 	return nil
+}
+
+func (s *Storage) CreateDevicePairingRequest(ctx context.Context, input NewDevicePairingRequest) (DevicePairingRequest, error) {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO device_pairing_requests(code, client_ip, user_agent, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		input.Code,
+		input.ClientIP,
+		input.UserAgent,
+		input.CreatedAt,
+		input.ExpiresAt,
+	)
+	if err != nil {
+		return DevicePairingRequest{}, err
+	}
+	return DevicePairingRequest{
+		Code:      input.Code,
+		ClientIP:  input.ClientIP,
+		UserAgent: input.UserAgent,
+		CreatedAt: input.CreatedAt,
+		ExpiresAt: input.ExpiresAt,
+	}, nil
+}
+
+func (s *Storage) GetDevicePairingRequest(ctx context.Context, code string) (DevicePairingRequest, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT code, client_ip, user_agent, created_at, expires_at, approved_at, consumed_at
+		FROM device_pairing_requests
+		WHERE code = ?`,
+		code,
+	)
+	return scanDevicePairingRequest(row)
+}
+
+func (s *Storage) ListPendingDevicePairingRequests(ctx context.Context, now string) ([]DevicePairingRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT code, client_ip, user_agent, created_at, expires_at, approved_at, consumed_at
+		FROM device_pairing_requests
+		WHERE approved_at IS NULL
+		  AND consumed_at IS NULL
+		  AND expires_at > ?
+		ORDER BY created_at ASC, code ASC`,
+		now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var requests []DevicePairingRequest
+	for rows.Next() {
+		request, err := scanDevicePairingRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return requests, nil
+}
+
+func (s *Storage) ApproveDevicePairingRequest(ctx context.Context, code string, approvedAt string) (DevicePairingRequest, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE device_pairing_requests
+		SET approved_at = ?
+		WHERE code = ?
+		  AND approved_at IS NULL
+		  AND consumed_at IS NULL
+		  AND expires_at > ?`,
+		approvedAt,
+		code,
+		approvedAt,
+	)
+	if err != nil {
+		return DevicePairingRequest{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return DevicePairingRequest{}, err
+	}
+	if affected == 0 {
+		return DevicePairingRequest{}, sql.ErrNoRows
+	}
+	return s.GetDevicePairingRequest(ctx, code)
+}
+
+func (s *Storage) ConsumeApprovedDevicePairingRequest(ctx context.Context, code string, device NewApprovedDevice, consumedAt string) (ApprovedDevice, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ApprovedDevice{}, err
+	}
+	defer tx.Rollback()
+	var request DevicePairingRequest
+	row := tx.QueryRowContext(ctx, `
+		SELECT code, client_ip, user_agent, created_at, expires_at, approved_at, consumed_at
+		FROM device_pairing_requests
+		WHERE code = ?`,
+		code,
+	)
+	request, err = scanDevicePairingRequest(row)
+	if err != nil {
+		return ApprovedDevice{}, err
+	}
+	if request.ApprovedAt == nil || request.ConsumedAt != nil || request.ExpiresAt <= consumedAt {
+		return ApprovedDevice{}, sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE device_pairing_requests
+		SET consumed_at = ?
+		WHERE code = ? AND consumed_at IS NULL`,
+		consumedAt,
+		code,
+	); err != nil {
+		return ApprovedDevice{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO approved_devices(id, token_hash, pairing_code, client_ip, user_agent, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		device.ID,
+		device.TokenHash,
+		device.PairingCode,
+		device.ClientIP,
+		device.UserAgent,
+		device.CreatedAt,
+		device.ExpiresAt,
+	); err != nil {
+		return ApprovedDevice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ApprovedDevice{}, err
+	}
+	return ApprovedDevice{
+		ID:          device.ID,
+		TokenHash:   device.TokenHash,
+		PairingCode: device.PairingCode,
+		ClientIP:    device.ClientIP,
+		UserAgent:   device.UserAgent,
+		CreatedAt:   device.CreatedAt,
+		ExpiresAt:   device.ExpiresAt,
+	}, nil
+}
+
+func (s *Storage) ApprovedDeviceByTokenHash(ctx context.Context, tokenHash string, now string) (ApprovedDevice, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, token_hash, pairing_code, client_ip, user_agent, created_at, expires_at, last_seen_at
+		FROM approved_devices
+		WHERE token_hash = ? AND expires_at > ?`,
+		tokenHash,
+		now,
+	)
+	device, err := scanApprovedDevice(row)
+	if err != nil {
+		return ApprovedDevice{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE approved_devices SET last_seen_at = ? WHERE id = ?`, now, device.ID)
+	return device, nil
+}
+
+func (s *Storage) DeleteExpiredAuthRecords(ctx context.Context, now string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM approved_devices WHERE expires_at <= ?`, now); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM device_pairing_requests
+		WHERE expires_at <= ?
+		  AND approved_at IS NULL
+		  AND consumed_at IS NULL`,
+		now,
+	)
+	return err
+}
+
+type devicePairingScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDevicePairingRequest(scanner devicePairingScanner) (DevicePairingRequest, error) {
+	var request DevicePairingRequest
+	var clientIP sql.NullString
+	var userAgent sql.NullString
+	var approvedAt sql.NullString
+	var consumedAt sql.NullString
+	if err := scanner.Scan(
+		&request.Code,
+		&clientIP,
+		&userAgent,
+		&request.CreatedAt,
+		&request.ExpiresAt,
+		&approvedAt,
+		&consumedAt,
+	); err != nil {
+		return DevicePairingRequest{}, err
+	}
+	request.ClientIP = nullStringPtr(clientIP)
+	request.UserAgent = nullStringPtr(userAgent)
+	request.ApprovedAt = nullStringPtr(approvedAt)
+	request.ConsumedAt = nullStringPtr(consumedAt)
+	return request, nil
+}
+
+func scanApprovedDevice(scanner devicePairingScanner) (ApprovedDevice, error) {
+	var device ApprovedDevice
+	var pairingCode sql.NullString
+	var clientIP sql.NullString
+	var userAgent sql.NullString
+	var lastSeenAt sql.NullString
+	if err := scanner.Scan(
+		&device.ID,
+		&device.TokenHash,
+		&pairingCode,
+		&clientIP,
+		&userAgent,
+		&device.CreatedAt,
+		&device.ExpiresAt,
+		&lastSeenAt,
+	); err != nil {
+		return ApprovedDevice{}, err
+	}
+	device.PairingCode = nullStringPtr(pairingCode)
+	device.ClientIP = nullStringPtr(clientIP)
+	device.UserAgent = nullStringPtr(userAgent)
+	device.LastSeenAt = nullStringPtr(lastSeenAt)
+	return device, nil
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
 }
 
 func (s *Storage) expirePendingPermissionRequestsOnStartup(ctx context.Context) (int64, error) {

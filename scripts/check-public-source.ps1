@@ -22,7 +22,7 @@ if ($blockedFiles.Count -gt 0) {
     Write-Error ("Tracked sensitive or generated files are not allowed in the public source tree:`n" + ($blockedFiles -join "`n"))
 }
 
-$secretPattern = 'sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC |PRIVATE )?PRIVATE KEY-----|acp_webui_session=[^f][^;\s]{8,}|token=[0-9a-fA-F]{32}|C:\\Users\\[^\\]+\\|/Users/[^/\s]+/'
+$secretPattern = 'sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC |PRIVATE )?PRIVATE KEY-----|acp_webui_device=[^f][^;\s]{8,}|token=[0-9a-fA-F]{32}|C:\\Users\\[^\\]+\\|/Users/[^/\s]+/'
 $secretFindings = @()
 foreach ($file in $tracked) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

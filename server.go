@@ -46,6 +46,7 @@ var supportedPromptImageMimeTypes = map[string]struct{}{
 }
 
 func newServer(config Config, storage *Storage, agents *AgentRuntimeManager, auth *AuthService, events *EventHub) *Server {
+	auth.attachStorage(storage)
 	server := &Server{config: config, storage: storage, agents: agents, auth: auth, events: events, transcriptionProvider: newTranscriptionProvider(config), mux: http.NewServeMux()}
 	server.routes()
 	return server
@@ -53,7 +54,8 @@ func newServer(config Config, storage *Storage, agents *AgentRuntimeManager, aut
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
-	s.mux.HandleFunc("POST /api/auth/pair", s.handlePair)
+	s.mux.HandleFunc("POST /api/auth/device-requests", s.handleCreateDevicePairingRequest)
+	s.mux.HandleFunc("GET /api/auth/device-requests/{code}", s.handlePollDevicePairingRequest)
 	s.mux.HandleFunc("GET /api/app-state", s.handleAppState)
 	s.mux.HandleFunc("POST /api/audio/transcriptions", s.handleAudioTranscription)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
@@ -247,15 +249,17 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.auth.status(r))
 }
 
-func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Token string `json:"token"`
-	}
-	if err := decodeJSON(r, &payload); err != nil {
+func (s *Server) handleCreateDevicePairingRequest(w http.ResponseWriter, r *http.Request) {
+	challenge, err := s.auth.createDevicePairingChallenge(r.Context(), r)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	status, err := s.auth.pair(w, r, payload.Token)
+	writeJSON(w, http.StatusOK, challenge)
+}
+
+func (s *Server) handlePollDevicePairingRequest(w http.ResponseWriter, r *http.Request) {
+	status, err := s.auth.pollDevicePairingRequest(w, r, r.PathValue("code"))
 	if err != nil {
 		writeError(w, err)
 		return
