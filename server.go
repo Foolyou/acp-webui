@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -202,6 +204,20 @@ func requestHost(r *http.Request) string {
 func firstForwardedValue(value string) string {
 	value, _, _ = strings.Cut(value, ",")
 	return strings.TrimSpace(value)
+}
+
+func forwardedPrefix(r *http.Request) string {
+	prefix := firstForwardedValue(r.Header.Get("X-Forwarded-Prefix"))
+	if prefix == "" {
+		return ""
+	}
+	prefix, _, _ = strings.Cut(prefix, "?")
+	prefix, _, _ = strings.Cut(prefix, "#")
+	normalized := path.Clean("/" + strings.Trim(prefix, "/"))
+	if normalized == "/" || normalized == "." {
+		return ""
+	}
+	return normalized
 }
 
 func splitHostPort(value string, scheme string) (string, string) {
@@ -1565,12 +1581,20 @@ func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
 	}
 	index := filepath.Join(s.config.FrontendDist, "index.html")
 	if _, err := os.Stat(index); err == nil {
-		w.Header().Set("content-type", "text/html; charset=utf-8")
-		http.ServeFile(w, r, index)
+		s.serveFrontendIndexFile(w, r, index)
 		return
 	}
 	w.Header().Set("content-type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<!doctype html><title>ACP Web UI</title><p>Frontend build not found. Run npm run build in frontend.</p>"))
+}
+
+func (s *Server) serveFrontendIndexFile(w http.ResponseWriter, r *http.Request, index string) {
+	content, err := os.ReadFile(index)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeFrontendIndex(w, r, content)
 }
 
 func (s *Server) handleEmbeddedFrontend(w http.ResponseWriter, r *http.Request) {
@@ -1592,7 +1616,35 @@ func (s *Server) handleEmbeddedFrontend(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.Header().Set("content-type", "text/html; charset=utf-8")
-	http.ServeFileFS(w, r, sub, "index.html")
+	content, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeFrontendIndex(w, r, content)
+}
+
+func writeFrontendIndex(w http.ResponseWriter, r *http.Request, content []byte) {
+	w.Header().Set("content-type", "text/html; charset=utf-8")
+	w.Header().Add("vary", "X-Forwarded-Prefix")
+	_, _ = w.Write(injectFrontendRuntimeConfig(content, forwardedPrefix(r)))
+}
+
+func injectFrontendRuntimeConfig(content []byte, basePath string) []byte {
+	baseHref := "/"
+	if basePath != "" {
+		baseHref = basePath + "/"
+	}
+	baseJSON, err := json.Marshal(basePath)
+	if err != nil {
+		baseJSON = []byte(`""`)
+	}
+	injection := []byte(fmt.Sprintf(`<base href="%s"><script>window.__ACP_WEBUI_BASE_PATH__=%s;</script>`, html.EscapeString(baseHref), baseJSON))
+	index := string(content)
+	if strings.Contains(index, "</head>") {
+		return []byte(strings.Replace(index, "</head>", string(injection)+"</head>", 1))
+	}
+	return append(injection, content...)
 }
 
 func discoverSkills() []SkillSummary {

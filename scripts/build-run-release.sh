@@ -30,8 +30,8 @@ Options:
   --startup-timeout SECONDS     Wait for the release server. Default: 180.
   --skip-build                  Reuse the existing release binary.
   --install-frontend-deps       Run npm install before frontend build.
-  --public-path PATH            Frontend public path for proxy subpath deploys.
-                                Also configurable with ACP_WEBUI_PUBLIC_PATH.
+  --public-path PATH            Deprecated; reverse proxy prefixes are handled
+                                at runtime with X-Forwarded-Prefix.
   --no-run                      Stop existing listeners, build, and exit.
   --no-stop-existing            Fail instead of stopping occupied ports.
   --foreground                  Run the release binary in the foreground.
@@ -654,10 +654,9 @@ if ! ((skip_build)); then
 
   echo "Building frontend..."
   if [[ -n "$public_path" ]]; then
-    (cd "$frontend_dir" && ACP_WEBUI_PUBLIC_PATH="$public_path" npm run build)
-  else
-    (cd "$frontend_dir" && npm run build)
+    echo "Ignoring deprecated --public-path/ACP_WEBUI_PUBLIC_PATH; reverse proxy prefixes are handled at runtime with X-Forwarded-Prefix."
   fi
+  (cd "$frontend_dir" && npm run build)
 
   echo "Building embedded release binary..."
   (cd "$repo_root" && go build -tags embedded_frontend -o "$binary" .)

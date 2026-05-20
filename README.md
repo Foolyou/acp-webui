@@ -208,19 +208,23 @@ go build -tags embedded_frontend -o target/release/acp-webui .
 
 The resulting binary at `target/release/acp-webui` or `target/release/acp-webui.exe` serves the frontend without a runtime `frontend/dist` directory.
 
-For reverse proxies that publish ACP Web UI under a path prefix, set the
-frontend public path at build time. The value is baked into the embedded
-frontend so static assets, API calls, WebSocket connections, and SPA links use
-the same prefix:
+For reverse proxies that publish ACP Web UI under a path prefix, strip the
+prefix before proxying to the backend and send the original prefix in
+`X-Forwarded-Prefix`. The backend injects this prefix into the frontend shell at
+request time so static assets, API calls, WebSocket connections, and SPA links
+use the same prefix:
 
-```bash
-ACP_WEBUI_PUBLIC_PATH=/acp/ npm run build
+```nginx
+location /acp/ {
+    proxy_set_header X-Forwarded-Prefix /acp;
+    proxy_pass http://127.0.0.1:7635/;
+}
 ```
 
-The release runner accepts the same setting:
+The release runner no longer needs a prefix-specific frontend build:
 
 ```bash
-./scripts/build-run-release.sh --public-path /acp/
+./scripts/build-run-release.sh
 ```
 
 On Windows, run the embedded frontend smoke test:
@@ -250,7 +254,6 @@ Useful variants:
 ./scripts/build-run-release.sh --foreground
 ./scripts/build-run-release.sh --tailscale
 ./scripts/build-run-release.sh --tailscale-serve
-./scripts/build-run-release.sh --public-path /acp/
 ./scripts/build-run-release.sh --no-run
 ```
 

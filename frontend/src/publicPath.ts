@@ -1,6 +1,12 @@
+declare global {
+  interface Window {
+    __ACP_WEBUI_BASE_PATH__?: string;
+  }
+}
+
 export function basePathFromPublicPath(publicPath: string) {
   const trimmed = publicPath.trim();
-  if (!trimmed || trimmed === "/") {
+  if (!trimmed || trimmed === "/" || trimmed === "./" || trimmed === ".") {
     return "";
   }
 
@@ -15,10 +21,16 @@ export function basePathFromPublicPath(publicPath: string) {
   return normalized === "/" ? "" : normalized;
 }
 
-export const frontendBasePath = basePathFromPublicPath(import.meta.env.BASE_URL);
+function runtimeBasePath() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return basePathFromPublicPath(window.__ACP_WEBUI_BASE_PATH__ ?? "");
+}
+
+export const frontendBasePath = runtimeBasePath() || basePathFromPublicPath(import.meta.env.BASE_URL);
 
 export function publicPath(path: string) {
   const normalized = path.startsWith("/") ? path : `/${path}`;
   return `${frontendBasePath}${normalized}`;
 }
-

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -354,6 +355,30 @@ func TestServerAllowsForwardedHTTPSOrigin(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFrontendIndexInjectsForwardedPrefixRuntimeBase(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte(`<!doctype html><html><head><title>ACP</title></head><body><div id="app"></div><script type="module" src="./assets/app.js"></script></body></html>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(Config{DisableAuth: true, FrontendDist: dist}, testStorage(t), &AgentRuntimeManager{}, newAuthService(Config{DisableAuth: true}), newEventHub())
+	request := httptest.NewRequest(http.MethodGet, "/workspaces/example/sessions", nil)
+	request.Header.Set("X-Forwarded-Prefix", "/acp/")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `<base href="/acp/">`) {
+		t.Fatalf("missing forwarded base tag: %s", body)
+	}
+	if !strings.Contains(body, `window.__ACP_WEBUI_BASE_PATH__="/acp";`) {
+		t.Fatalf("missing runtime base path: %s", body)
 	}
 }
 

@@ -32,7 +32,7 @@ param(
     [int]$StartupTimeoutSeconds = 180,
     [switch]$SkipBuild,
     [switch]$InstallFrontendDeps,
-    [string]$PublicPath = $env:ACP_WEBUI_PUBLIC_PATH,
+    [string]$PublicPath,
     [switch]$NoRun,
     [switch]$NoStopExisting,
     [switch]$Foreground,
@@ -656,19 +656,12 @@ if (-not $SkipBuild) {
     }
 
     Write-Host "Building frontend..."
+    if ($PublicPath -or $env:ACP_WEBUI_PUBLIC_PATH) {
+        Write-Host "Ignoring deprecated PublicPath setting; reverse proxy prefixes are handled at runtime with X-Forwarded-Prefix."
+    }
     Push-Location $FrontendDir
     try {
-        if ($PublicPath) {
-            $PreviousPublicPath = $env:ACP_WEBUI_PUBLIC_PATH
-            try {
-                $env:ACP_WEBUI_PUBLIC_PATH = $PublicPath
-                npm run build
-            } finally {
-                $env:ACP_WEBUI_PUBLIC_PATH = $PreviousPublicPath
-            }
-        } else {
-            npm run build
-        }
+        npm run build
     } finally {
         Pop-Location
     }
